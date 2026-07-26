@@ -41,7 +41,6 @@ const (
 	CTGetEscrowHistory    CmdType = 0x31
 	CTGetFinalizeBundle   CmdType = 0x32 // Get gamma + presigs for settlement finalization
 	CTGetEscrowById       CmdType = 0x33 // Get single escrow info by ID (includes comp_priv)
-	CTGetBindableEscrows  CmdType = 0x34 // Get currently bindable escrows
 	CTRefundEscrow        CmdType = 0x35 // Build CSV refund tx for a historic escrow
 	CTUpdateEscrowHistory CmdType = 0x36
 	CTDeleteEscrowHistory CmdType = 0x37

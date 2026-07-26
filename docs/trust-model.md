@@ -187,9 +187,28 @@ open again — `OpenEscrow` is idempotent per seat and rebuilds the roster from
 published keys — rather than to have the referee accept a roster it cannot
 vouch for.
 
-Still open: the bindable-escrow reuse in `pkg/client/escrow_archive.go` and
-`GetBindableEscrows`, which assume an escrow is fundable before it knows its
-table and reusable across tables. Neither holds under n-of-n.
+An escrow is also bound to one table, checked against the roster rather than
+merely against who owns it. `BindEscrow` previously accepted any escrow the
+caller owned whose amount matched the buy-in, so a stake opened for one table
+could be bound at another — leaving that table's seats holding settlement drafts
+their signatures could never satisfy, while its owner kept a working CSV refund.
+Nothing can bind at all until the roster closes, since until then no deposit
+script exists to have been funded.
+
+That is why `GetBindableEscrows` and its `CTGetBindableEscrows` command are
+gone: a "pick one of your escrows" step only made sense while escrows were
+interchangeable. The escrow for a table is now determined by (player, table) and
+obtained from `OpenEscrow`, which is idempotent per seat.
+
+The rest of `pkg/client/escrow_archive.go` stays. It is the local record a CSV
+refund is built from — redeem script, timelock, funding outpoint — and it is the
+only place those survive once a match ends and the referee forgets the escrow.
+
+The Flutter UI has not been migrated. `Golib.getBindableEscrows` calls a command
+that no longer exists, and its `openEscrow` sends no `table_id`, so the escrow
+flow there is already inoperative under roster-first. It needs the escrow picker
+replaced by an open-fund-bind flow with roster polling, which is part of the
+move to React in dcrpulse.
 
 The cost falls on no-shows. A deposit is roster-specific, so if one player locks
 in and never funds, everyone who did fund waits out the CSV — roughly five hours

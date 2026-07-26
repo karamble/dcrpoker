@@ -654,6 +654,48 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 	}, nil
 }
 
+// checkRosterClosed reports whether a match's roster has every seat's session
+// key. Deposit scripts only exist once it does.
+func (s *Server) checkRosterClosed(matchID string) error {
+	s.referee.mu.RLock()
+	roster := s.referee.rosters[matchID]
+	closed := roster.closed()
+	s.referee.mu.RUnlock()
+
+	switch {
+	case roster == nil:
+		return status.Errorf(codes.FailedPrecondition,
+			"no escrow roster for match %s; open an escrow for this table first", matchID)
+	case !closed:
+		return status.Error(codes.FailedPrecondition,
+			"table roster is still incomplete; no escrow can be funded or bound yet")
+	}
+	return nil
+}
+
+// checkEscrowMatchesRoster reports whether an escrow is the one this match's
+// roster holds for a seat. Escrows are not interchangeable: the deposit script
+// names a specific set of session keys, so an escrow opened for another table
+// can never be settled by this one.
+func (s *Server) checkEscrowMatchesRoster(matchID string, seat uint32, es *refereeEscrowSession) error {
+	s.referee.mu.RLock()
+	var seatEscrow string
+	if roster := s.referee.rosters[matchID]; roster != nil {
+		seatEscrow = roster.Escrows[seat]
+	}
+	s.referee.mu.RUnlock()
+
+	switch {
+	case seatEscrow == "":
+		return status.Errorf(codes.FailedPrecondition,
+			"seat %d has no escrow in this table's roster", seat)
+	case seatEscrow != es.EscrowID:
+		return status.Errorf(codes.FailedPrecondition,
+			"escrow %s was opened for another roster; it cannot be staked at this table", es.EscrowID)
+	}
+	return nil
+}
+
 // escrowForPkScript returns the caller's escrow paying pkHex, if they have one.
 //
 // Deposit scripts are derived by the referee from a table's roster and never
@@ -725,6 +767,13 @@ func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest
 		return nil, status.Error(codes.FailedPrecondition, "you are not seated at this table")
 	}
 	seat = uint32(callerUser.TableSeat)
+
+	// Nothing can be bound at a table whose roster is still open, because
+	// until it closes no deposit script exists to have been funded.
+	rosterKey := refereeMatchID(tableID, req.GetSessionId())
+	if err := s.checkRosterClosed(rosterKey); err != nil {
+		return nil, err
+	}
 
 	parts := strings.Split(outpoint, ":")
 	if len(parts) != 2 {
@@ -814,6 +863,15 @@ func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest
 	}
 	if matchID == "" {
 		return nil, status.Error(codes.InvalidArgument, "match_id or table_id required")
+	}
+
+	// An escrow commits to one table's roster and is a stake in that table
+	// alone. Binding it elsewhere would give the other seats a settlement
+	// branch their signatures cannot satisfy, while its owner keeps a refund
+	// that still works - so check it against the roster this referee built,
+	// not merely against who owns it.
+	if err := s.checkEscrowMatchesRoster(rosterKey, seat, es); err != nil {
+		return nil, err
 	}
 
 	// Enforce table buy-in amount match if table exists.

@@ -279,26 +279,6 @@ func handleClientCmd(handle uint32, cc *clientCtx, cmd *cmd) (interface{}, error
 			return hist, nil
 		}
 
-	case CTGetBindableEscrows:
-		{
-			cmtx.Lock()
-			cc := cs[handle]
-			cmtx.Unlock()
-			if cc == nil || cc.c == nil {
-				return nil, fmt.Errorf("client not initialized")
-			}
-			if cc.Token == "" {
-				return nil, fmt.Errorf("no session token; login first")
-			}
-			escrows, err := cc.c.GetBindableEscrows(cc.ctx, cc.Token)
-			if err != nil {
-				cc.log.Warnf("CTGetBindableEscrows: failed: %v", err)
-				return nil, err
-			}
-			cc.log.Infof("CTGetBindableEscrows: returning %d escrows", len(escrows))
-			return escrows, nil
-		}
-
 	case CTRefundEscrow:
 		{
 			var req struct {

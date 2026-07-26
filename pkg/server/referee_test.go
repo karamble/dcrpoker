@@ -1089,3 +1089,72 @@ func TestEscrowForPkScriptIsScopedToOwner(t *testing.T) {
 	require.Nil(t, srv.escrowForPkScript(uidA, ""))
 	require.Nil(t, srv.escrowForPkScript(uidA, "deadbeef"))
 }
+
+// An escrow's deposit script names one table's session keys, so it is a stake
+// in that table alone. Binding it at another table would leave that table's
+// seats holding settlement drafts their signatures cannot satisfy, while the
+// owner keeps a CSV refund that still works - so the referee checks the escrow
+// against the roster it built, not merely against who owns it.
+//
+// This is what made a "pick one of your escrows to bind" flow unsound, and why
+// the client no longer offers one.
+func TestBindEscrowRejectsEscrowFromAnotherRoster(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+
+	const uidA = "0000000000000000000000000000000000000000000000000000000000000001"
+	const uidB = "0000000000000000000000000000000000000000000000000000000000000002"
+	const uidC = "0000000000000000000000000000000000000000000000000000000000000003"
+
+	// Two tables with the same buy-in, so amount is no obstacle.
+	first := seedRosterTable(t, srv, "table-first", 2, amount)
+	pubA := testSessionKey(t)
+	elsewhere := openRosterEscrow(t, srv, first, uidA, "tokA", 0, amount, pubA)
+	openRosterEscrow(t, srv, first, uidB, "tokB", 1, amount, testSessionKey(t))
+	require.NotEmpty(t, elsewhere.GetEscrowId())
+
+	second := seedRosterTable(t, srv, "table-second", 2, amount)
+	here := openRosterEscrow(t, srv, second, uidA, "tokA", 0, amount, testSessionKey(t))
+	openRosterEscrow(t, srv, second, uidC, "tokC", 1, amount, testSessionKey(t))
+	require.NotEqual(t, elsewhere.GetEscrowId(), here.GetEscrowId(),
+		"a second table gets a second escrow, not the first one again")
+
+	// Fund the first table's escrow, then try to stake it at the second.
+	srv.TestBindEscrowFunding(elsewhere.GetEscrowId(), "aaaa", 0, amount)
+	_, err := srv.BindEscrow(context.Background(), &pokerrpc.BindEscrowRequest{
+		Outpoint:  "aaaa:0",
+		TableId:   "table-second",
+		Token:     "tokA",
+		CsvBlocks: 64,
+	})
+	require.ErrorContains(t, err, "opened for another roster")
+
+	// The same escrow binds fine at the table it was opened for.
+	_, err = srv.BindEscrow(context.Background(), &pokerrpc.BindEscrowRequest{
+		Outpoint:  "aaaa:0",
+		TableId:   "table-first",
+		Token:     "tokA",
+		CsvBlocks: 64,
+	})
+	require.NoError(t, err)
+}
+
+// Funding cannot begin before the roster closes, because until then no deposit
+// script exists to fund.
+func TestBindEscrowRejectsIncompleteRoster(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	table := seedRosterTable(t, srv, "table-open", 2, amount)
+
+	resp := openRosterEscrow(t, srv, table,
+		"0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount, testSessionKey(t))
+	require.False(t, resp.GetRosterReady())
+
+	_, err := srv.BindEscrow(context.Background(), &pokerrpc.BindEscrowRequest{
+		Outpoint:  "aaaa:0",
+		TableId:   "table-open",
+		Token:     "tokA",
+		CsvBlocks: 64,
+	})
+	require.ErrorContains(t, err, "roster is still incomplete")
+}
