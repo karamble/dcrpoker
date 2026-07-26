@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"testing"
 
 	"github.com/decred/dcrd/chaincfg/chainhash"
@@ -391,5 +392,145 @@ func TestVerifyEscrowRosterRejectsForeignCSV(t *testing.T) {
 	resp, ownPub := buildRosterResponse(t)
 	if err := VerifyEscrowRoster(resp, ownPub, testCSVBlocks+1); err == nil {
 		t.Fatalf("expected rejection when the script commits to another csv delay")
+	}
+}
+
+// buildTestAbortDraft builds a two-seat unwind draft refunding both seats,
+// shaped the way the server's buildAbortDraft shapes one.
+func buildTestAbortDraft(t *testing.T, ourPayout string, ourRefund int64, extraOuts int) *pokerrpc.NeedPreSigs {
+	t.Helper()
+
+	ownPub := testOwnPub(t)
+	otherPriv, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	otherPub := otherPriv.PubKey().SerializeCompressed()
+
+	tx := wire.NewMsgTx()
+	tx.Version = 3
+	var h chainhash.Hash
+	copy(h[:], bytes.Repeat([]byte{0x01}, chainhash.HashSize))
+	for i := range 2 {
+		tx.AddTxIn(wire.NewTxIn(wire.NewOutPoint(&h, uint32(i), wire.TxTreeRegular), testInputAtoms, nil))
+	}
+
+	ourScript, err := paymentScriptForAddress(ourPayout)
+	if err != nil {
+		t.Fatalf("our payout script: %v", err)
+	}
+	theirScript, err := paymentScriptForAddress(testOtherAddr)
+	if err != nil {
+		t.Fatalf("their payout script: %v", err)
+	}
+	tx.AddTxOut(wire.NewTxOut(ourRefund, ourScript))
+	tx.AddTxOut(wire.NewTxOut(testInputAtoms-int64(DefaultMaxSettlementFeeAtoms/2), theirScript))
+
+	filler, err := txscript.NewScriptBuilder().AddOp(txscript.OP_TRUE).Script()
+	if err != nil {
+		t.Fatalf("build script: %v", err)
+	}
+	for range extraOuts {
+		tx.AddTxOut(wire.NewTxOut(1, filler))
+	}
+
+	var buf bytes.Buffer
+	if err := tx.Serialize(&buf); err != nil {
+		t.Fatalf("serialize tx: %v", err)
+	}
+
+	need := &pokerrpc.NeedPreSigs{
+		MatchId:    "m1",
+		Kind:       pokerrpc.DraftKind_DRAFT_KIND_ABORT,
+		DraftTxHex: hex.EncodeToString(buf.Bytes()),
+	}
+	for i, owner := range [][]byte{ownPub, otherPub} {
+		sighash, err := txscript.CalcSignatureHash(filler, txscript.SigHashAll, tx, i, nil)
+		if err != nil {
+			t.Fatalf("calc sighash: %v", err)
+		}
+		need.Inputs = append(need.Inputs, &pokerrpc.NeedPreSigsInput{
+			InputId:         fmt.Sprintf("%s:%d", h.String(), i),
+			RedeemScriptHex: hex.EncodeToString(filler),
+			SighashHex:      hex.EncodeToString(sighash),
+			InputIndex:      uint32(i),
+			AmountAtoms:     testInputAtoms,
+			OwnerPubkey:     owner,
+		})
+	}
+	return need
+}
+
+func testAbortRefund() int64 {
+	return testInputAtoms - int64(DefaultMaxSettlementFeeAtoms/2)
+}
+
+func TestSignAbortDraftSignsEveryInput(t *testing.T) {
+	need := buildTestAbortDraft(t, testPayoutAddr, testAbortRefund(), 0)
+
+	sigs, err := SignAbortDraft(testPrivHex, need, testPolicy())
+	if err != nil {
+		t.Fatalf("sign abort draft: %v", err)
+	}
+	// Unlike a settlement draft, the signer's own input is signed plainly
+	// too: there is no branch for it to be misapplied to.
+	if len(sigs) != len(need.Inputs) {
+		t.Fatalf("signed %d of %d inputs", len(sigs), len(need.Inputs))
+	}
+	for _, s := range sigs {
+		if !bytes.Equal(s.SignerPubkey, testOwnPub(t)) {
+			t.Fatalf("signature is not attributed to us")
+		}
+		if len(s.SigHex) != 130 {
+			t.Fatalf("signature is %d hex chars, want 130", len(s.SigHex))
+		}
+	}
+}
+
+// Signing an abort is only safe because it returns our own stake. Each way a
+// referee could propose one that does not has to be refused.
+func TestSignAbortDraftRejectsDraftsThatDoNotPayUs(t *testing.T) {
+	cases := []struct {
+		name string
+		need *pokerrpc.NeedPreSigs
+		pol  PresignPolicy
+	}{{
+		name: "refund redirected to another address",
+		need: buildTestAbortDraft(t, testOtherAddr, testAbortRefund(), 0),
+		pol:  testPolicy(),
+	}, {
+		name: "refund shaved below our fee share",
+		need: buildTestAbortDraft(t, testPayoutAddr, testAbortRefund()-1, 0),
+		pol:  testPolicy(),
+	}, {
+		name: "an extra output to somewhere else",
+		need: buildTestAbortDraft(t, testPayoutAddr, testAbortRefund(), 1),
+		pol:  testPolicy(),
+	}, {
+		name: "no payout address to check against",
+		need: buildTestAbortDraft(t, testPayoutAddr, testAbortRefund(), 0),
+		pol:  PresignPolicy{},
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := SignAbortDraft(testPrivHex, tc.need, tc.pol); err == nil {
+				t.Fatalf("expected rejection: %s", tc.name)
+			}
+		})
+	}
+}
+
+// A draft with no stake of ours in it is not ours to unwind.
+func TestSignAbortDraftRejectsDraftWithoutOurStake(t *testing.T) {
+	need := buildTestAbortDraft(t, testPayoutAddr, testAbortRefund(), 0)
+	stranger, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	need.Inputs[0].OwnerPubkey = stranger.PubKey().SerializeCompressed()
+
+	if _, err := SignAbortDraft(testPrivHex, need, testPolicy()); err == nil {
+		t.Fatalf("expected refusal to sign an abort carrying no input of ours")
 	}
 }

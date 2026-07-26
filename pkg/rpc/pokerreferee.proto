@@ -29,6 +29,9 @@ service PokerReferee {
   rpc GetEscrowStatus(GetEscrowStatusRequest) returns (GetEscrowStatusResponse) {}
 
   rpc SetPayoutAddress(SetPayoutAddressRequest) returns (SetPayoutAddressResponse) {}
+
+  // Unwinds a funded table that never started, refunding every seat at once.
+  rpc AbortMatch(AbortMatchRequest) returns (AbortMatchResponse) {}
 }
 
 // ---------- Open escrow ----------
@@ -146,12 +149,26 @@ message SettlementHello {
   uint32 seat_index = 6;
 }
 
+// DraftKind tells a client what it is being asked to sign.
+//
+// A settlement draft is adaptor-locked: the owner of an input contributes a
+// pre-signature that only completes for the branch that won, which is what
+// keeps one branch from being broadcast in place of another. An abort draft
+// has no branches to choose between - it returns every seat its own stake - so
+// there is nothing to gate and every signature on it is an ordinary one,
+// including the one over the signer's own input.
+enum DraftKind {
+  DRAFT_KIND_SETTLEMENT = 0;
+  DRAFT_KIND_ABORT = 1;
+}
+
 // Server → Client: request presigs for a specific branch/winner seat.
 message NeedPreSigs {
   string match_id = 1;
-  int32 branch = 2; // winner seat index
+  int32 branch = 2; // winner seat index; unused for abort drafts
   string draft_tx_hex = 3;
   repeated NeedPreSigsInput inputs = 4;
+  DraftKind kind = 5;
 }
 
 message NeedPreSigsInput {
@@ -173,9 +190,10 @@ message NeedPreSigsInput {
 // cosigs covers every other input on the same draft.
 message ProvidePreSigs {
   string match_id = 1;
-  int32 branch = 2; // winner seat index
+  int32 branch = 2; // winner seat index; unused for abort drafts
   repeated PreSignature presigs = 3;
   repeated CoSignature cosigs = 4;
+  DraftKind kind = 5;
 }
 
 message PreSignature {
@@ -196,7 +214,8 @@ message CoSignature {
 // Server → Client: indicates presigs were verified and stored.
 message VerifyPreSigsOk {
   string match_id = 1;
-  int32 branch = 2;
+  int32 branch = 2; // unused for abort drafts
+  DraftKind kind = 3;
 }
 
 // Server → Client: terminal error for this stream.
@@ -231,6 +250,18 @@ message FinalizeInput {
   // the owner's slot is the one completed from the presig above.
   repeated CoSignature cosigs = 6;
   bytes owner_pubkey = 7;
+}
+
+// ---------- Abort ----------
+
+message AbortMatchRequest {
+  string match_id = 1;
+  string token = 2; // auth token from Login (may also come from metadata)
+}
+
+message AbortMatchResponse {
+  string txid = 1;
+  bool broadcast = 2;
 }
 
 message SetPayoutAddressRequest {

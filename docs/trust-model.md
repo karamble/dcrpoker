@@ -210,14 +210,41 @@ flow there is already inoperative under roster-first. It needs the escrow picker
 replaced by an open-fund-bind flow with roster polling, which is part of the
 move to React in dcrpulse.
 
+#### The abort transaction
+
 The cost falls on no-shows. A deposit is roster-specific, so if one player locks
 in and never funds, everyone who did fund waits out the CSV — roughly five hours
-at 64 blocks. To keep a fully funded table from paying that price, the table
-pre-signs an **abort transaction** refunding every player to their own payout
-address once all escrows are funded. That is an n-of-n spend like any settlement
-draft, so a locked table can unwind immediately instead of waiting for CSV. It
-does not help when a player never funds at all; only a bond posted at
-registration rather than at funding would.
+at 64 blocks, for a game that never happened.
+
+**Built 2026-07-27.** The table agrees an **abort transaction** during presign,
+alongside the settlement drafts: one transaction spending every funded escrow
+and paying each seat its own stake back to its own payout address, less an even
+share of one fee. It spends the same settlement branch, so it needs the same
+n-of-n agreement, and its inputs are ordered exactly as the settlement drafts
+order theirs. `AbortMatch` assembles and broadcasts it, and any seated player
+may call it. A locked table unwinds in one transaction instead of one CSV
+timeout per seat.
+
+It is **not** adaptor-locked, and does not need to be. A settlement draft has
+branches to choose between, so the owner's slot stays gated on gamma to stop one
+branch being broadcast in place of another. The abort has no branches — every
+seat is refunded whatever happens — so there is nothing a signature on it could
+be misapplied to, and each member signs their own input plainly as well.
+
+What makes signing it safe is that it returns your own stake, so clients check
+exactly that (`validateAbortDraft`): the draft must have one output per input,
+and must pay this player's payout address at least their stake less their share
+of the fee. A referee proposing an "abort" that paid someone else would
+otherwise be handing itself the table.
+
+Two limits worth stating plainly. It does not help when a player never funds at
+all — there is no deposit of theirs to spend, and only a bond posted at
+registration rather than at funding would. And it must not be broadcastable once
+the hand is under way, or whoever is losing would use it to take their stake
+back: the abort is refused after the game starts, and the signatures stay with
+the referee rather than being handed to players, so no player can assemble it.
+A serverless table has no such asymmetry to lean on and will need the abort
+gated some other way — that is open work for the p2p phase.
 
 ### Known gaps in the escrow layer
 

@@ -11,6 +11,7 @@ import (
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
 	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/wire"
@@ -246,6 +247,8 @@ func (c *RefereeClient) StartPresign(ctx context.Context, matchID, tableID strin
 	// believe presigning is complete.
 	branches := make(map[int32]bool) // branch -> acked
 	totalBranches := 0
+	abortSigned := false
+	abortAcked := false
 
 	for {
 		msg, err := stream.Recv()
@@ -253,6 +256,22 @@ func (c *RefereeClient) StartPresign(ctx context.Context, matchID, tableID strin
 			return err
 		}
 		if need := msg.GetNeedPreSigs(); need != nil {
+			if need.GetKind() == pokerrpc.DraftKind_DRAFT_KIND_ABORT {
+				sigs, err := SignAbortDraft(xPrivHex, need, c.policy)
+				if err != nil {
+					return err
+				}
+				resp := &pokerrpc.ProvidePreSigs{
+					MatchId: need.MatchId,
+					Kind:    pokerrpc.DraftKind_DRAFT_KIND_ABORT,
+					Cosigs:  sigs,
+				}
+				if err := stream.Send(&pokerrpc.SettlementStreamMessage{Msg: &pokerrpc.SettlementStreamMessage_ProvidePreSigs{ProvidePreSigs: resp}}); err != nil {
+					return err
+				}
+				abortSigned = true
+				continue
+			}
 			n, err := draftBranchCount(need)
 			if err != nil {
 				return err
@@ -288,12 +307,20 @@ func (c *RefereeClient) StartPresign(ctx context.Context, matchID, tableID strin
 			return fmt.Errorf("referee error: %s", errMsg.Error)
 		}
 		if ok := msg.GetVerifyOk(); ok != nil {
-			// Mark this branch as acknowledged.
-			branches[ok.Branch] = true
+			if ok.GetKind() == pokerrpc.DraftKind_DRAFT_KIND_ABORT {
+				abortAcked = true
+			} else {
+				branches[ok.Branch] = true
+			}
 
 			// Presigning is complete only once every branch of the draft has
-			// been seen and acknowledged, not merely those the server sent.
-			allAcked := totalBranches > 0 && len(branches) == totalBranches
+			// been seen and acknowledged, not merely those the server sent,
+			// and once the unwind draft is agreed too - a table that skipped
+			// it can only be recovered one CSV timeout at a time.
+			//
+			// Either kind of ack can be the last to arrive, so this is checked
+			// on both.
+			allAcked := totalBranches > 0 && len(branches) == totalBranches && abortSigned && abortAcked
 			for i := 0; allAcked && i < totalBranches; i++ {
 				if !branches[int32(i)] {
 					allAcked = false
@@ -718,4 +745,110 @@ func BuildVerifyOk(xPrivHex string, need *pokerrpc.NeedPreSigs, pol PresignPolic
 		return nil, fmt.Errorf("server presign validation failed: %w", err)
 	}
 	return buildPresigs(xPrivHex, need, ownPub)
+}
+
+// SignAbortDraft validates the unwind draft and signs every one of its inputs.
+//
+// The abort is what saves a funded table that never starts from waiting out the
+// CSV timeout, and signing it is safe precisely because it returns every seat
+// its own stake: there is no branch to choose and nothing it can be misapplied
+// to. That property is only worth anything if the draft really does pay this
+// player back, which is what is checked here - a referee that proposed an
+// "abort" paying somebody else would otherwise be handing itself the pot.
+//
+// The signer's own input is signed plainly too, unlike a settlement draft where
+// that slot must stay adaptor-locked.
+func SignAbortDraft(xPrivHex string, need *pokerrpc.NeedPreSigs, pol PresignPolicy) ([]*pokerrpc.CoSignature, error) {
+	ownPub, err := pubFromPrivHex(xPrivHex)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateAbortDraft(need, pol, ownPub); err != nil {
+		return nil, err
+	}
+
+	xb, err := hex.DecodeString(strings.TrimSpace(xPrivHex))
+	if err != nil || len(xb) == 0 {
+		return nil, fmt.Errorf("bad x priv")
+	}
+	priv := secp256k1.PrivKeyFromBytes(xb)
+
+	out := make([]*pokerrpc.CoSignature, 0, len(need.Inputs))
+	for _, in := range need.Inputs {
+		sighash, err := hex.DecodeString(in.SighashHex)
+		if err != nil || len(sighash) != 32 {
+			return nil, fmt.Errorf("input %s: bad sighash", in.InputId)
+		}
+		sig, err := schnorr.Sign(priv, sighash)
+		if err != nil {
+			return nil, fmt.Errorf("input %s: sign: %w", in.InputId, err)
+		}
+		out = append(out, &pokerrpc.CoSignature{
+			InputId:      in.InputId,
+			SignerPubkey: ownPub,
+			SigHex:       hex.EncodeToString(append(sig.Serialize(), byte(txscript.SigHashAll))),
+		})
+	}
+	return out, nil
+}
+
+// validateAbortDraft checks that an unwind draft returns this player's own
+// stake to this player's own payout address.
+func validateAbortDraft(need *pokerrpc.NeedPreSigs, pol PresignPolicy, ownPub []byte) error {
+	if len(need.Inputs) == 0 {
+		return fmt.Errorf("abort draft has no inputs")
+	}
+	if strings.TrimSpace(pol.PayoutAddress) == "" {
+		return fmt.Errorf("refusing to sign an abort draft with no payout address to check it against")
+	}
+
+	raw, err := hex.DecodeString(need.DraftTxHex)
+	if err != nil {
+		return fmt.Errorf("decode abort draft: %w", err)
+	}
+	tx := wire.NewMsgTx()
+	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+		return fmt.Errorf("deserialize abort draft: %w", err)
+	}
+	if len(tx.TxIn) != len(need.Inputs) {
+		return fmt.Errorf("abort draft has %d inputs but %d were described", len(tx.TxIn), len(need.Inputs))
+	}
+	// One refund per stake: an extra output is somewhere else for the money
+	// to go, and a missing one is a seat that does not get paid.
+	if len(tx.TxOut) != len(need.Inputs) {
+		return fmt.Errorf("abort draft has %d outputs for %d inputs", len(tx.TxOut), len(need.Inputs))
+	}
+
+	var ours *pokerrpc.NeedPreSigsInput
+	for _, in := range need.Inputs {
+		if bytes.Equal(in.OwnerPubkey, ownPub) {
+			ours = in
+			break
+		}
+	}
+	if ours == nil {
+		return fmt.Errorf("abort draft carries no input of ours to be refunded")
+	}
+
+	// The fee falls on the seats evenly, with the remainder on one of them, so
+	// the most any single seat can be charged is its share plus that
+	// remainder. Bounding our refund by the whole fee instead would let a
+	// referee quietly charge us everyone else's share.
+	seats := uint64(len(need.Inputs))
+	ourFee := pol.maxFee()/seats + pol.maxFee()%seats
+	if ours.AmountAtoms <= ourFee {
+		return fmt.Errorf("our stake %d does not cover its share of the fee (%d)", ours.AmountAtoms, ourFee)
+	}
+	least := int64(ours.AmountAtoms - ourFee)
+
+	payScript, err := paymentScriptForAddress(pol.PayoutAddress)
+	if err != nil {
+		return fmt.Errorf("decode our payout address: %w", err)
+	}
+	for _, out := range tx.TxOut {
+		if bytes.Equal(out.PkScript, payScript) && out.Value >= least {
+			return nil
+		}
+	}
+	return fmt.Errorf("abort draft does not refund our stake of %d atoms to our payout address", ours.AmountAtoms)
 }

@@ -262,6 +262,8 @@ type schnorrRefereeState struct {
 	settlementEscrows  map[string]map[uint32]string                       // matchKey -> frozen seat -> escrowID captured when presigning starts
 	presigns           map[string]map[int32]map[string]*refereePreSignCtx // matchKey -> branch -> inputID -> ctx
 	cosigs             map[string]map[int32]map[string]map[string]string  // matchKey -> branch -> inputID -> signer pubkey hex -> sig hex
+	abortDrafts        map[string]*branchDraft                            // matchKey -> the unwind draft, once escrows are funded
+	abortSigs          map[string]map[string]map[string]string            // matchKey -> inputID -> signer pubkey hex -> sig hex
 	branchGamma        map[string]map[int32]string                        // matchKey -> branch -> gammaHex
 	presignComplete    map[string]map[uint32]bool                         // matchKey -> seat -> completed
 	pendingSettlements map[string]bool                                    // matchKey -> settlement still pending
@@ -278,10 +280,31 @@ func newSchnorrRefereeState(cfg ServerConfig) *schnorrRefereeState {
 		settlementEscrows:  make(map[string]map[uint32]string),
 		presigns:           make(map[string]map[int32]map[string]*refereePreSignCtx),
 		cosigs:             make(map[string]map[int32]map[string]map[string]string),
+		abortDrafts:        make(map[string]*branchDraft),
+		abortSigs:          make(map[string]map[string]map[string]string),
 		branchGamma:        make(map[string]map[int32]string),
 		presignComplete:    make(map[string]map[uint32]bool),
 		pendingSettlements: make(map[string]bool),
 	}
+}
+
+// sortEscrowSnapshots puts escrows in the deterministic order their UTXOs take
+// as transaction inputs (pkScript, then txid:vout). Every draft over the same
+// match orders inputs this way, so an input index means the same thing in all
+// of them - which is also why a branch index is a sorted-UTXO position rather
+// than a seat.
+func sortEscrowSnapshots(snaps []escrowSnapshot) {
+	sort.Slice(snaps, func(i, j int) bool {
+		a := snaps[i].PkScriptHex
+		b := snaps[j].PkScriptHex
+		if a == b {
+			if snaps[i].BoundUTXO.Txid == snaps[j].BoundUTXO.Txid {
+				return snaps[i].BoundUTXO.Vout < snaps[j].BoundUTXO.Vout
+			}
+			return snaps[i].BoundUTXO.Txid < snaps[j].BoundUTXO.Txid
+		}
+		return a < b
+	})
 }
 
 // buildWTADrafts builds one draft per possible winner (seat) for N escrows (2-6).
@@ -300,18 +323,7 @@ func (s *Server) buildWTADrafts(matchID string, escrows []*refereeEscrowSession)
 		snaps = append(snaps, snap)
 	}
 
-	// Sort inputs deterministically (pkScript+txid:vout) to have stable indexes.
-	sort.Slice(snaps, func(i, j int) bool {
-		a := snaps[i].PkScriptHex
-		b := snaps[j].PkScriptHex
-		if a == b {
-			if snaps[i].BoundUTXO.Txid == snaps[j].BoundUTXO.Txid {
-				return snaps[i].BoundUTXO.Vout < snaps[j].BoundUTXO.Vout
-			}
-			return snaps[i].BoundUTXO.Txid < snaps[j].BoundUTXO.Txid
-		}
-		return a < b
-	})
+	sortEscrowSnapshots(snaps)
 
 	// Build per-branch drafts.
 	var drafts []branchDraft
@@ -384,6 +396,104 @@ func (s *Server) buildWTADrafts(matchID string, escrows []*refereeEscrowSession)
 	}
 
 	return drafts, nil
+}
+
+// buildAbortDraft builds the transaction that unwinds a funded table, paying
+// every seat its own stake back to its own payout address.
+//
+// It exists because n-of-n forces funding to be roster-first: a deposit script
+// names the whole table, so nobody can fund until every seat has opened, and a
+// table that then fails to start leaves everyone's stake locked behind the CSV
+// timeout - hours, for a game that never happened. The abort is a cooperative
+// unwind of exactly that, spending the same settlement branch the drafts do and
+// so requiring the same n-of-n agreement.
+//
+// It is not adaptor-locked. There are no branches to choose between: every seat
+// is refunded whatever happens, so there is nothing a signature here could be
+// misapplied to, and each member signs their own input plainly as well.
+//
+// Inputs are ordered exactly as buildWTADrafts orders them, so an input index
+// means the same thing in both.
+func (s *Server) buildAbortDraft(escrows []*refereeEscrowSession) (*branchDraft, error) {
+	n := len(escrows)
+	if n < 2 || n > 6 {
+		return nil, fmt.Errorf("expected 2-6 escrows, got %d", n)
+	}
+
+	var snaps []escrowSnapshot
+	for _, es := range escrows {
+		snap := es.snapshot()
+		if snap.BoundUTXO == nil {
+			return nil, fmt.Errorf("escrow %s missing bound utxo", snap.EscrowID)
+		}
+		snaps = append(snaps, snap)
+	}
+	sortEscrowSnapshots(snaps)
+
+	// The fee falls on the seats evenly, with the remainder on the first, so
+	// nobody underwrites anybody else's exit.
+	share := s.referee.feeAtoms / uint64(n)
+	remainder := s.referee.feeAtoms % uint64(n)
+
+	tx := wire.NewMsgTx()
+	// Schnorr via OP_CHECKSIGALTVERIFY requires tx version >= 3 (consensus).
+	tx.Version = 3
+	for _, es := range snaps {
+		utxo := es.BoundUTXO
+		hash, err := chainhashFromStr(utxo.Txid)
+		if err != nil {
+			return nil, err
+		}
+		out := wire.NewOutPoint(hash, utxo.Vout, wire.TxTreeRegular)
+		tx.AddTxIn(wire.NewTxIn(out, int64(dcrutil.Amount(utxo.Value)), nil))
+	}
+	for i, es := range snaps {
+		fee := share
+		if i == 0 {
+			fee += remainder
+		}
+		if es.BoundUTXO.Value <= fee {
+			return nil, fmt.Errorf("escrow %s stake %d does not cover its fee share %d",
+				es.EscrowID, es.BoundUTXO.Value, fee)
+		}
+		addr, err := stdaddr.DecodeAddress(es.PayoutAddr, s.chainParams)
+		if err != nil {
+			return nil, fmt.Errorf("decode payout addr for seat %d: %v", es.SeatIndex, err)
+		}
+		_, payScript := addr.PaymentScript()
+		tx.AddTxOut(wire.NewTxOut(int64(es.BoundUTXO.Value-fee), payScript))
+	}
+
+	var inputs []presignInput
+	for idx, es := range snaps {
+		redeem, err := hex.DecodeString(es.RedeemScriptHex)
+		if err != nil {
+			return nil, fmt.Errorf("redeem decode: %v", err)
+		}
+		sighash, err := txscript.CalcSignatureHash(redeem, txscript.SigHashAll, tx, idx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("sighash: %v", err)
+		}
+		inputs = append(inputs, presignInput{
+			InputID:         fmt.Sprintf("%s:%d", es.BoundUTXO.Txid, es.BoundUTXO.Vout),
+			OwnerUID:        es.OwnerUID,
+			OwnerPubkey:     es.CompPubkey,
+			SeatIndex:       es.SeatIndex,
+			AmountAtoms:     es.BoundUTXO.Value,
+			RedeemScriptHex: es.RedeemScriptHex,
+			SighashHex:      hex.EncodeToString(sighash),
+			InputIndex:      uint32(idx),
+		})
+	}
+
+	var buf bytes.Buffer
+	if err := tx.Serialize(&buf); err != nil {
+		return nil, fmt.Errorf("serialize tx: %v", err)
+	}
+	return &branchDraft{
+		DraftHex: hex.EncodeToString(buf.Bytes()),
+		Inputs:   inputs,
+	}, nil
 }
 
 func chainhashFromStr(s string) (*chainhash.Hash, error) {
@@ -1210,6 +1320,37 @@ func (s *Server) SettlementStream(stream pokerrpc.PokerReferee_SettlementStreamS
 		}
 	}
 
+	// Ask for the unwind draft too, while everyone is here to sign it. It has
+	// to be agreed before the table starts, because that is exactly when it
+	// might be needed: a funded table that never gets going otherwise leaves
+	// every stake behind the CSV timeout.
+	abortDraft, err := s.buildAbortDraft(allEscrows)
+	if err != nil {
+		return status.Errorf(codes.Internal, "build abort draft: %v", err)
+	}
+	s.referee.mu.Lock()
+	s.referee.abortDrafts[matchID] = abortDraft
+	s.referee.mu.Unlock()
+
+	abortNeed := &pokerrpc.NeedPreSigs{
+		MatchId:    matchID,
+		Kind:       pokerrpc.DraftKind_DRAFT_KIND_ABORT,
+		DraftTxHex: abortDraft.DraftHex,
+	}
+	for _, in := range abortDraft.Inputs {
+		abortNeed.Inputs = append(abortNeed.Inputs, &pokerrpc.NeedPreSigsInput{
+			InputId:         in.InputID,
+			RedeemScriptHex: in.RedeemScriptHex,
+			SighashHex:      in.SighashHex,
+			InputIndex:      in.InputIndex,
+			AmountAtoms:     in.AmountAtoms,
+			OwnerPubkey:     in.OwnerPubkey,
+		})
+	}
+	if err := stream.Send(&pokerrpc.SettlementStreamMessage{Msg: &pokerrpc.SettlementStreamMessage_NeedPreSigs{NeedPreSigs: abortNeed}}); err != nil {
+		return err
+	}
+
 	// Receive presigs, verify, and store.
 	for {
 		msg, err := stream.Recv()
@@ -1246,16 +1387,29 @@ func (s *Server) SettlementStream(stream pokerrpc.PokerReferee_SettlementStreamS
 		if ps == nil {
 			continue
 		}
-		draft, ok := draftMap[ps.Branch]
-		if !ok {
-			return status.Errorf(codes.InvalidArgument, "unknown branch %d", ps.Branch)
-		}
 		// Use the escrow's session pubkey (X = xG) when verifying presigs.
 		es.mu.RLock()
 		compPubkey := append([]byte(nil), es.CompPubkey...)
 		es.mu.RUnlock()
 		if len(compPubkey) != 33 {
 			return status.Errorf(codes.FailedPrecondition, "escrow %s missing session pubkey", es.EscrowID)
+		}
+
+		if ps.Kind == pokerrpc.DraftKind_DRAFT_KIND_ABORT {
+			if err := s.storeAbortSigs(matchID, uid, compPubkey, abortDraft, ps); err != nil {
+				return status.Errorf(codes.InvalidArgument, "abort signatures: %v", err)
+			}
+			if err := stream.Send(&pokerrpc.SettlementStreamMessage{Msg: &pokerrpc.SettlementStreamMessage_VerifyOk{
+				VerifyOk: &pokerrpc.VerifyPreSigsOk{MatchId: matchID, Kind: pokerrpc.DraftKind_DRAFT_KIND_ABORT},
+			}}); err != nil {
+				return err
+			}
+			continue
+		}
+
+		draft, ok := draftMap[ps.Branch]
+		if !ok {
+			return status.Errorf(codes.InvalidArgument, "unknown branch %d", ps.Branch)
 		}
 		if err := s.storePresigs(matchID, ps.Branch, uid, compPubkey, draft, ps.Presigs, ps.Cosigs); err != nil {
 			return status.Errorf(codes.InvalidArgument, "presig verify: %v", err)
@@ -2814,4 +2968,195 @@ func verifySchnorrSig(sigHex, sighashHex string, pub *secp256k1.PublicKey) error
 		return fmt.Errorf("signature does not verify")
 	}
 	return nil
+}
+
+// storeAbortSigs verifies and records a player's signatures over the unwind
+// draft. Unlike a settlement draft this takes an ordinary signature over every
+// input including the signer's own: the abort has no branch to gate, so there
+// is nothing an adaptor could lock it to and nothing it could be misapplied to.
+func (s *Server) storeAbortSigs(matchID string, uid zkidentity.ShortID, compPubkey []byte, draft *branchDraft, ps *pokerrpc.ProvidePreSigs) error {
+	if draft == nil {
+		return fmt.Errorf("no abort draft for match %s", matchID)
+	}
+	if len(ps.Presigs) > 0 {
+		return fmt.Errorf("abort draft takes plain signatures, not adaptor presigs")
+	}
+
+	inputs := make(map[string]presignInput, len(draft.Inputs))
+	for _, in := range draft.Inputs {
+		inputs[in.InputID] = in
+	}
+	signerHex := hex.EncodeToString(compPubkey)
+	signerPub, err := secp256k1.ParsePubKey(compPubkey)
+	if err != nil {
+		return fmt.Errorf("bad session pubkey: %w", err)
+	}
+
+	// Every input, or none: a partially signed unwind is not one that can be
+	// broadcast, and accepting it would let the referee report the table as
+	// unwindable when it is not.
+	if len(ps.Cosigs) != len(inputs) {
+		return fmt.Errorf("got %d signatures, the abort draft has %d inputs", len(ps.Cosigs), len(inputs))
+	}
+
+	seen := make(map[string]bool, len(ps.Cosigs))
+	for _, cs := range ps.Cosigs {
+		in, ok := inputs[cs.InputId]
+		if !ok {
+			return fmt.Errorf("signature for unknown input %s", cs.InputId)
+		}
+		if len(cs.SignerPubkey) != 0 && !bytes.Equal(cs.SignerPubkey, compPubkey) {
+			return fmt.Errorf("signature for %s claims another signer", cs.InputId)
+		}
+		if seen[cs.InputId] {
+			return fmt.Errorf("duplicate signature for input %s", cs.InputId)
+		}
+		seen[cs.InputId] = true
+		if err := verifySchnorrSig(cs.SigHex, in.SighashHex, signerPub); err != nil {
+			return fmt.Errorf("signature for %s: %w", cs.InputId, err)
+		}
+	}
+
+	s.referee.mu.Lock()
+	defer s.referee.mu.Unlock()
+	if s.referee.abortSigs[matchID] == nil {
+		s.referee.abortSigs[matchID] = make(map[string]map[string]string)
+	}
+	for _, cs := range ps.Cosigs {
+		if s.referee.abortSigs[matchID][cs.InputId] == nil {
+			s.referee.abortSigs[matchID][cs.InputId] = make(map[string]string)
+		}
+		s.referee.abortSigs[matchID][cs.InputId][signerHex] = cs.SigHex
+	}
+	s.log.Debugf("Stored abort signatures for match %s from seat owner %s", matchID, uid)
+	return nil
+}
+
+// AbortMatch unwinds a funded table that never started, returning every seat
+// its own stake in one transaction instead of leaving each to wait out its CSV
+// timeout. Any seated player may call it.
+//
+// It is refused once the game is under way. By then the settlement drafts are
+// what decide the pot, and an unwind would be a way for whoever is losing to
+// take their stake back - which is also why the signatures live here and are
+// never handed to players: only the referee can assemble this transaction.
+// A serverless table has no such asymmetry to lean on and will need the abort
+// gated some other way.
+func (s *Server) AbortMatch(ctx context.Context, req *pokerrpc.AbortMatchRequest) (*pokerrpc.AbortMatchResponse, error) {
+	if req == nil || strings.TrimSpace(req.GetMatchId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "match_id required")
+	}
+	matchID := strings.TrimSpace(req.GetMatchId())
+
+	token := strings.TrimSpace(req.GetToken())
+	if token == "" {
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			if vals := md.Get("token"); len(vals) > 0 {
+				token = strings.TrimSpace(vals[0])
+			}
+		}
+	}
+	uid, _, ok := s.payoutForToken(token)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "invalid or expired session")
+	}
+
+	// For WTA poker the match id is the table id.
+	table, ok := s.getTable(matchID)
+	if !ok || table == nil {
+		return nil, status.Error(codes.NotFound, "table not found")
+	}
+	if table.GetUser(uid.String()) == nil {
+		return nil, status.Error(codes.PermissionDenied, "you are not seated at this table")
+	}
+	if table.IsGameStarted() {
+		return nil, status.Error(codes.FailedPrecondition,
+			"game already started; settlement decides the pot from here")
+	}
+
+	if s.dcrd == nil {
+		return nil, status.Error(codes.FailedPrecondition, "dcrd client not connected; cannot broadcast")
+	}
+
+	tx, err := s.buildAbortTx(matchID)
+	if err != nil {
+		return nil, err
+	}
+	txHash, err := s.dcrd.SendRawTransaction(ctx, tx, true)
+	if err != nil {
+		return nil, status.Errorf(codes.Unknown, "broadcast abort: %v", err)
+	}
+
+	txid := txHash.String()
+	s.log.Infof("Abort broadcast for match %s by %s: txid=%s", matchID, uid, txid)
+	s.cleanupMatchState(matchID)
+
+	return &pokerrpc.AbortMatchResponse{Txid: txid, Broadcast: true}, nil
+}
+
+// buildAbortTx assembles the fully signed unwind transaction for a match.
+func (s *Server) buildAbortTx(matchID string) (*wire.MsgTx, error) {
+	s.referee.mu.RLock()
+	draft := s.referee.abortDrafts[matchID]
+	stored := make(map[string]map[string]string, len(s.referee.abortSigs[matchID]))
+	for inputID, bySigner := range s.referee.abortSigs[matchID] {
+		dup := make(map[string]string, len(bySigner))
+		for signer, sig := range bySigner {
+			dup[signer] = sig
+		}
+		stored[inputID] = dup
+	}
+	s.referee.mu.RUnlock()
+
+	if draft == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "no abort draft for match %s", matchID)
+	}
+	draftBytes, err := hex.DecodeString(draft.DraftHex)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "decode abort draft: %v", err)
+	}
+	tx, err := decodeMsgTx(draftBytes)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "deserialize abort draft: %v", err)
+	}
+
+	for _, in := range draft.Inputs {
+		if int(in.InputIndex) >= len(tx.TxIn) {
+			return nil, status.Errorf(codes.Internal, "input index %d out of range", in.InputIndex)
+		}
+		redeem, err := hex.DecodeString(in.RedeemScriptHex)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "decode redeem script for %s: %v", in.InputID, err)
+		}
+		members, err := escrow.Members(redeem)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "read roster from redeem script: %v", err)
+		}
+
+		sigs := make([][]byte, len(members))
+		for i, m := range members {
+			sigHex := stored[in.InputID][hex.EncodeToString(m)]
+			if sigHex == "" {
+				return nil, status.Errorf(codes.FailedPrecondition,
+					"input %s is missing the signature of member %x; the table has not all agreed to unwind",
+					in.InputID, m)
+			}
+			raw, err := hex.DecodeString(sigHex)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "decode signature from %x: %v", m, err)
+			}
+			if len(raw) != escrow.SigLen {
+				return nil, status.Errorf(codes.Internal,
+					"signature from %x is %d bytes, want %d", m, len(raw), escrow.SigLen)
+			}
+			sigs[i] = raw
+		}
+
+		sigScript, err := escrow.SettlementSigScript(redeem, sigs)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "build sig script for %s: %v", in.InputID, err)
+		}
+		tx.TxIn[in.InputIndex].SignatureScript = sigScript
+	}
+	return tx, nil
 }

@@ -26,6 +26,7 @@ const (
 	PokerReferee_GetFinalizeBundle_FullMethodName = "/poker.PokerReferee/GetFinalizeBundle"
 	PokerReferee_GetEscrowStatus_FullMethodName   = "/poker.PokerReferee/GetEscrowStatus"
 	PokerReferee_SetPayoutAddress_FullMethodName  = "/poker.PokerReferee/SetPayoutAddress"
+	PokerReferee_AbortMatch_FullMethodName        = "/poker.PokerReferee/AbortMatch"
 )
 
 // PokerRefereeClient is the client API for PokerReferee service.
@@ -48,6 +49,8 @@ type PokerRefereeClient interface {
 	// Returns funding/conf status for an escrow owned by the caller.
 	GetEscrowStatus(ctx context.Context, in *GetEscrowStatusRequest, opts ...grpc.CallOption) (*GetEscrowStatusResponse, error)
 	SetPayoutAddress(ctx context.Context, in *SetPayoutAddressRequest, opts ...grpc.CallOption) (*SetPayoutAddressResponse, error)
+	// Unwinds a funded table that never started, refunding every seat at once.
+	AbortMatch(ctx context.Context, in *AbortMatchRequest, opts ...grpc.CallOption) (*AbortMatchResponse, error)
 }
 
 type pokerRefereeClient struct {
@@ -131,6 +134,16 @@ func (c *pokerRefereeClient) SetPayoutAddress(ctx context.Context, in *SetPayout
 	return out, nil
 }
 
+func (c *pokerRefereeClient) AbortMatch(ctx context.Context, in *AbortMatchRequest, opts ...grpc.CallOption) (*AbortMatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AbortMatchResponse)
+	err := c.cc.Invoke(ctx, PokerReferee_AbortMatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PokerRefereeServer is the server API for PokerReferee service.
 // All implementations must embed UnimplementedPokerRefereeServer
 // for forward compatibility.
@@ -151,6 +164,8 @@ type PokerRefereeServer interface {
 	// Returns funding/conf status for an escrow owned by the caller.
 	GetEscrowStatus(context.Context, *GetEscrowStatusRequest) (*GetEscrowStatusResponse, error)
 	SetPayoutAddress(context.Context, *SetPayoutAddressRequest) (*SetPayoutAddressResponse, error)
+	// Unwinds a funded table that never started, refunding every seat at once.
+	AbortMatch(context.Context, *AbortMatchRequest) (*AbortMatchResponse, error)
 	mustEmbedUnimplementedPokerRefereeServer()
 }
 
@@ -181,6 +196,9 @@ func (UnimplementedPokerRefereeServer) GetEscrowStatus(context.Context, *GetEscr
 }
 func (UnimplementedPokerRefereeServer) SetPayoutAddress(context.Context, *SetPayoutAddressRequest) (*SetPayoutAddressResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetPayoutAddress not implemented")
+}
+func (UnimplementedPokerRefereeServer) AbortMatch(context.Context, *AbortMatchRequest) (*AbortMatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AbortMatch not implemented")
 }
 func (UnimplementedPokerRefereeServer) mustEmbedUnimplementedPokerRefereeServer() {}
 func (UnimplementedPokerRefereeServer) testEmbeddedByValue()                      {}
@@ -318,6 +336,24 @@ func _PokerReferee_SetPayoutAddress_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PokerReferee_AbortMatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AbortMatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PokerRefereeServer).AbortMatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PokerReferee_AbortMatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PokerRefereeServer).AbortMatch(ctx, req.(*AbortMatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PokerReferee_ServiceDesc is the grpc.ServiceDesc for PokerReferee service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -348,6 +384,10 @@ var PokerReferee_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetPayoutAddress",
 			Handler:    _PokerReferee_SetPayoutAddress_Handler,
+		},
+		{
+			MethodName: "AbortMatch",
+			Handler:    _PokerReferee_AbortMatch_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

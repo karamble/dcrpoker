@@ -1158,3 +1158,163 @@ func TestBindEscrowRejectsIncompleteRoster(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "roster is still incomplete")
 }
+
+// buildAbortEscrows makes a funded roster of escrows with real keys, returning
+// the private keys so a test can sign for the whole table.
+func buildAbortEscrows(t *testing.T, srv *Server, n int, amount uint64) ([]*refereeEscrowSession, []*secp256k1.PrivateKey) {
+	t.Helper()
+	payouts := []string{
+		"TsRnk22spGQJTpKFcRBc281rmfNFpywh337",
+		"TsgsQwSZTkbXPGdFBg5z3wthjkQs1EeKcJ5",
+		"TsnjFNHhZ17TKTLtSdXh9Z91TRHNsEp6N1d",
+	}
+	require.LessOrEqual(t, n, len(payouts))
+
+	privs := make([]*secp256k1.PrivateKey, n)
+	escrows := make([]*refereeEscrowSession, n)
+	for i := range escrows {
+		priv, err := secp256k1.GeneratePrivateKey()
+		require.NoError(t, err)
+		privs[i] = priv
+
+		var uid zkidentity.ShortID
+		require.NoError(t, uid.FromString(fmt.Sprintf("%064x", i+1)))
+		bound := &chainwatcher.EscrowUTXO{Txid: fmt.Sprintf("%064x", 0xaa+i), Vout: 0, Value: amount}
+		escrows[i] = &refereeEscrowSession{
+			EscrowID:     fmt.Sprintf("esc%d", i),
+			OwnerUID:     uid,
+			SeatIndex:    uint32(i),
+			PayoutAddr:   payouts[i],
+			AmountAtoms:  amount,
+			CompPubkey:   priv.PubKey().SerializeCompressed(),
+			BoundUTXO:    bound,
+			fundingState: escrowStateReady,
+			HadFunding:   true,
+			LatestFunding: chainwatcher.DepositUpdate{
+				Confs: escrowRequiredConfirmations, UTXOCount: 1, OK: true,
+				UTXOs: []*chainwatcher.EscrowUTXO{bound},
+			},
+		}
+	}
+	applyRosterToEscrows(t, srv, escrows...)
+	return escrows, privs
+}
+
+// The abort is only worth agreeing to if it can actually be broadcast, so run
+// the assembled transaction through the consensus engine input by input.
+func TestAbortTxSpendsEveryEscrow(t *testing.T) {
+	const matchID = "abort-match"
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+
+	escrows, privs := buildAbortEscrows(t, srv, 3, amount)
+	draft, err := srv.buildAbortDraft(escrows)
+	require.NoError(t, err)
+	require.Len(t, draft.Inputs, 3)
+
+	// Every member signs every input, which is what the settlement branch
+	// takes - the abort has no adaptor-locked slot.
+	srv.referee.mu.Lock()
+	srv.referee.abortDrafts[matchID] = draft
+	srv.referee.abortSigs[matchID] = make(map[string]map[string]string)
+	for _, in := range draft.Inputs {
+		sighash := bytesFromHex(t, in.SighashHex)
+		sigs := make(map[string]string, len(privs))
+		for _, priv := range privs {
+			sig, err := schnorr.Sign(priv, sighash)
+			require.NoError(t, err)
+			sigs[hex.EncodeToString(priv.PubKey().SerializeCompressed())] =
+				hex.EncodeToString(append(sig.Serialize(), byte(txscript.SigHashAll)))
+		}
+		srv.referee.abortSigs[matchID][in.InputID] = sigs
+	}
+	srv.referee.mu.Unlock()
+
+	tx, err := srv.buildAbortTx(matchID)
+	require.NoError(t, err)
+	require.Len(t, tx.TxIn, 3)
+	require.Len(t, tx.TxOut, 3, "one refund per stake")
+
+	for _, in := range draft.Inputs {
+		redeem := bytesFromHex(t, in.RedeemScriptHex)
+		_, pkScript, err := escrow.Address(redeem, srvChainParams())
+		require.NoError(t, err)
+		vm, err := txscript.NewEngine(pkScript, tx, int(in.InputIndex),
+			txscript.ScriptVerifyCheckSequenceVerify, 0, nil)
+		require.NoError(t, err)
+		require.NoError(t, vm.Execute(), "input %d of the abort must spend", in.InputIndex)
+	}
+
+	// Every seat is paid its own stake back, less its share of one fee.
+	var total int64
+	for _, out := range tx.TxOut {
+		total += out.Value
+	}
+	require.EqualValues(t, int64(amount)*3-int64(srv.referee.feeAtoms), total)
+}
+
+// A table that has not all agreed to unwind cannot be unwound: a partial set of
+// signatures produces no transaction rather than a broken one.
+func TestAbortTxRequiresEveryMember(t *testing.T) {
+	const matchID = "abort-partial"
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+
+	escrows, privs := buildAbortEscrows(t, srv, 3, amount)
+	draft, err := srv.buildAbortDraft(escrows)
+	require.NoError(t, err)
+
+	// Everyone signs except the last member.
+	srv.referee.mu.Lock()
+	srv.referee.abortDrafts[matchID] = draft
+	srv.referee.abortSigs[matchID] = make(map[string]map[string]string)
+	for _, in := range draft.Inputs {
+		sighash := bytesFromHex(t, in.SighashHex)
+		sigs := make(map[string]string)
+		for _, priv := range privs[:len(privs)-1] {
+			sig, err := schnorr.Sign(priv, sighash)
+			require.NoError(t, err)
+			sigs[hex.EncodeToString(priv.PubKey().SerializeCompressed())] =
+				hex.EncodeToString(append(sig.Serialize(), byte(txscript.SigHashAll)))
+		}
+		srv.referee.abortSigs[matchID][in.InputID] = sigs
+	}
+	srv.referee.mu.Unlock()
+
+	_, err = srv.buildAbortTx(matchID)
+	require.ErrorContains(t, err, "has not all agreed to unwind")
+
+	_, err = srv.buildAbortTx("no-such-match")
+	require.ErrorContains(t, err, "no abort draft")
+}
+
+// The abort draft has to refund each seat to its own address, or signing it
+// would be handing someone else the table's money.
+func TestAbortDraftRefundsEverySeat(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+
+	escrows, _ := buildAbortEscrows(t, srv, 3, amount)
+	draft, err := srv.buildAbortDraft(escrows)
+	require.NoError(t, err)
+
+	tx, err := decodeMsgTx(bytesFromHex(t, draft.DraftHex))
+	require.NoError(t, err)
+
+	for _, es := range escrows {
+		addr, err := stdaddr.DecodeAddress(es.PayoutAddr, srv.chainParams)
+		require.NoError(t, err)
+		_, want := addr.PaymentScript()
+
+		paid := int64(0)
+		for _, out := range tx.TxOut {
+			if bytes.Equal(out.PkScript, want) {
+				paid = out.Value
+			}
+		}
+		require.NotZero(t, paid, "seat %d is not refunded", es.SeatIndex)
+		require.Less(t, paid, int64(amount), "a refund cannot exceed the stake")
+		require.Greater(t, paid, int64(amount)-int64(srv.referee.feeAtoms),
+			"seat %d pays more than the whole fee", es.SeatIndex)
+	}
+}
