@@ -1,14 +1,20 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
 	"testing"
 
 	"github.com/companyzero/bisonrelay/zkidentity"
+	"github.com/decred/dcrd/chaincfg/chainhash"
+	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
+	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/decred/dcrd/wire"
 	"github.com/stretchr/testify/require"
 	"github.com/vctt94/pokerbisonrelay/pkg/chainwatcher"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
@@ -120,9 +126,70 @@ func seedEscrow(t *testing.T, s *Server, table *poker.Table, uidStr, token, txid
 		Branch:             0,
 		SeatIndex:          seat,
 		OwnerUID:           uid,
+		OwnerPubkey:        compPub,
 		WinnerCandidateUID: uid,
 	}
 	return psCtx, openResp.EscrowId
+}
+
+// applyRosterToEscrows gives a set of hand-built escrows the n-of-n scripts a
+// real roster would have, so bundles assembled from them are spendable.
+func applyRosterToEscrows(t *testing.T, srv *Server, escrows ...*refereeEscrowSession) {
+	t.Helper()
+	members := make([][]byte, 0, len(escrows))
+	for _, es := range escrows {
+		members = append(members, es.CompPubkey)
+	}
+	for _, es := range escrows {
+		redeem, err := escrow.RedeemScript(es.CompPubkey, members, 64)
+		require.NoError(t, err)
+		pkHex, addr, err := pkScriptAndAddrFromRedeem(redeem, srv.chainParams)
+		require.NoError(t, err)
+		es.RedeemScriptHex = hex.EncodeToString(redeem)
+		es.PkScriptHex = pkHex
+		es.DepositAddr = addr
+		es.CSVBlocks = 64
+		if es.BoundUTXO != nil {
+			es.BoundUTXO.PkScriptHex = pkHex
+		}
+		es.LatestFunding.PkScriptHex = pkHex
+		for _, u := range es.LatestFunding.UTXOs {
+			u.PkScriptHex = pkHex
+		}
+	}
+}
+
+// seedCosigs records a signature from every member of each input's script apart
+// from its owner, whose slot the adaptor presig fills. GetFinalizeBundle refuses
+// to hand back an input the whole table has not signed, so fixtures that skip
+// this produce a bundle that could never be broadcast.
+func seedCosigs(t *testing.T, srv *Server, matchID string, branch int32) {
+	t.Helper()
+	srv.referee.mu.Lock()
+	defer srv.referee.mu.Unlock()
+
+	if srv.referee.cosigs[matchID] == nil {
+		srv.referee.cosigs[matchID] = make(map[int32]map[string]map[string]string)
+	}
+	if srv.referee.cosigs[matchID][branch] == nil {
+		srv.referee.cosigs[matchID][branch] = make(map[string]map[string]string)
+	}
+	for inputID, ctx := range srv.referee.presigns[matchID][branch] {
+		redeem, err := hex.DecodeString(ctx.RedeemScriptHex)
+		require.NoError(t, err)
+		members, err := escrow.Members(redeem)
+		require.NoError(t, err)
+		if srv.referee.cosigs[matchID][branch][inputID] == nil {
+			srv.referee.cosigs[matchID][branch][inputID] = make(map[string]string)
+		}
+		for i, m := range members {
+			if bytes.Equal(m, ctx.OwnerPubkey) {
+				continue
+			}
+			sig := bytes.Repeat([]byte{byte(i + 1)}, escrow.SigLen)
+			srv.referee.cosigs[matchID][branch][inputID][hex.EncodeToString(m)] = hex.EncodeToString(sig)
+		}
+	}
 }
 
 // applyRosterScripts copies each escrow's deposit script into its presign
@@ -208,6 +275,8 @@ func TestGetFinalizeBundleSuccess(t *testing.T) {
 		branchIndex: "cafebabe", // branch that pays seat 0
 		otherBranch: "gamma-other",
 	}
+	seedCosigs(t, srv, matchID, 0)
+	seedCosigs(t, srv, matchID, 1)
 
 	resp, err := srv.GetFinalizeBundle(context.Background(), &pokerrpc.GetFinalizeBundleRequest{
 		MatchId:    matchID,
@@ -266,6 +335,9 @@ func TestGetFinalizeBundleSuccessThreePlayers(t *testing.T) {
 		}
 	}
 	srv.referee.branchGamma[matchID] = bg
+	for b := int32(0); b < 3; b++ {
+		seedCosigs(t, srv, matchID, b)
+	}
 
 	resp, err := srv.GetFinalizeBundle(context.Background(), &pokerrpc.GetFinalizeBundleRequest{
 		MatchId:    matchID,
@@ -317,6 +389,9 @@ func TestGetFinalizeBundleUsesFrozenSettlementRoster(t *testing.T) {
 		1: "gamma1",
 		2: "gamma2",
 	}
+	for b := int32(0); b < 3; b++ {
+		seedCosigs(t, srv, matchID, b)
+	}
 
 	// Simulate the live table pruning the busted player before settlement.
 	srv.referee.matchEscrows[matchID] = map[uint32]string{1: esc2, 2: esc3}
@@ -361,12 +436,11 @@ func mkEscrow(t *testing.T, uidStr, txid string, vout uint32, pkScriptHex, redee
 	var uid zkidentity.ShortID
 	require.NoError(t, uid.FromString(uidStr))
 	amount := uint64(1_000_000)
-	// Create a 33-byte compressed pubkey (required by readyMatchEscrows)
-	compPubkey := make([]byte, 33)
-	compPubkey[0] = 0x02 // compressed pubkey prefix
-	for i := 1; i < 33; i++ {
-		compPubkey[i] = byte(i) // fill with test data
-	}
+	// Every member of a roster needs a distinct key: the settlement branch
+	// names them all, and duplicates are rejected when the script is built.
+	priv, err := secp256k1.GeneratePrivateKey()
+	require.NoError(t, err)
+	compPubkey := priv.PubKey().SerializeCompressed()
 	bound := &chainwatcher.EscrowUTXO{Txid: txid, Vout: vout, Value: amount, PkScriptHex: pkScriptHex}
 	return &refereeEscrowSession{
 		EscrowID:        txid,
@@ -447,11 +521,16 @@ func TestSettlementBranchIndexBug(t *testing.T) {
 		"TsnjFNHhZ17TKTLtSdXh9Z91TRHNsEp6N1d", // seat 2
 	}
 
-	// Use same pkScriptHex for all so sorting is by txid: aaaa < bbbb < cccc
-	// This means after sort: seat 1 (aaaa), seat 2 (bbbb), seat 0 (cccc)
 	e0 := mkEscrow(t, "0000000000000000000000000000000000000000000000000000000000000001", "cccc", 0, "51", "51", payoutAddrs[0], 0)
 	e1 := mkEscrow(t, "0000000000000000000000000000000000000000000000000000000000000002", "aaaa", 0, "51", "51", payoutAddrs[1], 1)
 	e2 := mkEscrow(t, "0000000000000000000000000000000000000000000000000000000000000003", "bbbb", 0, "51", "51", payoutAddrs[2], 2)
+
+	// Real roster scripts, so the bundle this produces is one that could
+	// actually be broadcast. Each member's script hashes differently, which is
+	// what makes UTXO sort order diverge from seat order here - the divergence
+	// the test is about. The branch that pays a given seat is therefore read
+	// off the drafts rather than assumed from the txids.
+	applyRosterToEscrows(t, srv, e0, e1, e2)
 
 	// Bind escrows to match
 	srv.referee.matchEscrows[matchID] = map[uint32]string{
@@ -470,15 +549,15 @@ func TestSettlementBranchIndexBug(t *testing.T) {
 	drafts, err := srv.buildWTADrafts(matchID, allEscrows)
 	require.NoError(t, err)
 	require.Len(t, drafts, 3)
-	// Verify the sorting: after sort, order should be seat 1, seat 2, seat 0
-	require.Equal(t, uint32(1), drafts[0].Inputs[0].SeatIndex, "first input after sort should be seat 1")
-	require.Equal(t, uint32(2), drafts[0].Inputs[1].SeatIndex, "second input after sort should be seat 2")
-	require.Equal(t, uint32(0), drafts[0].Inputs[2].SeatIndex, "third input after sort should be seat 0")
-
-	// Verify branch 0 pays to seat 1, branch 1 pays to seat 2, branch 2 pays to seat 0
-	require.Equal(t, e1.OwnerUID, drafts[0].WinnerUID, "branch 0 should pay seat 1")
-	require.Equal(t, e2.OwnerUID, drafts[1].WinnerUID, "branch 1 should pay seat 2")
-	require.Equal(t, e0.OwnerUID, drafts[2].WinnerUID, "branch 2 should pay seat 0")
+	// Branches are indexed by sorted UTXO order, so find the one paying the
+	// seat we care about rather than assuming it lines up with the seat index.
+	wantBranch := int32(-1)
+	for b, d := range drafts {
+		if d.WinnerUID == e1.OwnerUID {
+			wantBranch = int32(b)
+		}
+	}
+	require.NotEqual(t, int32(-1), wantBranch, "some branch must pay seat 1")
 
 	// Set up presigns for all branches
 	srv.referee.presigns[matchID] = make(map[int32]map[string]*refereePreSignCtx)
@@ -497,23 +576,23 @@ func TestSettlementBranchIndexBug(t *testing.T) {
 				Branch:             branch,
 				SeatIndex:          in.SeatIndex,
 				OwnerUID:           in.OwnerUID,
+				OwnerPubkey:        in.OwnerPubkey,
 				WinnerCandidateUID: drafts[branch].WinnerUID,
 			}
 		}
 		srv.referee.presigns[matchID][branch] = presigns
 	}
+	for branch := int32(0); branch < 3; branch++ {
+		seedCosigs(t, srv, matchID, branch)
+	}
 
-	// Winner is at table seat 1. After UTXO sorting, branch 0 pays to seat 1.
-	// The correct behavior for the settlement path is that a winner at table
-	// seat 1 is ultimately paid via the branch that pays seat 1 (branch 0),
+	// A winner at table seat 1 must be paid via the branch that pays seat 1,
 	// even when UTXO sort order differs from seat order.
 	winnerTableSeat := int32(1)
 
-	// Map table seat to branch index using the same logic as buildWTADrafts.
 	branchIndex, err := srv.seatToBranchIndex(matchID, winnerTableSeat)
 	require.NoError(t, err)
-	// Given our txid ordering (aaaa, bbbb, cccc), seat 1 should map to branch 0.
-	require.Equal(t, int32(0), branchIndex, "table seat 1 should map to branch 0")
+	require.Equal(t, wantBranch, branchIndex, "table seat 1 should map to the branch paying it")
 
 	// Call GetFinalizeBundle with the winner's TABLE seat (not branch index).
 	// This must internally map to the correct branch (0) and pay seat 1.
@@ -525,8 +604,8 @@ func TestSettlementBranchIndexBug(t *testing.T) {
 
 	// CORRECT behavior: settlement for a winner at table seat 1 must use the
 	// branch that pays seat 1 (branch 0).
-	require.Equal(t, int32(0), bundle.Branch,
-		"winner at table seat 1 should ultimately use branch 0 (which pays seat 1)")
+	require.Equal(t, wantBranch, bundle.Branch,
+		"winner at table seat 1 should use the branch that pays seat 1")
 
 	// Decode the draft transaction to verify it pays to the correct winner.
 	draftBytes, err := hex.DecodeString(bundle.DraftTxHex)
@@ -759,4 +838,163 @@ func TestOpenEscrowRequiresSeatAndBuyIn(t *testing.T) {
 		CompPubkey:  testSessionKey(t),
 	})
 	require.ErrorContains(t, err, "table_id required")
+}
+
+// TestSettlementSigsProduceSpendableScript drives the real consensus engine
+// over a script assembled the way FinalizeAndBroadcastSettlement assembles one.
+//
+// The slotting is the part that can silently go wrong: the settlement branch
+// checks members in canonical order, so a signature in the wrong slot produces
+// a transaction that looks well-formed and is rejected by the network. Only the
+// script engine can settle whether it is right.
+func TestSettlementSigsProduceSpendableScript(t *testing.T) {
+	privs := make([]*secp256k1.PrivateKey, 3)
+	pubs := make([][]byte, 3)
+	for i := range privs {
+		priv, err := secp256k1.GeneratePrivateKey()
+		require.NoError(t, err)
+		privs[i] = priv
+		pubs[i] = priv.PubKey().SerializeCompressed()
+	}
+	owner := pubs[0]
+
+	redeem, err := escrow.RedeemScript(owner, pubs, 64)
+	require.NoError(t, err)
+
+	tx := wire.NewMsgTx()
+	tx.Version = 3 // Schnorr via OP_CHECKSIGALTVERIFY needs version >= 3.
+	var prev chainhash.Hash
+	copy(prev[:], bytes.Repeat([]byte{0x11}, chainhash.HashSize))
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{Hash: prev, Index: 0, Tree: wire.TxTreeRegular},
+		ValueIn:          1_000_000,
+	})
+	payScript, err := txscript.NewScriptBuilder().AddOp(txscript.OP_TRUE).Script()
+	require.NoError(t, err)
+	tx.AddTxOut(wire.NewTxOut(990_000, payScript))
+
+	sighash, err := txscript.CalcSignatureHash(redeem, txscript.SigHashAll, tx, 0, nil)
+	require.NoError(t, err)
+	sign := func(priv *secp256k1.PrivateKey) []byte {
+		sig, err := schnorr.Sign(priv, sighash)
+		require.NoError(t, err)
+		return append(sig.Serialize(), byte(txscript.SigHashAll))
+	}
+
+	// The owner's slot is filled by the completed adaptor presig at runtime;
+	// here an ordinary signature from the same key stands in for it, since the
+	// slotting is what is under test.
+	ownerSig := sign(privs[0])
+	fin := &pokerrpc.FinalizeInput{
+		InputId:         "aaaa:0",
+		RedeemScriptHex: hex.EncodeToString(redeem),
+		OwnerPubkey:     owner,
+		Cosigs: []*pokerrpc.CoSignature{
+			{InputId: "aaaa:0", SignerPubkey: pubs[1], SigHex: hex.EncodeToString(sign(privs[1]))},
+			{InputId: "aaaa:0", SignerPubkey: pubs[2], SigHex: hex.EncodeToString(sign(privs[2]))},
+		},
+	}
+
+	sigs, err := settlementSigs(redeem, fin, ownerSig)
+	require.NoError(t, err)
+	require.Len(t, sigs, 3)
+
+	sigScript, err := escrow.SettlementSigScript(redeem, sigs)
+	require.NoError(t, err)
+	tx.TxIn[0].SignatureScript = sigScript
+
+	_, pkScript, err := escrow.Address(redeem, srvChainParams())
+	require.NoError(t, err)
+	vm, err := txscript.NewEngine(pkScript, tx, 0, txscript.ScriptVerifyCheckSequenceVerify, 0, nil)
+	require.NoError(t, err)
+	require.NoError(t, vm.Execute(), "the assembled settlement script must satisfy consensus")
+
+	// A signature landing in the wrong slot has to fail, or the ordering above
+	// would be accidental rather than required.
+	swapped := [][]byte{sigs[1], sigs[0], sigs[2]}
+	badScript, err := escrow.SettlementSigScript(redeem, swapped)
+	require.NoError(t, err)
+	tx.TxIn[0].SignatureScript = badScript
+	vm, err = txscript.NewEngine(pkScript, tx, 0, txscript.ScriptVerifyCheckSequenceVerify, 0, nil)
+	require.NoError(t, err)
+	require.Error(t, vm.Execute(), "signatures in the wrong slots must not spend")
+}
+
+func srvChainParams() *chaincfg.Params { return selectChainParams("testnet") }
+
+// A bundle that cannot be assembled into a valid spend has to fail before a
+// transaction is built, not after the network rejects it.
+func TestSettlementSigsRejectsBadBundles(t *testing.T) {
+	privs := make([]*secp256k1.PrivateKey, 3)
+	pubs := make([][]byte, 3)
+	for i := range privs {
+		priv, err := secp256k1.GeneratePrivateKey()
+		require.NoError(t, err)
+		privs[i] = priv
+		pubs[i] = priv.PubKey().SerializeCompressed()
+	}
+	redeem, err := escrow.RedeemScript(pubs[0], pubs, 64)
+	require.NoError(t, err)
+
+	strangerPriv, err := secp256k1.GeneratePrivateKey()
+	require.NoError(t, err)
+	stranger := strangerPriv.PubKey().SerializeCompressed()
+
+	good := hex.EncodeToString(bytes.Repeat([]byte{0x01}, escrow.SigLen))
+	ownerSig := bytes.Repeat([]byte{0x02}, escrow.SigLen)
+
+	cases := []struct {
+		name string
+		fin  *pokerrpc.FinalizeInput
+		want string
+	}{{
+		name: "a member did not co-sign",
+		fin: &pokerrpc.FinalizeInput{
+			OwnerPubkey: pubs[0],
+			Cosigs:      []*pokerrpc.CoSignature{{SignerPubkey: pubs[1], SigHex: good}},
+		},
+		want: "no co-signature from member",
+	}, {
+		name: "co-signature from someone the script does not name",
+		fin: &pokerrpc.FinalizeInput{
+			OwnerPubkey: pubs[0],
+			Cosigs: []*pokerrpc.CoSignature{
+				{SignerPubkey: pubs[1], SigHex: good},
+				{SignerPubkey: stranger, SigHex: good},
+			},
+		},
+		want: "no co-signature from member",
+	}, {
+		name: "owner is not a member",
+		fin: &pokerrpc.FinalizeInput{
+			OwnerPubkey: stranger,
+			Cosigs: []*pokerrpc.CoSignature{
+				{SignerPubkey: pubs[0], SigHex: good},
+				{SignerPubkey: pubs[1], SigHex: good},
+				{SignerPubkey: pubs[2], SigHex: good},
+			},
+		},
+		want: "not a member",
+	}, {
+		name: "co-signature is the wrong length",
+		fin: &pokerrpc.FinalizeInput{
+			OwnerPubkey: pubs[0],
+			Cosigs: []*pokerrpc.CoSignature{
+				{SignerPubkey: pubs[1], SigHex: "0102"},
+				{SignerPubkey: pubs[2], SigHex: good},
+			},
+		},
+		want: "bytes, want",
+	}, {
+		name: "no owner key on the input",
+		fin:  &pokerrpc.FinalizeInput{},
+		want: "no owner key",
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := settlementSigs(redeem, tc.fin, ownerSig)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
 }

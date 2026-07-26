@@ -109,8 +109,39 @@ wrong order do not, the owner alone cannot touch the settlement branch, and
 refund still works alone once CSV matures.
 
 **It is wired in as of 2026-07-27.** `OpenEscrow` (`pkg/server/referee.go`)
-builds every deposit script through `pkg/escrow`, and
-`buildPerDepositorRedeemScript` is no longer on any live path.
+builds every deposit script through `pkg/escrow`,
+`buildPerDepositorRedeemScript` is no longer on any live path, and settlement
+assembles a signature per member rather than one per input.
+
+#### Signature exchange and finalize
+
+A player receives every input of every branch, not only their own, and
+`owner_pubkey` tells them which is which: they adaptor-presign the input they
+own — that is what keeps a branch gated on gamma — and plainly co-sign the rest.
+Co-signatures are ordinary Schnorr signatures and prove nothing about which
+branch won; branch selection stays with the owner's presig. The referee refuses
+a co-signature for an input the caller owns, one claiming another signer, and
+duplicates.
+
+`GetFinalizeBundle` returns those co-signatures alongside each input's presig
+and refuses to return a bundle any member has not signed, so an unspendable
+settlement fails there rather than at broadcast.
+`FinalizeAndBroadcastSettlement` then slots one signature per member —
+completed presig in the owner's slot, co-signatures elsewhere — and builds the
+sigScript with `escrow.SettlementSigScript`.
+
+The roster used for slotting is read back out of the redeem script
+(`escrow.Members`) rather than from state recorded elsewhere, so the spend is
+assembled against the script it actually has to satisfy. Ordering is load
+bearing: the branch checks members in canonical order, so a signature in the
+wrong slot yields a transaction that looks well formed and the network rejects.
+`TestSettlementSigsProduceSpendableScript` runs the assembled script through the
+consensus engine and asserts a swapped pair fails.
+
+Until 2026-07-27 the send loop still filtered each branch to the caller's own
+inputs, so no co-signature was ever exchanged. The storage and verification
+paths existed but nothing reached them, and nothing consumed what they would
+have stored, so the gap was invisible to the tests.
 
 #### Roster-first funding
 

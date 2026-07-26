@@ -101,6 +101,7 @@ type refereePreSignCtx struct {
 	Branch             int32
 	SeatIndex          uint32
 	OwnerUID           zkidentity.ShortID
+	OwnerPubkey        []byte
 	WinnerCandidateUID zkidentity.ShortID
 }
 
@@ -1117,16 +1118,22 @@ func (s *Server) SettlementStream(stream pokerrpc.PokerReferee_SettlementStreamS
 		draftMap[int32(idx)] = d
 	}
 
-	// Stream NeedPreSigs for each branch to this caller (their own inputs only).
+	// Stream NeedPreSigs for each branch to this caller.
+	//
+	// Every input goes to every player, not just the ones they own: an
+	// escrow's settlement branch needs a signature from the whole table, so a
+	// player adaptor-presigns the input they own and plainly co-signs the
+	// rest. owner_pubkey is what tells them which is which.
 	for branchIdx, draft := range branchDrafts {
 		need := &pokerrpc.NeedPreSigs{
 			MatchId:    matchID,
 			Branch:     int32(branchIdx),
 			DraftTxHex: draft.DraftHex,
 		}
+		owned := false
 		for _, in := range draft.Inputs {
-			if in.OwnerUID != uid {
-				continue
+			if in.OwnerUID == uid {
+				owned = true
 			}
 			need.Inputs = append(need.Inputs, &pokerrpc.NeedPreSigsInput{
 				InputId:         in.InputID,
@@ -1135,9 +1142,11 @@ func (s *Server) SettlementStream(stream pokerrpc.PokerReferee_SettlementStreamS
 				AdaptorPointHex: in.AdaptorPointHex,
 				InputIndex:      in.InputIndex,
 				AmountAtoms:     in.AmountAtoms,
+				OwnerPubkey:     in.OwnerPubkey,
 			})
 		}
-		if len(need.Inputs) == 0 {
+		// A branch with nothing of ours in it is not ours to sign at all.
+		if !owned {
 			continue
 		}
 		if err := stream.Send(&pokerrpc.SettlementStreamMessage{Msg: &pokerrpc.SettlementStreamMessage_NeedPreSigs{NeedPreSigs: need}}); err != nil {
@@ -1500,10 +1509,21 @@ func (s *Server) GetFinalizeBundle(ctx context.Context, req *pokerrpc.GetFinaliz
 	gammaHex := s.referee.branchGamma[matchID][branch]
 	presMap := s.referee.presigns[matchID][branch]
 	seatsMap := s.referee.matchEscrows[matchID]
+	cosigMap := s.referee.cosigs[matchID][branch]
 
 	var inputs []*refereePreSignCtx
 	for _, ctx := range presMap {
 		inputs = append(inputs, ctx)
+	}
+	// Copy the co-signatures out under the same lock, so the bundle is a
+	// consistent view of one moment rather than two.
+	cosigsByInput := make(map[string]map[string]string, len(cosigMap))
+	for inputID, bySigner := range cosigMap {
+		dup := make(map[string]string, len(bySigner))
+		for signer, sig := range bySigner {
+			dup[signer] = sig
+		}
+		cosigsByInput[inputID] = dup
 	}
 	s.log.Debugf("GetFinalizeBundle: match=%s branch=%d seatsMap=%d presCount=%d escrowsLen=%d",
 		matchID, branch, len(seatsMap), len(inputs), escrowsLen)
@@ -1531,15 +1551,58 @@ func (s *Server) GetFinalizeBundle(ctx context.Context, req *pokerrpc.GetFinaliz
 		GammaHex:   gammaHex,
 	}
 	for _, in := range inputs {
+		// The settlement branch takes a signature from every table member,
+		// so an input is only spendable once the whole table has co-signed
+		// it. Report that here rather than letting the caller discover it
+		// while assembling a transaction it cannot broadcast.
+		cosigs, err := collectCosigs(in, cosigsByInput[in.InputID])
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"branch %d input %s: %v", branch, in.InputID, err)
+		}
 		resp.Inputs = append(resp.Inputs, &pokerrpc.FinalizeInput{
 			InputId:          in.InputID,
 			RPrimeCompactHex: hex.EncodeToString(in.RPrimeCompressed),
 			SPrimeHex:        hex.EncodeToString(in.SPrime32),
 			InputIndex:       in.InputIndex,
 			RedeemScriptHex:  in.RedeemScriptHex,
+			OwnerPubkey:      in.OwnerPubkey,
+			Cosigs:           cosigs,
 		})
 	}
 	return resp, nil
+}
+
+// collectCosigs gathers the signatures of every member the input's redeem
+// script names except its owner, whose slot the adaptor presig fills once gamma
+// completes it. Members are read out of the script itself, so the result is
+// ordered the way the script checks them.
+func collectCosigs(in *refereePreSignCtx, stored map[string]string) ([]*pokerrpc.CoSignature, error) {
+	redeem, err := hex.DecodeString(in.RedeemScriptHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode redeem script: %w", err)
+	}
+	members, err := escrow.Members(redeem)
+	if err != nil {
+		return nil, fmt.Errorf("read roster from redeem script: %w", err)
+	}
+
+	out := make([]*pokerrpc.CoSignature, 0, len(members)-1)
+	for _, m := range members {
+		if bytes.Equal(m, in.OwnerPubkey) {
+			continue
+		}
+		sigHex := stored[hex.EncodeToString(m)]
+		if sigHex == "" {
+			return nil, fmt.Errorf("missing co-signature from member %x", m)
+		}
+		out = append(out, &pokerrpc.CoSignature{
+			InputId:      in.InputID,
+			SignerPubkey: append([]byte(nil), m...),
+			SigHex:       sigHex,
+		})
+	}
+	return out, nil
 }
 
 // FinalizeAndBroadcastSettlement completes the Schnorr settlement for a match:
@@ -1625,15 +1688,15 @@ func (s *Server) FinalizeAndBroadcastSettlement(ctx context.Context, matchID str
 			return "", fmt.Errorf("decode redeem script for input %s: %w", fin.InputId, err)
 		}
 
-		// Build signature script: <sig65> <OP_1> <redeemScript> for P2SH.
-		// The redeem script starts with OP_IF, which requires a non-zero value (OP_1)
-		// on the stack to take the winner branch (immediate spend).
-		// Order matches working reference implementation.
-		sigScript, err := txscript.NewScriptBuilder().
-			AddData(sig65).
-			AddOp(txscript.OP_1).
-			AddData(redeemScript).
-			Script()
+		// The settlement branch takes one signature per table member, in the
+		// order the script names them. The owner's slot gets the adaptor
+		// presig completed just above - that is what gates the branch on
+		// gamma - and the rest are the co-signatures the table sent.
+		sigs, err := settlementSigs(redeemScript, fin, sig65)
+		if err != nil {
+			return "", fmt.Errorf("assemble signatures for input %s: %w", fin.InputId, err)
+		}
+		sigScript, err := escrow.SettlementSigScript(redeemScript, sigs)
 		if err != nil {
 			return "", fmt.Errorf("build sig script for input %s: %w", fin.InputId, err)
 		}
@@ -1656,6 +1719,57 @@ func (s *Server) FinalizeAndBroadcastSettlement(ctx context.Context, matchID str
 	s.cleanupMatchState(matchID)
 
 	return txid, nil
+}
+
+// settlementSigs slots one signature per member of the input's redeem script,
+// in the order the script checks them: ownerSig for the owner, and the matching
+// co-signature for everyone else.
+//
+// The roster comes from the script rather than from the bundle, so a bundle
+// carrying a signature from someone the script does not name, or missing one it
+// does, fails here instead of producing a transaction the network rejects.
+func settlementSigs(redeem []byte, fin *pokerrpc.FinalizeInput, ownerSig []byte) ([][]byte, error) {
+	members, err := escrow.Members(redeem)
+	if err != nil {
+		return nil, fmt.Errorf("read roster from redeem script: %w", err)
+	}
+	if len(fin.OwnerPubkey) != escrow.PubKeyLen {
+		return nil, fmt.Errorf("input has no owner key")
+	}
+
+	bySigner := make(map[string]string, len(fin.Cosigs))
+	for _, cs := range fin.Cosigs {
+		if cs == nil {
+			continue
+		}
+		bySigner[hex.EncodeToString(cs.SignerPubkey)] = cs.SigHex
+	}
+
+	sigs := make([][]byte, len(members))
+	owned := false
+	for i, m := range members {
+		if bytes.Equal(m, fin.OwnerPubkey) {
+			sigs[i] = ownerSig
+			owned = true
+			continue
+		}
+		sigHex, ok := bySigner[hex.EncodeToString(m)]
+		if !ok {
+			return nil, fmt.Errorf("no co-signature from member %x", m)
+		}
+		raw, err := hex.DecodeString(sigHex)
+		if err != nil {
+			return nil, fmt.Errorf("decode co-signature from %x: %w", m, err)
+		}
+		if len(raw) != escrow.SigLen {
+			return nil, fmt.Errorf("co-signature from %x is %d bytes, want %d", m, len(raw), escrow.SigLen)
+		}
+		sigs[i] = raw
+	}
+	if !owned {
+		return nil, fmt.Errorf("owner key %x is not a member of the redeem script", fin.OwnerPubkey)
+	}
+	return sigs, nil
 }
 
 // cleanupMatchState releases all presign + escrow bindings for a match after it
@@ -2312,6 +2426,7 @@ func (s *Server) storePresigs(matchID string, branch int32, uid zkidentity.Short
 			Branch:             branch,
 			SeatIndex:          in.SeatIndex,
 			OwnerUID:           uid,
+			OwnerPubkey:        append([]byte(nil), in.OwnerPubkey...),
 			WinnerCandidateUID: draft.WinnerUID,
 		}
 

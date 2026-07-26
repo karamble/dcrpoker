@@ -426,3 +426,55 @@ func TestDepositAddressDependsOnRoster(t *testing.T) {
 		t.Fatalf("deposit address did not change when the roster changed")
 	}
 }
+
+// Members reads the roster back out of a script so a spend is assembled against
+// the script it actually has to satisfy.
+func TestMembersReportsScriptOrder(t *testing.T) {
+	privs, pubs := memberKeys(t, 4)
+	_ = privs
+
+	redeem, err := RedeemScript(pubs[0], pubs, testCSVBlocks)
+	if err != nil {
+		t.Fatalf("redeem script: %v", err)
+	}
+
+	got, err := Members(redeem)
+	if err != nil {
+		t.Fatalf("members: %v", err)
+	}
+	want, err := CanonicalMembers(pubs)
+	if err != nil {
+		t.Fatalf("canonical members: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d members, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("member %d is %x, want %x", i, got[i], want[i])
+		}
+	}
+
+	// The owner's key appears again in the refund branch; reading must stop at
+	// OP_ELSE or it would report a member twice and demand an extra signature.
+	n, err := MemberCount(redeem)
+	if err != nil {
+		t.Fatalf("member count: %v", err)
+	}
+	if len(got) != n {
+		t.Fatalf("Members returned %d keys but MemberCount says %d", len(got), n)
+	}
+}
+
+func TestMembersRejectsNonRosterScripts(t *testing.T) {
+	trivial, err := txscript.NewScriptBuilder().AddOp(txscript.OP_TRUE).Script()
+	if err != nil {
+		t.Fatalf("build script: %v", err)
+	}
+	if _, err := Members(trivial); err == nil {
+		t.Fatalf("expected a script with no settlement branch to be rejected")
+	}
+	if _, err := Members(nil); err == nil {
+		t.Fatalf("expected an empty script to be rejected")
+	}
+}

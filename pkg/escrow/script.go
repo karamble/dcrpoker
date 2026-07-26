@@ -165,6 +165,41 @@ func MemberCount(redeem []byte) (int, error) {
 	return 0, fmt.Errorf("redeem script has no refund branch")
 }
 
+// Members returns the settlement branch's member keys in the order the script
+// checks them, which is the order SettlementSigScript expects signatures in.
+//
+// Reading the roster back out of the script means a spend is assembled against
+// the script it actually has to satisfy, rather than against a list recorded
+// somewhere else that may since have drifted from it.
+func Members(redeem []byte) ([][]byte, error) {
+	tokenizer := txscript.MakeScriptTokenizer(scriptVersion, redeem)
+	var (
+		keys    [][]byte
+		pending []byte
+	)
+	for tokenizer.Next() {
+		switch tokenizer.Opcode() {
+		case txscript.OP_DATA_33:
+			pending = tokenizer.Data()
+		case txscript.OP_CHECKSIGALTVERIFY:
+			if len(pending) != PubKeyLen {
+				return nil, fmt.Errorf("signature check %d is not preceded by a key", len(keys))
+			}
+			keys = append(keys, append([]byte(nil), pending...))
+			pending = nil
+		case txscript.OP_ELSE:
+			if len(keys) == 0 {
+				return nil, fmt.Errorf("settlement branch has no signature checks")
+			}
+			return keys, nil
+		}
+	}
+	if err := tokenizer.Err(); err != nil {
+		return nil, fmt.Errorf("parse redeem script: %w", err)
+	}
+	return nil, fmt.Errorf("redeem script has no refund branch")
+}
+
 // SettlementSigScript builds the signature script that spends the settlement
 // branch. sigs are indexed as CanonicalMembers reports, one per member.
 //
