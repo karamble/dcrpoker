@@ -40,6 +40,8 @@ adaptor pre-signatures are computed locally in `computePreSig`
 (`pkg/client/referee.go`), and the CSV refund transaction is built entirely
 client-side. The server therefore cannot spend anyone's escrow, and if it
 disappears mid-game every player refunds unilaterally after the CSV timeout.
+What this does not do is bind the depositor to the bet at all — see the next
+section.
 
 ### What is trusted today
 
@@ -56,29 +58,74 @@ Everything above the escrow layer.
   `checkpoints.go` writes server-internal DB snapshots with no player
   attestation.
 
+### The escrow does not bind the depositor
+
+Both branches of the redeem script check a signature from the same key, the
+depositor's own `comp33`, and the `OP_IF` branch carries no timelock. The
+depositor holds `x`, so **that branch is a plain single-signature spend
+available at any moment** — including mid-hand, once a player sees they are
+losing.
+
+The settlement transaction spends all N escrows at once, so removing one input
+invalidates it permanently: the winner collects nothing and everyone else waits
+out the CSV and refunds. The defector pays only transaction fees, and since the
+settlement fee is fixed at `DefaultSettlementFeeAtoms`
+(`pkg/server/referee.go:42`) it is cheap to outbid the settlement in a mempool
+race. That makes every hand a free option — play it out, sweep if losing.
+
+The code detects this and cannot act on it. `classifyEscrowFundingState`
+(`pkg/server/referee.go:1031`) marks `ESCROW_STATE_SPENT` when the funding UTXO
+disappears and the error path reports "escrow funding output already spent"
+(`referee.go:2221`). Detection, not enforcement.
+
+Unlike the two gaps below, this needs no malicious server — only a malicious
+player — so it survives into the serverless design, where the player is the
+whole threat model. The fix is to make the fast branch non-unilateral (2-of-2,
+or a MuSig2 aggregate over the table) while leaving the CSV branch alone, since
+unilateral refund is the liveness backstop. It changes the script and therefore
+the deposit-address derivation, so it belongs with the fidelity bond work rather
+than with the fixes below. The script comment notes it "mirrors the Pong
+helper", so this looks inherited from a two-party context rather than designed
+for a contested pot.
+
 ### Known gaps in the escrow layer
 
-Two issues mean the cryptography that exists is not yet load-bearing against a
-malicious `pokerd`. Both are small, self-contained fixes.
+Two further issues meant the cryptography that exists was not load-bearing
+against a malicious `pokerd`. **Both were fixed on 2026-07-26**; they are kept
+here because the reasoning still governs the p2p design, where the draft is
+proposed by a rotating dealer who is a directly adversarial player rather than
+a server.
 
-**1. Draft transaction outputs are not validated before pre-signing.**
-`validateNeedPreSigs` (`pkg/client/referee.go:381`) checks tx version, that
-inputs match the client's own outpoints, sighash consistency, and adaptor point
-encoding — but never inspects `tx.TxOut` beyond asserting it is non-empty.
-Nothing verifies the payout address or amount. The client should recompute what
-it expects for the branch (payout address for that branch's winner seat, value
-= `sum(inputs) - fee`, and `fee <= DefaultSettlementFeeAtoms`,
-`pkg/server/referee.go:42`) and refuse otherwise. Without this, the two-branch
-script protects against key compromise but not against the server, which is the
-threat model that matters here.
+**1. Draft transaction outputs were not validated before pre-signing.**
+`validateNeedPreSigs` checked tx version, that inputs matched the client's own
+outpoints, sighash consistency and adaptor point encoding, but never inspected
+`tx.TxOut` beyond asserting it was non-empty — so nothing verified the payout
+address or amount.
 
-**2. The branch set is not pinned.** In `StartPresign`
-(`pkg/client/referee.go:109`) the client learns which branches exist purely from
-the `NeedPreSigs` messages the server chooses to send, then declares success
-once those are acked. The client knows the seat count from `BindEscrow` and
-should require exactly one branch per seat. Withholding a branch is not theft —
-everyone falls back to CSV refund — but it lets the server silently steer which
-outcomes are settleable.
+`validateDraftOutputs` (`pkg/client/referee.go:511`) now requires exactly one
+output, a payout that is positive and no greater than the inputs, and a fee
+within `DefaultMaxSettlementFeeAtoms`. When the branch pays this client, the
+output script must equal the payment script of its configured payout address,
+and a client with no payout address configured refuses to pre-sign that branch
+rather than proceeding blind.
+
+A client can only recognise its own address, so branches paying another seat are
+checked for shape and fee alone. That is sufficient in aggregate: branches are
+numbered by draft input index and branch `b` pays the owner of input `b`, so
+every branch is strictly checked by the player it pays, and a draft with a
+redirected payout can never collect a full set of presigs.
+
+**2. The branch set was not pinned.** In `StartPresign` the client learned which
+branches existed purely from the `NeedPreSigs` messages the server chose to
+send, then declared success once those were acked.
+
+The branch set is now pinned to the draft itself: `draftBranchCount`
+(`pkg/client/referee.go:563`) reads the input count, since every escrow is one
+input and one possible winner. `StartPresign` rejects a branch index outside
+that range, rejects a count that changes mid-stream, and treats presigning as
+complete only once every branch `0..n-1` has been both seen and acknowledged.
+Withholding a branch was never theft — everyone falls back to CSV refund — but
+it let the server silently steer which outcomes were settleable.
 
 ### Roadmap toward trustless decentralization
 
