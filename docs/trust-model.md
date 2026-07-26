@@ -438,9 +438,41 @@ should be built to. Two instruments, not one.
 
 #### Wire protocol: the `--gaming[` envelope
 
-Protocol traffic rides Bison Relay private messages as an envelope in the DM
-thread — the pattern `brmcp` (`karamble/brmcp`) established for MCP. brmcp is
-the precedent, not the protocol: poker is not modelled as tool calls.
+Protocol traffic rides Bison Relay as an envelope, following the pattern
+`brmcp` (`karamble/brmcp`) established for MCP. brmcp is the precedent, not the
+protocol: poker is not modelled as tool calls.
+
+**Built 2026-07-27** as `pkg/gaming/wire` (framing) and `pkg/gaming/schema`
+(payloads).
+
+**The channel is a group chat, not the DM thread this section originally said.**
+A table is 2–6 players, so the group is the table and its membership is the
+roster. That correction carries three consequences, all of which shaped the
+code:
+
+- **A member can equivocate, and Bison Relay will never notice.**
+  `Client.GCMessage` (`bisonrelay/client/client_groupchat.go:1133`) fans a group
+  message out through `sendToGCMembers` as N separate ratcheted one-to-one
+  messages. There is no relay point and no shared transcript — a group exists
+  only as N independent local copies — and `handleGCMessage` does no
+  cross-member comparison, no digest and no echo. A modified client simply sends
+  different payloads to different members. Each routed message *is* individually
+  signed and verified, so two conflicting ones are directly comparable:
+  equivocation is provable after the fact, never prevented. That is precisely
+  what the signed chain in `pkg/gamelog` is built around, and why head
+  attestations exist at all — no member sees another's stream, so a fork is
+  found by comparing what each seat says the history is.
+- **There is no ordering.** `rpc.RMGroupMessage` carries no sequence number;
+  `Generation` is the membership-list generation and is never validated on
+  receive, and `gcmcacher` reorders best-effort by a sender-supplied, unsigned
+  timestamp. All sequencing therefore comes from the payload. `pkg/gaming/wire`
+  delivers bytes and says who sent them; it establishes nothing about order.
+- **The group roster is not the table roster.** An admin fans out a whole new
+  `RMGroupList`; nothing stops different members receiving different lists at
+  the same generation, no member can reliably enumerate the group, and
+  `maybeReAddIdleKickedMember` means merely receiving a message can mutate the
+  local list. Authority stays with the escrow roster committed on-chain. The
+  group is a pipe.
 
 The envelope is a namespace over games rather than one prefix per game:
 
@@ -470,7 +502,18 @@ identity, so no payload field can forge one.
 
 Matching MUST be anchored over the whole message body, as brmcp's `partRE`
 (`^--mcp\[([^\]]*)\]--…$`) is. A substring match would let a human who mentions
-`--gaming[` in chat have their message silently swallowed.
+`--gaming[` in chat have their message silently swallowed. Shape alone is not
+enough either: the payload class admits letters and whitespace, so a message
+opening with something frame-shaped and continuing in prose matches the pattern.
+Both implementations therefore require the payload to base64-decode.
+
+The framing checks `v`, and deliberately does not check `game` or `gv` — a
+client must recognise, and so hide, traffic for a game or a version it has never
+heard of. Reassembly is bounded exactly as brmcp bounds it (per-sender pending
+count, per-message and total bytes, eviction on timeout), with the sender key
+carrying both the group and the sender, because a group message arrives as a
+separate message from each sender with no shared stream to key on. A single-part
+message allocates nothing at all.
 
 #### Integration notes for brclientd
 
@@ -479,11 +522,16 @@ Matching MUST be anchored over the whole message body, as brmcp's `partRE`
   predicate belongs at that same point.
 - `internal/runtime/settings_endpoints.go` rejects user content-filter rules
   that match protocol frames, because BR applies filters on the live receive
-  path before notifications fire. **This guard must extend to `--gaming[`, and
-  it is the highest-consequence detail in the integration.** A user regex that
+  path before notifications fire. **This was the highest-consequence detail in
+  the integration, and the existing guard did not cover it.** A user regex that
   swallows MCP frames breaks an agent session; one that swallows gaming frames
   drops a player mid-hand with funds escrowed, indistinguishable from
-  abandonment, and so forfeits a bond.
+  abandonment. The guard was PM-only (`!req.SkipPMs`), which is right for brmcp
+  since it is one-to-one, but BR applies filters per message class — so a rule
+  with `SkipPMs: true, SkipGCMs: false` sailed straight past it, and the group
+  chat is where the game actually is. **Fixed 2026-07-27** in brclientd
+  (`internal/gaming`), which now refuses any rule reaching either class, and
+  guards `OnGCMNtfn` and GC history as the PM paths were already guarded.
 - Authorization must precede reassembly state, as brmcp's WIRE.md requires.
   Gaming frames are invisible to the user by design, so an unsolicited flood is
   a silent memory-exhaustion channel: allocate nothing for a peer who is not in
