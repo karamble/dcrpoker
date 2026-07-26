@@ -998,3 +998,94 @@ func TestSettlementSigsRejectsBadBundles(t *testing.T) {
 		})
 	}
 }
+
+// A deposit script the referee never issued names a roster that is not this
+// table's, so whatever is funded at that address is not a stake here. Binding
+// it used to mint an escrow session around it, reading an "owner" key out of
+// bytes 2-35 of the script - which under a roster script is the first canonical
+// member, not the owner at all.
+func TestBindEscrowRejectsUnissuedRedeemScript(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	table := seedRosterTable(t, srv, "bind-table", 2, amount)
+
+	pubA := testSessionKey(t)
+	openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount, pubA)
+	openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000002", "tokB", 1, amount, testSessionKey(t))
+
+	// A well-formed roster script over keys of the caller's own choosing.
+	outsider := testSessionKey(t)
+	foreign, err := escrow.RedeemScript(pubA, [][]byte{pubA, outsider}, 64)
+	require.NoError(t, err)
+
+	_, err = srv.BindEscrow(context.Background(), &pokerrpc.BindEscrowRequest{
+		Outpoint:        "aaaa:0",
+		TableId:         "bind-table",
+		Token:           "tokA",
+		RedeemScriptHex: hex.EncodeToString(foreign),
+		CsvBlocks:       64,
+	})
+	require.ErrorContains(t, err, "no escrow of yours matches that redeem script")
+}
+
+// An escrow's script is the referee's, so a request cannot substitute another
+// one on the way to recording funding.
+func TestBindEscrowRejectsMismatchedRedeemScript(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	table := seedRosterTable(t, srv, "bind-mismatch", 2, amount)
+
+	pubA := testSessionKey(t)
+	openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount, pubA)
+	resp := openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000002", "tokB", 1, amount, testSessionKey(t))
+	require.True(t, resp.GetRosterReady())
+
+	// Seat A's own escrow, but asked to bind under seat B's script.
+	_, err := srv.BindEscrow(context.Background(), &pokerrpc.BindEscrowRequest{
+		Outpoint:        "aaaa:0",
+		TableId:         "bind-mismatch",
+		Token:           "tokA",
+		RedeemScriptHex: resp.GetRedeemScriptHex(),
+		CsvBlocks:       64,
+	})
+	require.ErrorContains(t, err, "no escrow of yours matches that redeem script")
+
+	// The script is how an outpoint the watcher has not seen is matched back
+	// to an escrow, so a request that names none leaves nothing to match on.
+	// It is an identifier here, never a source of truth: what it resolves to
+	// is the referee's own script for that escrow.
+	_, err = srv.BindEscrow(context.Background(), &pokerrpc.BindEscrowRequest{
+		Outpoint:  "aaaa:0",
+		TableId:   "bind-mismatch",
+		Token:     "tokA",
+		CsvBlocks: 64,
+	})
+	require.ErrorContains(t, err, "escrow not found for outpoint")
+}
+
+// escrowForPkScript is what ties a reported outpoint back to a stake the
+// referee issued, so it must not match across owners.
+func TestEscrowForPkScriptIsScopedToOwner(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	table := seedRosterTable(t, srv, "bind-scope", 2, amount)
+
+	a := openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount, testSessionKey(t))
+	b := openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000002", "tokB", 1, amount, testSessionKey(t))
+	require.True(t, b.GetRosterReady())
+
+	var uidA, uidB zkidentity.ShortID
+	require.NoError(t, uidA.FromString("0000000000000000000000000000000000000000000000000000000000000001"))
+	require.NoError(t, uidB.FromString("0000000000000000000000000000000000000000000000000000000000000002"))
+
+	srv.referee.mu.RLock()
+	pkA := srv.referee.escrows[a.GetEscrowId()].PkScriptHex
+	pkB := srv.referee.escrows[b.GetEscrowId()].PkScriptHex
+	srv.referee.mu.RUnlock()
+	require.NotEqual(t, pkA, pkB, "each member funds a script of their own")
+
+	require.NotNil(t, srv.escrowForPkScript(uidA, pkA))
+	require.Nil(t, srv.escrowForPkScript(uidA, pkB), "one player's script must not resolve to another's escrow")
+	require.Nil(t, srv.escrowForPkScript(uidA, ""))
+	require.Nil(t, srv.escrowForPkScript(uidA, "deadbeef"))
+}

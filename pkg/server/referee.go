@@ -654,6 +654,31 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 	}, nil
 }
 
+// escrowForPkScript returns the caller's escrow paying pkHex, if they have one.
+//
+// Deposit scripts are derived by the referee from a table's roster and never
+// accepted from a client, so matching on the script is how a funding outpoint
+// a client reports is tied back to a stake the referee actually issued.
+func (s *Server) escrowForPkScript(uid zkidentity.ShortID, pkHex string) *refereeEscrowSession {
+	if pkHex == "" {
+		return nil
+	}
+	s.referee.mu.RLock()
+	defer s.referee.mu.RUnlock()
+	for _, cand := range s.referee.escrows {
+		if cand == nil || cand.OwnerUID != uid {
+			continue
+		}
+		cand.mu.RLock()
+		match := cand.PkScriptHex == pkHex
+		cand.mu.RUnlock()
+		if match {
+			return cand
+		}
+	}
+	return nil
+}
+
 // BindEscrow attaches an existing escrow to a table/seat and checks funding.
 func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest) (*pokerrpc.BindEscrowResponse, error) {
 	if req == nil {
@@ -748,11 +773,23 @@ func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest
 		escrowID = es.EscrowID
 	}
 	if es == nil {
+		// Nothing is bound to that outpoint yet, which is the ordinary case
+		// for a deposit the watcher has not seen. Resolve it against an
+		// escrow already held for this caller.
+		//
+		// The referee derives every deposit script itself at OpenEscrow,
+		// from the table's roster. A script it did not issue commits to
+		// some other set of keys, so whatever sits at that address is not a
+		// stake in this table - and reading an owner key back out of the
+		// script would not make it one. Escrows are in-memory only, so
+		// after a restart the way back is to open one again, which is
+		// idempotent per seat, rather than to have the referee accept a
+		// roster it cannot vouch for.
 		if req.RedeemScriptHex == "" || req.CsvBlocks == 0 {
 			return nil, status.Error(codes.NotFound, "escrow not found for outpoint")
 		}
-		if s.chainWatcher == nil || s.chainParams == nil {
-			return nil, status.Error(codes.FailedPrecondition, "chain watcher not configured")
+		if s.chainParams == nil {
+			return nil, status.Error(codes.FailedPrecondition, "chain params not configured")
 		}
 		redeem, err := hex.DecodeString(req.RedeemScriptHex)
 		if err != nil {
@@ -762,53 +799,12 @@ func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "derive pkScript: %v", err)
 		}
-		u, err := s.chainWatcher.LookupUTXO(outpoint, pkHex)
-		if err != nil {
-			switch {
-			case errors.Is(err, chainwatcher.ErrOutpointSpent):
-				return nil, status.Error(codes.FailedPrecondition, "escrow funding output has already been spent; this escrow cannot be reused")
-			case errors.Is(err, chainwatcher.ErrTxNotFound),
-				errors.Is(err, chainwatcher.ErrVoutNotFound):
-				return nil, status.Errorf(codes.InvalidArgument, "escrow funding outpoint %s does not exist on chain", outpoint)
-			default:
-				return nil, status.Errorf(codes.Unknown, "lookup escrow funding outpoint %s: %v", outpoint, err)
-			}
+		es = s.escrowForPkScript(uid, pkHex)
+		if es == nil {
+			return nil, status.Error(codes.NotFound,
+				"no escrow of yours matches that redeem script; open one for this table first")
 		}
-		var compPub []byte
-		if len(redeem) >= 35 && redeem[0] == txscript.OP_IF && redeem[1] == txscript.OP_DATA_33 {
-			compPub = redeem[2 : 2+33]
-		}
-		if len(compPub) != 33 {
-			return nil, status.Error(codes.InvalidArgument, "redeem script format not recognized")
-		}
-		es = &refereeEscrowSession{
-			EscrowID:        newEscrowID(),
-			OwnerUID:        uid,
-			Token:           token,
-			TableID:         tableID,
-			SeatIndex:       seat,
-			CompPubkey:      compPub,
-			PayoutAddr:      payoutAddr,
-			AmountAtoms:     u.Value,
-			CSVBlocks:       req.CsvBlocks,
-			RedeemScriptHex: req.RedeemScriptHex,
-			PkScriptHex:     pkHex,
-			fundingState:    escrowStateUnfunded,
-		}
-		es.LatestFunding = chainwatcher.DepositUpdate{
-			PkScriptHex: pkHex,
-			Confs:       u.Confs,
-			UTXOCount:   1,
-			OK:          true,
-			At:          time.Now(),
-			UTXOs:       []*chainwatcher.EscrowUTXO{u},
-		}
-		decision := classifyEscrowFundingState(es.AmountAtoms, es.CSVBlocks, escrowRequiredConfirmations, true, es.LatestFunding)
-		es.updateFundingState(decision.state, decision.reason, es.LatestFunding, decision.bound)
 		escrowID = es.EscrowID
-		s.referee.mu.Lock()
-		s.referee.escrows[escrowID] = es
-		s.referee.mu.Unlock()
 	}
 	s.subscribeEscrow(es)
 	matchID := strings.TrimSpace(req.GetMatchId())
@@ -835,21 +831,26 @@ func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest
 	hasBound := es.BoundUTXO != nil
 	es.mu.RUnlock()
 	if !hasBound {
-		if req.RedeemScriptHex == "" || req.CsvBlocks == 0 {
-			return nil, status.Error(codes.FailedPrecondition, "escrow not funded and redeem/csv not provided")
+		// Watch the escrow's own deposit script, not one supplied with the
+		// request. The referee derived it from the table's roster; taking
+		// the caller's word for it here would undo that, since a redeem
+		// script is what decides who can ever spend the deposit.
+		es.mu.RLock()
+		pkHex := es.PkScriptHex
+		ownRedeem := es.RedeemScriptHex
+		es.mu.RUnlock()
+		if pkHex == "" || ownRedeem == "" {
+			return nil, status.Error(codes.FailedPrecondition,
+				"escrow has no deposit script yet; the table roster is still incomplete")
+		}
+		if req.RedeemScriptHex != "" && !strings.EqualFold(req.RedeemScriptHex, ownRedeem) {
+			return nil, status.Error(codes.InvalidArgument,
+				"redeem_script_hex does not match the escrow's own deposit script")
 		}
 		if s.chainWatcher == nil {
 			return nil, status.Error(codes.FailedPrecondition, "chain watcher not configured")
 		}
-		// Build pkScript from redeem.
-		redeem, err := hex.DecodeString(req.RedeemScriptHex)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid redeem_script_hex")
-		}
-		pkHex, _, err := pkScriptAndAddrFromRedeem(redeem, s.chainParams)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "derive pkScript: %v", err)
-		}
+
 		// Query watcher directly.
 		u, err := s.chainWatcher.LookupUTXO(outpoint, pkHex)
 		if err != nil {
@@ -864,9 +865,6 @@ func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest
 			}
 		}
 		es.mu.Lock()
-		es.RedeemScriptHex = req.RedeemScriptHex
-		es.CSVBlocks = req.CsvBlocks
-		es.PkScriptHex = pkHex
 		es.BoundUTXO = cloneUTXO(u)
 		es.LatestFunding = chainwatcher.DepositUpdate{
 			PkScriptHex: pkHex,

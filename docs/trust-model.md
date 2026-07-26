@@ -172,12 +172,24 @@ referee that substituted a key of its own, dropped a member, or pointed the
 address at some other script fails there — before funds move, rather than at
 settlement when the only remedy left is the CSV refund.
 
+`BindEscrow` no longer accepts a redeem script from a client. It used to
+reconstruct an owner key by reading bytes 2–35 of whatever script the request
+carried — under a roster script that is the first canonical member, not the
+owner — and mint an escrow session around it, which would have let a player fund
+a script of their own choosing and bind it as their stake. A supplied script is
+now only an identifier: it is hashed and matched against an escrow the referee
+already issued to that caller, and if none matches the bind is refused. The
+funding path likewise watches the escrow's own deposit script rather than
+overwriting it from the request.
+
+Escrow state is in-memory only, so a referee restart loses it. Recovery is to
+open again — `OpenEscrow` is idempotent per seat and rebuilds the roster from
+published keys — rather than to have the referee accept a roster it cannot
+vouch for.
+
 Still open: the bindable-escrow reuse in `pkg/client/escrow_archive.go` and
 `GetBindableEscrows`, which assume an escrow is fundable before it knows its
-table and reusable across tables. Neither holds under n-of-n. `BindEscrow`'s
-unknown-escrow path also still reconstructs an owner key by reading bytes 2–35
-of a client-supplied redeem script, which under a roster script is the first
-canonical member rather than the owner.
+table and reusable across tables. Neither holds under n-of-n.
 
 The cost falls on no-shows. A deposit is roster-specific, so if one player locks
 in and never funds, everyone who did fund waits out the CSV — roughly five hours
