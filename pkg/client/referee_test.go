@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	testPrivHex    = "0000000000000000000000000000000000000000000000000000000000000002"
 	testPayoutAddr = "TsRnk22spGQJTpKFcRBc281rmfNFpywh337"
 	testOtherAddr  = "TsgsQwSZTkbXPGdFBg5z3wthjkQs1EeKcJ5"
 
@@ -22,6 +23,17 @@ const (
 
 func testPolicy() PresignPolicy {
 	return PresignPolicy{PayoutAddress: testPayoutAddr}
+}
+
+// testOwnPub is the session key matching the private scalar the tests presign
+// with, so ownership checks resolve the fixture's single input to us.
+func testOwnPub(t *testing.T) []byte {
+	t.Helper()
+	pub, err := pubFromPrivHex(testPrivHex)
+	if err != nil {
+		t.Fatalf("derive own pubkey: %v", err)
+	}
+	return pub
 }
 
 func buildTestNeedPreSigs(t *testing.T) *pokerrpc.NeedPreSigs {
@@ -89,28 +101,28 @@ func buildTestNeedPreSigsTo(t *testing.T, payoutAddr string, payout int64, extra
 
 func TestValidateNeedPreSigsRejectsRedirectedPayout(t *testing.T) {
 	need := buildTestNeedPreSigsTo(t, testOtherAddr, testPayoutAtoms, 0)
-	if err := validateNeedPreSigs(need, testPolicy()); err == nil {
+	if err := validateNeedPreSigs(need, testPolicy(), testOwnPub(t)); err == nil {
 		t.Fatalf("expected rejection when our own branch pays another address")
 	}
 }
 
 func TestValidateNeedPreSigsRejectsExcessiveFee(t *testing.T) {
 	need := buildTestNeedPreSigsTo(t, testPayoutAddr, testPayoutAtoms-1, 0)
-	if err := validateNeedPreSigs(need, testPolicy()); err == nil {
+	if err := validateNeedPreSigs(need, testPolicy(), testOwnPub(t)); err == nil {
 		t.Fatalf("expected rejection when the fee exceeds the cap")
 	}
 }
 
 func TestValidateNeedPreSigsRejectsExtraOutputs(t *testing.T) {
 	need := buildTestNeedPreSigsTo(t, testPayoutAddr, testPayoutAtoms, 1)
-	if err := validateNeedPreSigs(need, testPolicy()); err == nil {
+	if err := validateNeedPreSigs(need, testPolicy(), testOwnPub(t)); err == nil {
 		t.Fatalf("expected rejection of a draft with more than one output")
 	}
 }
 
 func TestValidateNeedPreSigsRequiresPayoutAddress(t *testing.T) {
 	need := buildTestNeedPreSigs(t)
-	if err := validateNeedPreSigs(need, PresignPolicy{}); err == nil {
+	if err := validateNeedPreSigs(need, PresignPolicy{}, testOwnPub(t)); err == nil {
 		t.Fatalf("expected refusal to presign our own branch with no payout address")
 	}
 }
@@ -120,7 +132,7 @@ func TestValidateNeedPreSigsRequiresPayoutAddress(t *testing.T) {
 func TestValidateNeedPreSigsAllowsForeignBranch(t *testing.T) {
 	need := buildTestNeedPreSigsTo(t, testOtherAddr, testPayoutAtoms, 0)
 	need.Branch = 1 // our only input sits at index 0
-	if err := validateNeedPreSigs(need, testPolicy()); err != nil {
+	if err := validateNeedPreSigs(need, testPolicy(), testOwnPub(t)); err != nil {
 		t.Fatalf("expected a foreign branch to validate on shape alone, got %v", err)
 	}
 }
@@ -143,7 +155,7 @@ func TestDraftBranchCountTracksInputs(t *testing.T) {
 
 func TestValidateNeedPreSigsOK(t *testing.T) {
 	need := buildTestNeedPreSigs(t)
-	if err := validateNeedPreSigs(need, testPolicy()); err != nil {
+	if err := validateNeedPreSigs(need, testPolicy(), testOwnPub(t)); err != nil {
 		t.Fatalf("expected valid need presigs, got %v", err)
 	}
 }
@@ -152,26 +164,26 @@ func TestValidateNeedPreSigsRejectsTamper(t *testing.T) {
 	need := buildTestNeedPreSigs(t)
 
 	need.Inputs[0].SighashHex = "00" + need.Inputs[0].SighashHex[2:]
-	if err := validateNeedPreSigs(need, testPolicy()); err == nil {
+	if err := validateNeedPreSigs(need, testPolicy(), testOwnPub(t)); err == nil {
 		t.Fatalf("expected mismatch error after sighash tamper")
 	}
 
 	need = buildTestNeedPreSigs(t)
 	need.Inputs[0].InputId = "00" + need.Inputs[0].InputId[2:]
-	if err := validateNeedPreSigs(need, testPolicy()); err == nil {
+	if err := validateNeedPreSigs(need, testPolicy(), testOwnPub(t)); err == nil {
 		t.Fatalf("expected input mismatch after txid tamper")
 	}
 }
 
 func TestBuildVerifyOkUsesValidation(t *testing.T) {
 	need := buildTestNeedPreSigs(t)
-	if _, err := BuildVerifyOk("02", need, testPolicy()); err != nil {
+	if _, err := BuildVerifyOk(testPrivHex, need, testPolicy()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Tamper sighash to trigger same validation failure.
 	need.Inputs[0].SighashHex = "00" + need.Inputs[0].SighashHex[2:]
-	if _, err := BuildVerifyOk("02", need, testPolicy()); err == nil {
+	if _, err := BuildVerifyOk(testPrivHex, need, testPolicy()); err == nil {
 		t.Fatalf("expected validation error on tampered sighash")
 	}
 }
@@ -183,22 +195,73 @@ func TestVerifyPreSigRejectsAlteredPresig(t *testing.T) {
 	xPrivHex := hex.EncodeToString(x)
 	compPub := secp256k1.PrivKeyFromBytes(x).PubKey().SerializeCompressed()
 
-	presigs, err := BuildVerifyOk(xPrivHex, need, testPolicy())
+	signed, err := BuildVerifyOk(xPrivHex, need, testPolicy())
 	if err != nil {
 		t.Fatalf("build presigs: %v", err)
 	}
-	if len(presigs) != 1 {
-		t.Fatalf("unexpected presig count %d", len(presigs))
+	if len(signed.PreSigs) != 1 {
+		t.Fatalf("unexpected presig count %d", len(signed.PreSigs))
 	}
 
 	// Happy path verify.
-	if err := VerifyPreSig(need, compPub, presigs[0]); err != nil {
+	if err := VerifyPreSig(need, compPub, signed.PreSigs[0]); err != nil {
 		t.Fatalf("verify presig failed: %v", err)
 	}
 
 	// Tamper s' to simulate server altering stored presig.
-	presigs[0].SPrimeHex = "00" + presigs[0].SPrimeHex[2:]
-	if err := VerifyPreSig(need, compPub, presigs[0]); err == nil {
+	signed.PreSigs[0].SPrimeHex = "00" + signed.PreSigs[0].SPrimeHex[2:]
+	if err := VerifyPreSig(need, compPub, signed.PreSigs[0]); err == nil {
 		t.Fatalf("expected verification failure on altered presig")
+	}
+}
+
+// With every input of every branch now arriving, a client adaptor-presigns only
+// the input it owns and plainly co-signs the rest.
+func TestBuildPresigsSplitsOwnedAndForeignInputs(t *testing.T) {
+	need := buildTestNeedPreSigs(t)
+	ownPub := testOwnPub(t)
+
+	// Mark the existing input as ours and add one owned by somebody else.
+	need.Inputs[0].OwnerPubkey = ownPub
+	otherPriv, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	foreign := *need.Inputs[0]
+	foreign.InputId = "ff" + need.Inputs[0].InputId[2:]
+	foreign.InputIndex = 1
+	foreign.OwnerPubkey = otherPriv.PubKey().SerializeCompressed()
+	need.Inputs = append(need.Inputs, &foreign)
+
+	signed, err := buildPresigs(testPrivHex, need, ownPub)
+	if err != nil {
+		t.Fatalf("build presigs: %v", err)
+	}
+	if len(signed.PreSigs) != 1 || signed.PreSigs[0].InputId != need.Inputs[0].InputId {
+		t.Fatalf("expected one adaptor presig over our own input, got %d", len(signed.PreSigs))
+	}
+	if len(signed.CoSigs) != 1 || signed.CoSigs[0].InputId != foreign.InputId {
+		t.Fatalf("expected one co-signature over the foreign input, got %d", len(signed.CoSigs))
+	}
+	if !bytes.Equal(signed.CoSigs[0].SignerPubkey, ownPub) {
+		t.Fatalf("co-signature is not attributed to us")
+	}
+	// 65 bytes: 64 of [r,s] plus the hash type byte.
+	if len(signed.CoSigs[0].SigHex) != 130 {
+		t.Fatalf("co-signature is %d hex chars, want 130", len(signed.CoSigs[0].SigHex))
+	}
+}
+
+// A draft carrying no input of ours is not something we should be signing.
+func TestBuildPresigsRejectsDraftWeDoNotOwn(t *testing.T) {
+	need := buildTestNeedPreSigs(t)
+	otherPriv, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	need.Inputs[0].OwnerPubkey = otherPriv.PubKey().SerializeCompressed()
+
+	if _, err := buildPresigs(testPrivHex, need, testOwnPub(t)); err == nil {
+		t.Fatalf("expected refusal to sign a draft with no input of ours")
 	}
 }

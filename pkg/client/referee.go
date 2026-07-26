@@ -199,7 +199,8 @@ func (c *RefereeClient) StartPresign(ctx context.Context, matchID, tableID strin
 			resp := &pokerrpc.ProvidePreSigs{
 				MatchId: need.MatchId,
 				Branch:  need.Branch,
-				Presigs: pres,
+				Presigs: pres.PreSigs,
+				Cosigs:  pres.CoSigs,
 			}
 			if err := stream.Send(&pokerrpc.SettlementStreamMessage{Msg: &pokerrpc.SettlementStreamMessage_ProvidePreSigs{ProvidePreSigs: resp}}); err != nil {
 				return err
@@ -242,16 +243,46 @@ func (c *RefereeClient) GetFinalizeBundle(ctx context.Context, matchID string, w
 	})
 }
 
-func buildPresigs(xPrivHex string, need *pokerrpc.NeedPreSigs) ([]*pokerrpc.PreSignature, error) {
+// SignedBranch is what a client contributes for one settlement branch.
+//
+// The escrow's settlement branch needs a signature from every table member, so
+// a client signs every input of the draft — but in two different ways. Its own
+// input gets an adaptor pre-signature, which only completes once the referee
+// reveals that branch's secret, and that is what keeps a branch unspendable
+// until it is the branch that won. Everyone else's inputs get ordinary
+// signatures: branch selection is already gated by the owner's presig, so a
+// co-signature only has to prove this player agreed to the draft.
+type SignedBranch struct {
+	PreSigs []*pokerrpc.PreSignature
+	CoSigs  []*pokerrpc.CoSignature
+}
+
+func buildPresigs(xPrivHex string, need *pokerrpc.NeedPreSigs, ownPub []byte) (*SignedBranch, error) {
 	privB, err := hex.DecodeString(xPrivHex)
 	if err != nil || len(privB) == 0 {
 		return nil, fmt.Errorf("bad x priv")
 	}
-	var out []*pokerrpc.PreSignature
+	out := &SignedBranch{}
 	for _, in := range need.Inputs {
 		if len(in.SighashHex) != 64 {
 			return nil, fmt.Errorf("bad sighash for %s", in.InputId)
 		}
+
+		// An input with no stated owner comes from a server that sends only
+		// the caller's own inputs, so it is ours by construction.
+		if len(in.OwnerPubkey) != 0 && !bytes.Equal(in.OwnerPubkey, ownPub) {
+			sig, err := signSchnorrV0(xPrivHex, in.SighashHex)
+			if err != nil {
+				return nil, fmt.Errorf("cosign %s: %w", in.InputId, err)
+			}
+			out.CoSigs = append(out.CoSigs, &pokerrpc.CoSignature{
+				InputId:      in.InputId,
+				SignerPubkey: append([]byte(nil), ownPub...),
+				SigHex:       hex.EncodeToString(sig),
+			})
+			continue
+		}
+
 		if len(in.AdaptorPointHex) != 66 {
 			return nil, fmt.Errorf("bad adaptor point for %s", in.InputId)
 		}
@@ -259,13 +290,26 @@ func buildPresigs(xPrivHex string, need *pokerrpc.NeedPreSigs) ([]*pokerrpc.PreS
 		if err != nil {
 			return nil, fmt.Errorf("compute presig %s: %w", in.InputId, err)
 		}
-		out = append(out, &pokerrpc.PreSignature{
+		out.PreSigs = append(out.PreSigs, &pokerrpc.PreSignature{
 			InputId:          in.InputId,
 			RPrimeCompactHex: rComp,
 			SPrimeHex:        sPrime,
 		})
 	}
+	if len(out.PreSigs) == 0 {
+		return nil, fmt.Errorf("draft carries no input owned by this player")
+	}
 	return out, nil
+}
+
+// pubFromPrivHex derives the compressed session key for a private scalar, so a
+// client can tell which draft inputs are its own without being told.
+func pubFromPrivHex(xPrivHex string) ([]byte, error) {
+	b, err := hex.DecodeString(strings.TrimSpace(xPrivHex))
+	if err != nil || len(b) == 0 {
+		return nil, fmt.Errorf("bad x priv")
+	}
+	return secp256k1.PrivKeyFromBytes(b).PubKey().SerializeCompressed(), nil
 }
 
 // computePreSig derives adaptor pre-signature for (x, m, T).
@@ -426,7 +470,7 @@ func VerifyPreSig(ctx *pokerrpc.NeedPreSigs, compPubkey []byte, ps *pokerrpc.Pre
 
 // validateNeedPreSigs ensures the server-provided draft and inputs are consistent
 // with each other before we derive and return pre-signatures.
-func validateNeedPreSigs(need *pokerrpc.NeedPreSigs, pol PresignPolicy) error {
+func validateNeedPreSigs(need *pokerrpc.NeedPreSigs, pol PresignPolicy, ownPub []byte) error {
 	if need == nil {
 		return fmt.Errorf("nil need presigs")
 	}
@@ -494,7 +538,7 @@ func validateNeedPreSigs(need *pokerrpc.NeedPreSigs, pol PresignPolicy) error {
 		}
 	}
 
-	return validateDraftOutputs(&tx, need, pol)
+	return validateDraftOutputs(&tx, need, pol, ownPub)
 }
 
 // validateDraftOutputs checks the part of a draft that decides where the money
@@ -508,7 +552,7 @@ func validateNeedPreSigs(need *pokerrpc.NeedPreSigs, pol PresignPolicy) error {
 // cannot know another player's address. That is still sufficient in aggregate:
 // every branch is strictly checked by the player it pays, so a draft with a
 // redirected payout can never collect a full set of presigs.
-func validateDraftOutputs(tx *wire.MsgTx, need *pokerrpc.NeedPreSigs, pol PresignPolicy) error {
+func validateDraftOutputs(tx *wire.MsgTx, need *pokerrpc.NeedPreSigs, pol PresignPolicy, ownPub []byte) error {
 	if len(tx.TxOut) != 1 {
 		return fmt.Errorf("draft tx has %d outputs, want exactly 1", len(tx.TxOut))
 	}
@@ -532,14 +576,17 @@ func validateDraftOutputs(tx *wire.MsgTx, need *pokerrpc.NeedPreSigs, pol Presig
 		return fmt.Errorf("draft fee %d exceeds maximum %d", fee, pol.maxFee())
 	}
 
-	// The server sends each client only its own inputs, so this branch pays
-	// this client when one of them sits at index == branch.
+	// Branch b pays the owner of input b, so this branch pays us when the
+	// input at that index is ours. Ownership is stated by owner_pubkey; a
+	// server that sends only our own inputs and names no owner leaves the
+	// index match as the sole signal.
 	paysUs := false
 	for _, in := range need.Inputs {
-		if int32(in.InputIndex) == need.Branch {
-			paysUs = true
-			break
+		if int32(in.InputIndex) != need.Branch {
+			continue
 		}
+		paysUs = len(in.OwnerPubkey) == 0 || bytes.Equal(in.OwnerPubkey, ownPub)
+		break
 	}
 	if !paysUs {
 		return nil
@@ -585,9 +632,13 @@ func draftBranchCount(need *pokerrpc.NeedPreSigs) (int, error) {
 //	R' = k·G + T   (even-Y enforced in computePreSig)
 //
 // Server check (equivalent form): s'G + eX + T ?= R'   // i.e. s'G ?= R' - eX - T
-func BuildVerifyOk(xPrivHex string, need *pokerrpc.NeedPreSigs, pol PresignPolicy) ([]*pokerrpc.PreSignature, error) {
-	if err := validateNeedPreSigs(need, pol); err != nil {
+func BuildVerifyOk(xPrivHex string, need *pokerrpc.NeedPreSigs, pol PresignPolicy) (*SignedBranch, error) {
+	ownPub, err := pubFromPrivHex(xPrivHex)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateNeedPreSigs(need, pol, ownPub); err != nil {
 		return nil, fmt.Errorf("server presign validation failed: %w", err)
 	}
-	return buildPresigs(xPrivHex, need)
+	return buildPresigs(xPrivHex, need, ownPub)
 }
