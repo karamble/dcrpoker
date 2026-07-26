@@ -80,13 +80,52 @@ disappears and the error path reports "escrow funding output already spent"
 
 Unlike the two gaps below, this needs no malicious server — only a malicious
 player — so it survives into the serverless design, where the player is the
-whole threat model. The fix is to make the fast branch non-unilateral (2-of-2,
-or a MuSig2 aggregate over the table) while leaving the CSV branch alone, since
-unilateral refund is the liveness backstop. It changes the script and therefore
-the deposit-address derivation, so it belongs with the fidelity bond work rather
-than with the fixes below. The script comment notes it "mirrors the Pong
-helper", so this looks inherited from a two-party context rather than designed
-for a contested pot.
+whole threat model. The old script comment noted it "mirrors the Pong helper",
+so it looks inherited from a two-party context rather than designed for a
+contested pot.
+
+#### Resolved on 2026-07-26: n-of-n over the table
+
+The settlement branch carries one `OP_CHECKSIGALTVERIFY` per table member, so
+the only spends that can satisfy it are transactions every member signed — the
+drafts agreed before the hand. The refund branch stays unilateral, because
+recovering your own funds after CSV must never depend on anyone else.
+
+It is a chain of checks rather than an `OP_CHECKMULTISIG` because the escrow has
+to be Schnorr — settlement runs on adaptor signatures — and Decred has
+`OP_CHECKMULTISIG` but no `OP_CHECKMULTISIGALT`, so no multisig opcode accepts
+an alternative signature type. A single aggregate key was considered and
+rejected: dcrd's secp256k1 ships no MuSig2.
+
+The construction lives in `pkg/escrow`, shared so the server and client derive
+byte-identical scripts — the script hash is the deposit address, and a one-byte
+disagreement sends funds somewhere nobody can spend them. Its tests drive the
+consensus script engine rather than asserting on bytes: the full member set
+spends, no proper subset does, a forged signature does not, signatures in the
+wrong order do not, the owner alone cannot touch the settlement branch, and
+refund still works alone once CSV matures.
+
+**It is not yet wired in.** `buildPerDepositorRedeemScript`
+(`pkg/server/referee.go:2145`) still produces every live deposit address, so the
+defect above is open in running code until the referee, the client and the
+escrow lifecycle are moved over.
+
+#### Roster-first funding
+
+n-of-n makes the redeem script, and therefore the deposit address, depend on the
+whole roster. An escrow can no longer be opened, funded, and bound to whatever
+table later — which is exactly what `OpenEscrow` and the bindable-escrow reuse
+in `escrow_archive.go` do today. A table must instead lock registration, publish
+every session key, and only then have players fund and wait for confirmations.
+
+The cost falls on no-shows. A deposit is roster-specific, so if one player locks
+in and never funds, everyone who did fund waits out the CSV — roughly five hours
+at 64 blocks. To keep a fully funded table from paying that price, the table
+pre-signs an **abort transaction** refunding every player to their own payout
+address once all escrows are funded. That is an n-of-n spend like any settlement
+draft, so a locked table can unwind immediately instead of waiting for CSV. It
+does not help when a player never funds at all; only a bond posted at
+registration rather than at funding would.
 
 ### Known gaps in the escrow layer
 
