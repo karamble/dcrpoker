@@ -264,6 +264,7 @@ type schnorrRefereeState struct {
 	cosigs             map[string]map[int32]map[string]map[string]string  // matchKey -> branch -> inputID -> signer pubkey hex -> sig hex
 	abortDrafts        map[string]*branchDraft                            // matchKey -> the unwind draft, once escrows are funded
 	abortSigs          map[string]map[string]map[string]string            // matchKey -> inputID -> signer pubkey hex -> sig hex
+	bonds              map[zkidentity.ShortID]*playerBond                 // player -> the fidelity bond they registered
 	branchGamma        map[string]map[int32]string                        // matchKey -> branch -> gammaHex
 	presignComplete    map[string]map[uint32]bool                         // matchKey -> seat -> completed
 	pendingSettlements map[string]bool                                    // matchKey -> settlement still pending
@@ -282,6 +283,7 @@ func newSchnorrRefereeState(cfg ServerConfig) *schnorrRefereeState {
 		cosigs:             make(map[string]map[int32]map[string]map[string]string),
 		abortDrafts:        make(map[string]*branchDraft),
 		abortSigs:          make(map[string]map[string]map[string]string),
+		bonds:              make(map[zkidentity.ShortID]*playerBond),
 		branchGamma:        make(map[string]map[int32]string),
 		presignComplete:    make(map[string]map[uint32]bool),
 		pendingSettlements: make(map[string]bool),
@@ -635,6 +637,14 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 		return nil, status.Error(codes.FailedPrecondition, "you are not seated at this table")
 	}
 	seat := uint32(callerUser.TableSeat)
+
+	// Taking a seat is what costs everyone else: until the last one opens
+	// nobody can fund, and a seat held by someone who never funds keeps every
+	// other stake waiting on its CSV. A bond is what makes holding one cost
+	// the holder something too.
+	if err := s.requireBond(ownerUID); err != nil {
+		return nil, err
+	}
 
 	// A WTA table plays only once every seat is filled and ready, so the seat
 	// count is the roster size: the set of keys is known in advance even though
@@ -3159,4 +3169,191 @@ func (s *Server) buildAbortTx(matchID string) (*wire.MsgTx, error) {
 		tx.TxIn[in.InputIndex].SignatureScript = sigScript
 	}
 	return tx, nil
+}
+
+// Bond terms this referee demands. A bond is not forfeitable, so what deters is
+// the size of the deposit and the length of the lock, not the risk of losing
+// it. See escrow.BondScript for why forfeiture is not available at this point
+// in the lifecycle.
+const (
+	// MinBondAtoms is the smallest bond that counts. It is deliberately well
+	// under a typical buy-in: the bond is a standing cost of holding an
+	// identity, not a per-table stake.
+	MinBondAtoms uint64 = 10_000_000 // 0.1 DCR
+
+	// bondRequiredConfirmations is what a bond must have before it counts.
+	bondRequiredConfirmations = uint32(2)
+)
+
+// playerBond is a bond the referee has verified on chain.
+type playerBond struct {
+	Outpoint    string
+	OwnerPubkey []byte
+	AmountAtoms uint64
+	LockBlocks  uint32
+	Confs       uint32
+}
+
+// PostBond registers a fidelity bond for the caller.
+//
+// A player must hold one before taking a seat. Roster-first funding makes a
+// seat costly for everyone else to have held: until the last seat opens nobody
+// can fund, and once they have, a player who never funds keeps every other
+// stake waiting on its CSV. Registration therefore has to cost something, and
+// a zkidentity does not - they are free to generate. The bond is what that
+// costs.
+//
+// The referee never gains any claim on it. It verifies that the coin exists, is
+// the caller's own, and is locked up for long enough to be worth something.
+func (s *Server) PostBond(ctx context.Context, req *pokerrpc.PostBondRequest) (*pokerrpc.PostBondResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request required")
+	}
+	uid, _, ok := s.payoutForToken(s.tokenFrom(ctx, req.GetToken()))
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "invalid or expired session")
+	}
+	if s.chainWatcher == nil || s.chainParams == nil {
+		return nil, status.Error(codes.FailedPrecondition, "chain watcher not configured")
+	}
+
+	outpoint := strings.TrimSpace(req.GetOutpoint())
+	if outpoint == "" {
+		return nil, status.Error(codes.InvalidArgument, "outpoint required")
+	}
+	raw, err := hex.DecodeString(strings.TrimSpace(req.GetBondScriptHex()))
+	if err != nil || len(raw) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "bond_script_hex required")
+	}
+	terms, err := escrow.ParseBond(raw)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "not a bond script: %v", err)
+	}
+	if terms.LockBlocks < escrow.MinBondBlocks {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"bond locked for %d blocks, need at least %d", terms.LockBlocks, escrow.MinBondBlocks)
+	}
+
+	// One bond per outpoint across all players. Otherwise a single locked
+	// deposit would back any number of identities, which is the one thing
+	// asking for a bond is meant to prevent. Checked before going to chain,
+	// since an outpoint already spoken for is not worth a lookup.
+	s.referee.mu.RLock()
+	for holder, held := range s.referee.bonds {
+		if holder != uid && held != nil && held.Outpoint == outpoint {
+			s.referee.mu.RUnlock()
+			return nil, status.Error(codes.FailedPrecondition,
+				"that bond is already registered to another player")
+		}
+	}
+	s.referee.mu.RUnlock()
+
+	// The deposit has to actually pay that script, and still be unspent.
+	pkHex, _, err := pkScriptAndAddrFromRedeem(raw, s.chainParams)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "derive bond pkScript: %v", err)
+	}
+	u, err := s.chainWatcher.LookupUTXO(outpoint, pkHex)
+	if err != nil {
+		switch {
+		case errors.Is(err, chainwatcher.ErrOutpointSpent):
+			return nil, status.Error(codes.FailedPrecondition, "bond has already been spent")
+		case errors.Is(err, chainwatcher.ErrTxNotFound), errors.Is(err, chainwatcher.ErrVoutNotFound):
+			return nil, status.Errorf(codes.InvalidArgument, "bond outpoint %s does not exist on chain", outpoint)
+		default:
+			return nil, status.Errorf(codes.Unknown, "lookup bond outpoint %s: %v", outpoint, err)
+		}
+	}
+	if u.Value < MinBondAtoms {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"bond holds %d atoms, need at least %d", u.Value, MinBondAtoms)
+	}
+	if u.Confs < bondRequiredConfirmations {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"bond has %d confirmations, need %d", u.Confs, bondRequiredConfirmations)
+	}
+
+	bond := &playerBond{
+		Outpoint:    outpoint,
+		OwnerPubkey: terms.Owner,
+		AmountAtoms: u.Value,
+		LockBlocks:  terms.LockBlocks,
+		Confs:       u.Confs,
+	}
+
+	s.referee.mu.Lock()
+	s.referee.bonds[uid] = bond
+	s.referee.mu.Unlock()
+
+	s.log.Infof("Bond registered for %s: %s (%d atoms, %d block lock)",
+		uid, outpoint, bond.AmountAtoms, bond.LockBlocks)
+
+	return bondResponse(bond), nil
+}
+
+// GetBond reports the bond the caller holds, if any.
+func (s *Server) GetBond(ctx context.Context, req *pokerrpc.GetBondRequest) (*pokerrpc.PostBondResponse, error) {
+	uid, _, ok := s.payoutForToken(s.tokenFrom(ctx, req.GetToken()))
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "invalid or expired session")
+	}
+	s.referee.mu.RLock()
+	bond := s.referee.bonds[uid]
+	s.referee.mu.RUnlock()
+	if bond == nil {
+		return &pokerrpc.PostBondResponse{
+			Ok:                 false,
+			RequiredAtoms:      MinBondAtoms,
+			RequiredLockBlocks: escrow.MinBondBlocks,
+		}, nil
+	}
+	return bondResponse(bond), nil
+}
+
+func bondResponse(b *playerBond) *pokerrpc.PostBondResponse {
+	return &pokerrpc.PostBondResponse{
+		Ok:                 true,
+		Outpoint:           b.Outpoint,
+		AmountAtoms:        b.AmountAtoms,
+		LockBlocks:         b.LockBlocks,
+		Confs:              b.Confs,
+		OwnerPubkey:        b.OwnerPubkey,
+		RequiredAtoms:      MinBondAtoms,
+		RequiredLockBlocks: escrow.MinBondBlocks,
+	}
+}
+
+// requireBond reports whether a player holds a bond good enough to take a seat.
+func (s *Server) requireBond(uid zkidentity.ShortID) error {
+	// A referee with no chain access cannot have verified anything, so it
+	// cannot demand a bond either.
+	if s.chainWatcher == nil {
+		return nil
+	}
+	s.referee.mu.RLock()
+	bond := s.referee.bonds[uid]
+	s.referee.mu.RUnlock()
+
+	if bond == nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"post a fidelity bond of at least %d atoms, locked for %d blocks, before taking a seat",
+			MinBondAtoms, escrow.MinBondBlocks)
+	}
+	if bond.AmountAtoms < MinBondAtoms || bond.LockBlocks < escrow.MinBondBlocks {
+		return status.Error(codes.FailedPrecondition, "your bond no longer meets this table's terms")
+	}
+	return nil
+}
+
+// tokenFrom prefers an explicit token and falls back to request metadata.
+func (s *Server) tokenFrom(ctx context.Context, token string) string {
+	if t := strings.TrimSpace(token); t != "" {
+		return t
+	}
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("token"); len(vals) > 0 {
+			return strings.TrimSpace(vals[0])
+		}
+	}
+	return ""
 }

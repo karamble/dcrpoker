@@ -27,6 +27,8 @@ const (
 	PokerReferee_GetEscrowStatus_FullMethodName   = "/poker.PokerReferee/GetEscrowStatus"
 	PokerReferee_SetPayoutAddress_FullMethodName  = "/poker.PokerReferee/SetPayoutAddress"
 	PokerReferee_AbortMatch_FullMethodName        = "/poker.PokerReferee/AbortMatch"
+	PokerReferee_PostBond_FullMethodName          = "/poker.PokerReferee/PostBond"
+	PokerReferee_GetBond_FullMethodName           = "/poker.PokerReferee/GetBond"
 )
 
 // PokerRefereeClient is the client API for PokerReferee service.
@@ -51,6 +53,10 @@ type PokerRefereeClient interface {
 	SetPayoutAddress(ctx context.Context, in *SetPayoutAddressRequest, opts ...grpc.CallOption) (*SetPayoutAddressResponse, error)
 	// Unwinds a funded table that never started, refunding every seat at once.
 	AbortMatch(ctx context.Context, in *AbortMatchRequest, opts ...grpc.CallOption) (*AbortMatchResponse, error)
+	// Registers a fidelity bond, which a player must hold before taking a seat.
+	PostBond(ctx context.Context, in *PostBondRequest, opts ...grpc.CallOption) (*PostBondResponse, error)
+	// Reports the bond the caller currently holds, if any.
+	GetBond(ctx context.Context, in *GetBondRequest, opts ...grpc.CallOption) (*PostBondResponse, error)
 }
 
 type pokerRefereeClient struct {
@@ -144,6 +150,26 @@ func (c *pokerRefereeClient) AbortMatch(ctx context.Context, in *AbortMatchReque
 	return out, nil
 }
 
+func (c *pokerRefereeClient) PostBond(ctx context.Context, in *PostBondRequest, opts ...grpc.CallOption) (*PostBondResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostBondResponse)
+	err := c.cc.Invoke(ctx, PokerReferee_PostBond_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pokerRefereeClient) GetBond(ctx context.Context, in *GetBondRequest, opts ...grpc.CallOption) (*PostBondResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostBondResponse)
+	err := c.cc.Invoke(ctx, PokerReferee_GetBond_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PokerRefereeServer is the server API for PokerReferee service.
 // All implementations must embed UnimplementedPokerRefereeServer
 // for forward compatibility.
@@ -166,6 +192,10 @@ type PokerRefereeServer interface {
 	SetPayoutAddress(context.Context, *SetPayoutAddressRequest) (*SetPayoutAddressResponse, error)
 	// Unwinds a funded table that never started, refunding every seat at once.
 	AbortMatch(context.Context, *AbortMatchRequest) (*AbortMatchResponse, error)
+	// Registers a fidelity bond, which a player must hold before taking a seat.
+	PostBond(context.Context, *PostBondRequest) (*PostBondResponse, error)
+	// Reports the bond the caller currently holds, if any.
+	GetBond(context.Context, *GetBondRequest) (*PostBondResponse, error)
 	mustEmbedUnimplementedPokerRefereeServer()
 }
 
@@ -199,6 +229,12 @@ func (UnimplementedPokerRefereeServer) SetPayoutAddress(context.Context, *SetPay
 }
 func (UnimplementedPokerRefereeServer) AbortMatch(context.Context, *AbortMatchRequest) (*AbortMatchResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AbortMatch not implemented")
+}
+func (UnimplementedPokerRefereeServer) PostBond(context.Context, *PostBondRequest) (*PostBondResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PostBond not implemented")
+}
+func (UnimplementedPokerRefereeServer) GetBond(context.Context, *GetBondRequest) (*PostBondResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetBond not implemented")
 }
 func (UnimplementedPokerRefereeServer) mustEmbedUnimplementedPokerRefereeServer() {}
 func (UnimplementedPokerRefereeServer) testEmbeddedByValue()                      {}
@@ -354,6 +390,42 @@ func _PokerReferee_AbortMatch_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PokerReferee_PostBond_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PostBondRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PokerRefereeServer).PostBond(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PokerReferee_PostBond_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PokerRefereeServer).PostBond(ctx, req.(*PostBondRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PokerReferee_GetBond_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBondRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PokerRefereeServer).GetBond(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PokerReferee_GetBond_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PokerRefereeServer).GetBond(ctx, req.(*GetBondRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PokerReferee_ServiceDesc is the grpc.ServiceDesc for PokerReferee service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -388,6 +460,14 @@ var PokerReferee_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AbortMatch",
 			Handler:    _PokerReferee_AbortMatch_Handler,
+		},
+		{
+			MethodName: "PostBond",
+			Handler:    _PokerReferee_PostBond_Handler,
+		},
+		{
+			MethodName: "GetBond",
+			Handler:    _PokerReferee_GetBond_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

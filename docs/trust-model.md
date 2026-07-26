@@ -238,8 +238,9 @@ of the fee. A referee proposing an "abort" that paid someone else would
 otherwise be handing itself the table.
 
 Two limits worth stating plainly. It does not help when a player never funds at
-all — there is no deposit of theirs to spend, and only a bond posted at
-registration rather than at funding would. And it must not be broadcastable once
+all — there is no deposit of theirs to spend. The standing bond makes holding a
+seat cost something but pays nobody back; see the bond section. And it must not
+be broadcastable once
 the hand is under way, or whoever is losing would use it to take their stake
 back: the abort is refused after the game starts, and the signatures stay with
 the referee rather than being handed to players, so no player can assemble it.
@@ -397,22 +398,43 @@ reconstruct a live hole card is a worse failure than a stalled table.
 #### Bonds instead of reputation
 
 Deliberate griefing — repeatedly joining and stalling to lock others' funds for
-the CSV window — is answered economically. Each player posts a fidelity bond
-alongside their escrow, forfeited to the remaining players on abandonment.
+the CSV window — is answered economically rather than socially.
 
-Because the chain cannot observe off-chain silence, the structure is punish by
-default, redeem by proof: the abandonment branch becomes spendable by the others
-after a relative timelock unless the leaver posts a signed continuation within
-the dispute window. The burden then falls on the party holding the private key,
-and an honest-but-disconnected player can save themselves by coming back online.
+**Built 2026-07-27, and not in the shape this section originally described.**
 
-**The dispute window is roughly two minutes** — about twice the time to boot a
-computer and launch Bison Relay. The rationale matters more than the number: the
-window exists so an honest player can power on, start their client and respond.
-It is sized to human and machine recovery time, not to block intervals.
+The intent was a bond forfeited to the remaining players on abandonment:
+punish by default, redeem by proof, with the abandonment branch becoming
+spendable by the others after a relative timelock unless the leaver posts a
+signed continuation inside a dispute window of roughly two minutes — about
+twice the time to boot a computer and launch Bison Relay, sized to human and
+machine recovery rather than to block intervals.
 
-Bonds also give reputation something expensive to attach to. zkidentity keys are
-free to generate, so reputation keyed to identity alone is worth nothing.
+**That cannot be posted at registration.** A forfeitable bond has to name the
+people it would be forfeited to, and at registration there is no roster to name
+— which is the whole reason funding is roster-first. The only party known that
+early is the referee, and a bond forfeitable to the referee hands it custody of
+exactly the funds this design takes away from it. Forfeiture and registration
+time are mutually exclusive; something had to give.
+
+What is built is the registration-time half: a **standing fidelity bond**
+(`escrow.BondScript`) that is the player's own coin under a relative timelock,
+spendable by nobody else, ever, and by its owner only once the lock matures
+(minimum 2016 blocks, about a week). The referee verifies the deposit exists, is
+unspent, is confirmed, meets a minimum size, and really does pay a bond script —
+`ParseBond` rebuilds the script from the terms it reads back, so a lookalike
+with a second way out of the coin is rejected. One outpoint cannot back two
+identities. `OpenEscrow` refuses a seat to a player without one.
+
+Its cost is the lock-up, not a transfer, and that buys three things: Sybil
+resistance, since zkidentity keys are free to generate and a fresh identity
+needs a fresh week of locked coin; something expensive for reputation to attach
+to; and a standing deterrent against register-and-vanish, which roster-first
+funding otherwise makes free.
+
+It does not compensate anyone for a no-show's CSV wait. That still needs the
+forfeitable bond, which can only be posted once the roster is closed — alongside
+the stake, not at registration — and the dispute-window design above is what it
+should be built to. Two instruments, not one.
 
 #### Wire protocol: the `--gaming[` envelope
 

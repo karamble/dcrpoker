@@ -1318,3 +1318,125 @@ func TestAbortDraftRefundsEverySeat(t *testing.T) {
 			"seat %d pays more than the whole fee", es.SeatIndex)
 	}
 }
+
+// A seat costs everyone else something under roster-first funding, so taking
+// one has to cost the holder something too - otherwise register-and-vanish is
+// free, and zkidentity keys are free to generate.
+func TestOpenEscrowRequiresABond(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	// requireBond only applies to a referee that can verify one on chain.
+	srv.chainWatcher = &chainwatcher.ChainWatcher{}
+	table := seedRosterTable(t, srv, "bond-gate", 2, amount)
+
+	var uid zkidentity.ShortID
+	require.NoError(t, uid.FromString("0000000000000000000000000000000000000000000000000000000000000001"))
+	srv.TestSeedSession("tokA", uid, "TsRnk22spGQJTpKFcRBc281rmfNFpywh337", uid.String())
+	seatPlayer(t, table, uid.String(), 0)
+
+	open := func() error {
+		_, err := srv.OpenEscrow(context.Background(), &pokerrpc.OpenEscrowRequest{
+			AmountAtoms: amount,
+			CsvBlocks:   64,
+			Token:       "tokA",
+			CompPubkey:  testSessionKey(t),
+			TableId:     "bond-gate",
+		})
+		return err
+	}
+
+	require.ErrorContains(t, open(), "post a fidelity bond")
+
+	// A bond that is too small or too briefly locked is no bond at all.
+	srv.referee.mu.Lock()
+	srv.referee.bonds[uid] = &playerBond{
+		Outpoint: "bbbb:0", AmountAtoms: MinBondAtoms - 1, LockBlocks: escrow.MinBondBlocks,
+	}
+	srv.referee.mu.Unlock()
+	require.ErrorContains(t, open(), "no longer meets")
+
+	srv.referee.mu.Lock()
+	srv.referee.bonds[uid] = &playerBond{
+		Outpoint: "bbbb:0", AmountAtoms: MinBondAtoms, LockBlocks: escrow.MinBondBlocks - 1,
+	}
+	srv.referee.mu.Unlock()
+	require.ErrorContains(t, open(), "no longer meets")
+
+	srv.referee.mu.Lock()
+	srv.referee.bonds[uid] = &playerBond{
+		Outpoint: "bbbb:0", AmountAtoms: MinBondAtoms, LockBlocks: escrow.MinBondBlocks,
+	}
+	srv.referee.mu.Unlock()
+	require.NoError(t, open())
+}
+
+// One locked deposit must not back several identities, which is the whole point
+// of asking for one.
+func TestPostBondRefusesAnotherPlayersOutpoint(t *testing.T) {
+	srv := newTestServerWithState(t)
+
+	var first, second zkidentity.ShortID
+	require.NoError(t, first.FromString("0000000000000000000000000000000000000000000000000000000000000001"))
+	require.NoError(t, second.FromString("0000000000000000000000000000000000000000000000000000000000000002"))
+	srv.TestSeedSession("tokA", first, "TsRnk22spGQJTpKFcRBc281rmfNFpywh337", first.String())
+	srv.TestSeedSession("tokB", second, "TsgsQwSZTkbXPGdFBg5z3wthjkQs1EeKcJ5", second.String())
+
+	srv.referee.mu.Lock()
+	srv.referee.bonds[first] = &playerBond{
+		Outpoint: "cccc:0", AmountAtoms: MinBondAtoms, LockBlocks: escrow.MinBondBlocks,
+	}
+	srv.referee.mu.Unlock()
+
+	bondScript, err := escrow.BondScript(testSessionKey(t), escrow.MinBondBlocks)
+	require.NoError(t, err)
+
+	srv.chainWatcher = &chainwatcher.ChainWatcher{}
+	_, err = srv.PostBond(context.Background(), &pokerrpc.PostBondRequest{
+		Token:         "tokB",
+		Outpoint:      "cccc:0",
+		BondScriptHex: hex.EncodeToString(bondScript),
+	})
+	require.ErrorContains(t, err, "already registered to another player")
+}
+
+// PostBond takes a script from the caller, so it has to be the one thing it
+// claims to be before any of it is believed.
+func TestPostBondRejectsScriptsThatAreNotBonds(t *testing.T) {
+	srv := newTestServerWithState(t)
+	srv.chainWatcher = &chainwatcher.ChainWatcher{}
+
+	var uid zkidentity.ShortID
+	require.NoError(t, uid.FromString("0000000000000000000000000000000000000000000000000000000000000001"))
+	srv.TestSeedSession("tokA", uid, "TsRnk22spGQJTpKFcRBc281rmfNFpywh337", uid.String())
+
+	pub := testSessionKey(t)
+	notABond, err := escrow.RedeemScript(pub, [][]byte{pub, testSessionKey(t)}, 64)
+	require.NoError(t, err)
+
+	for name, script := range map[string]string{
+		"an escrow script": hex.EncodeToString(notABond),
+		"not hex":          "zzzz",
+		"empty":            "",
+	} {
+		_, err := srv.PostBond(context.Background(), &pokerrpc.PostBondRequest{
+			Token:         "tokA",
+			Outpoint:      "dddd:0",
+			BondScriptHex: script,
+		})
+		require.Error(t, err, "expected %s to be refused", name)
+	}
+}
+
+// GetBond tells a client what to post when it has nothing yet.
+func TestGetBondReportsRequiredTerms(t *testing.T) {
+	srv := newTestServerWithState(t)
+	var uid zkidentity.ShortID
+	require.NoError(t, uid.FromString("0000000000000000000000000000000000000000000000000000000000000001"))
+	srv.TestSeedSession("tokA", uid, "TsRnk22spGQJTpKFcRBc281rmfNFpywh337", uid.String())
+
+	resp, err := srv.GetBond(context.Background(), &pokerrpc.GetBondRequest{Token: "tokA"})
+	require.NoError(t, err)
+	require.False(t, resp.GetOk())
+	require.Equal(t, MinBondAtoms, resp.GetRequiredAtoms())
+	require.Equal(t, escrow.MinBondBlocks, resp.GetRequiredLockBlocks())
+}

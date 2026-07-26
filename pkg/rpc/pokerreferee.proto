@@ -32,6 +32,12 @@ service PokerReferee {
 
   // Unwinds a funded table that never started, refunding every seat at once.
   rpc AbortMatch(AbortMatchRequest) returns (AbortMatchResponse) {}
+
+  // Registers a fidelity bond, which a player must hold before taking a seat.
+  rpc PostBond(PostBondRequest) returns (PostBondResponse) {}
+
+  // Reports the bond the caller currently holds, if any.
+  rpc GetBond(GetBondRequest) returns (PostBondResponse) {}
 }
 
 // ---------- Open escrow ----------
@@ -250,6 +256,31 @@ message FinalizeInput {
   // the owner's slot is the one completed from the presig above.
   repeated CoSignature cosigs = 6;
   bytes owner_pubkey = 7;
+}
+
+// ---------- Fidelity bond ----------
+
+message PostBondRequest {
+  string token = 1;      // auth token from Login (may also come from metadata)
+  string outpoint = 2;   // funding outpoint txid:vout of the bond deposit
+  string bond_script_hex = 3; // the timelocked script the deposit pays
+}
+
+message GetBondRequest {
+  string token = 1;
+}
+
+message PostBondResponse {
+  bool ok = 1;
+  string outpoint = 2;
+  uint64 amount_atoms = 3;
+  uint32 lock_blocks = 4;
+  uint32 confs = 5;
+  bytes owner_pubkey = 6;
+  // required_atoms and required_lock_blocks are the terms this referee
+  // demands, so a client can see why a bond was refused - or what to post.
+  uint64 required_atoms = 7;
+  uint32 required_lock_blocks = 8;
 }
 
 // ---------- Abort ----------

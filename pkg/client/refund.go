@@ -347,3 +347,20 @@ func paymentScriptForAddress(address string) ([]byte, error) {
 	}
 	return nil, fmt.Errorf("decode address: %v", lastErr)
 }
+
+// chainParamsForNetwork resolves a network name to its parameters. An address
+// carries its network in its prefix, so deriving one has to be told which.
+func chainParamsForNetwork(network string) (*chaincfg.Params, error) {
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "testnet", "testnet3", "":
+		return chaincfg.TestNet3Params(), nil
+	case "mainnet":
+		return chaincfg.MainNetParams(), nil
+	case "simnet":
+		return chaincfg.SimNetParams(), nil
+	case "regnet":
+		return chaincfg.RegNetParams(), nil
+	default:
+		return nil, fmt.Errorf("unknown network %q", network)
+	}
+}

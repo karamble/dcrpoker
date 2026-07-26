@@ -852,3 +852,46 @@ func validateAbortDraft(need *pokerrpc.NeedPreSigs, pol PresignPolicy, ownPub []
 	}
 	return fmt.Errorf("abort draft does not refund our stake of %d atoms to our payout address", ours.AmountAtoms)
 }
+
+// BondAddress derives the deposit address for a fidelity bond over the given
+// session key and lock, along with the script the referee will be shown.
+//
+// A bond is the player's own coin, locked: nobody else can ever spend it, and
+// the referee gains no claim on it. What it buys is a seat - registration has
+// to cost something, because a zkidentity does not, and a seat held by someone
+// who never funds keeps every other stake at the table waiting on its CSV.
+func BondAddress(compPubkey []byte, lockBlocks uint32, network string) (addr string, bondScriptHex string, err error) {
+	script, err := escrow.BondScript(compPubkey, lockBlocks)
+	if err != nil {
+		return "", "", err
+	}
+	params, err := chainParamsForNetwork(network)
+	if err != nil {
+		return "", "", err
+	}
+	a, _, err := escrow.BondAddress(script, params)
+	if err != nil {
+		return "", "", err
+	}
+	return a.String(), hex.EncodeToString(script), nil
+}
+
+// PostBond registers a funded bond with the referee.
+func (c *RefereeClient) PostBond(ctx context.Context, outpoint, bondScriptHex string) (*pokerrpc.PostBondResponse, error) {
+	if c.token != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "token", c.token)
+	}
+	return c.rc.PostBond(ctx, &pokerrpc.PostBondRequest{
+		Token:         c.token,
+		Outpoint:      outpoint,
+		BondScriptHex: bondScriptHex,
+	})
+}
+
+// GetBond reports the bond the caller holds, and the terms required if none.
+func (c *RefereeClient) GetBond(ctx context.Context) (*pokerrpc.PostBondResponse, error) {
+	if c.token != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "token", c.token)
+	}
+	return c.rc.GetBond(ctx, &pokerrpc.GetBondRequest{Token: c.token})
+}
