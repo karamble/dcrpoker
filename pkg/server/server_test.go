@@ -331,6 +331,10 @@ func (m *InMemoryDB) DeleteMatchCheckpoint(_ context.Context, tableID string) er
 
 // -------- Auth --------
 
+func (m *InMemoryDB) BeginHand(context.Context, *db.Hand) (int64, error)      { return 1, nil }
+func (m *InMemoryDB) AppendAction(context.Context, *db.Action) (int64, error) { return 1, nil }
+func (m *InMemoryDB) ListActions(context.Context, int64) ([]db.Action, error) { return nil, nil }
+
 func (m *InMemoryDB) UpsertAuthUser(_ context.Context, nickname, userID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

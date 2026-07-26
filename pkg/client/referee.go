@@ -55,6 +55,12 @@ type RefereeClient struct {
 	log    slog.Logger
 	token  string
 	policy PresignPolicy
+	// owner is the client this referee client belongs to, when there is
+	// one. Binding an escrow is the moment a player's seat and their
+	// session key are both known, which is what arming action signing
+	// needs, so the two are joined here rather than left to every caller
+	// to remember.
+	owner *PokerClient
 }
 
 // RefereeOption customizes a RefereeClient.
@@ -78,8 +84,10 @@ func NewRefereeClient(conn pokerrpc.PokerRefereeClient, log slog.Logger, token s
 // The presign policy is seeded from the client's configured payout address so
 // drafts are checked against where this player expects to be paid.
 func (pc *PokerClient) Referee(token string) *RefereeClient {
-	return NewRefereeClient(pokerrpc.NewPokerRefereeClient(pc.conn), pc.log, token,
+	c := NewRefereeClient(pokerrpc.NewPokerRefereeClient(pc.conn), pc.log, token,
 		WithPresignPolicy(PresignPolicy{PayoutAddress: pc.PayoutAddress()}))
+	c.owner = pc
+	return c
 }
 
 // SetPayoutAddress verifies a signed code and binds the payout address to the current session/user.
@@ -214,7 +222,56 @@ func (c *RefereeClient) BindEscrow(ctx context.Context, tableID, sessionID, matc
 		RedeemScriptHex: redeemScriptHex,
 		CsvBlocks:       csvBlocks,
 	}
-	return c.rc.BindEscrow(ctx, req)
+	resp, err := c.rc.BindEscrow(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	c.armActionSigning(resp)
+	return resp, nil
+}
+
+// armActionSigning teaches the client to sign its actions for the seat it has
+// just bound an escrow to.
+//
+// This is the moment both halves exist: the referee has just told us which
+// seat we hold, and the escrow we opened records which session key index it
+// was derived from. Signing with that same key is what ties the record of who
+// acted to the record of whose money is at stake.
+//
+// Failure is logged rather than returned. The bind itself succeeded, and the
+// consequence surfaces immediately and loudly on the next action - a table
+// that keeps a log refuses an unsigned one - which is far better than failing
+// a bind that actually worked.
+func (c *RefereeClient) armActionSigning(resp *pokerrpc.BindEscrowResponse) {
+	if c.owner == nil || resp.GetEscrowId() == "" {
+		return
+	}
+	info, err := c.owner.GetEscrowById(resp.GetEscrowId())
+	if err != nil {
+		c.logf("cannot arm action signing: no cached escrow %s: %v", resp.GetEscrowId(), err)
+		return
+	}
+	idx, ok := info["key_index"].(float64)
+	if !ok {
+		c.logf("cannot arm action signing: escrow %s records no session key index", resp.GetEscrowId())
+		return
+	}
+	privHex, _, err := c.owner.DeriveSessionKeyAt(uint64(idx))
+	if err != nil {
+		c.logf("cannot arm action signing: derive session key %d: %v", uint64(idx), err)
+		return
+	}
+	if err := c.owner.SetActionSigner(resp.GetSeatIndex(), privHex); err != nil {
+		c.logf("cannot arm action signing: %v", err)
+		return
+	}
+	c.logf("signing actions for seat %d with session key %d", resp.GetSeatIndex(), uint64(idx))
+}
+
+func (c *RefereeClient) logf(format string, args ...interface{}) {
+	if c.log != nil {
+		c.log.Warnf(format, args...)
+	}
 }
 
 // StartPresign runs the SettlementStream presign flow for a match/escrow.

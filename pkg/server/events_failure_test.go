@@ -53,7 +53,10 @@ func (f failingDB) GetMatchCheckpoint(ctx context.Context, tableID string) (*sdb
 func (f failingDB) DeleteMatchCheckpoint(ctx context.Context, tableID string) error { return nil }
 
 // Auth
-func (f failingDB) UpsertAuthUser(ctx context.Context, _, _ string) error { return nil }
+func (f failingDB) BeginHand(context.Context, *sdb.Hand) (int64, error)      { return 1, nil }
+func (f failingDB) AppendAction(context.Context, *sdb.Action) (int64, error) { return 1, nil }
+func (f failingDB) ListActions(context.Context, int64) ([]sdb.Action, error) { return nil, nil }
+func (f failingDB) UpsertAuthUser(ctx context.Context, _, _ string) error    { return nil }
 func (f failingDB) GetAuthUserByNickname(ctx context.Context, _ string) (*sdb.AuthUser, error) {
 	return nil, fmt.Errorf("user not found")
 }

@@ -46,10 +46,13 @@ func (m *mockDB) ListTableIDs(context.Context) ([]string, error) { return nil, n
 func (m *mockDB) ActiveParticipants(context.Context, string) ([]db.Participant, error) {
 	return nil, nil
 }
-func (m *mockDB) SeatPlayer(context.Context, string, string, int) error { return nil }
-func (m *mockDB) UnseatPlayer(context.Context, string, string) error    { return nil }
-func (m *mockDB) SetReady(context.Context, string, string, bool) error  { return nil }
-func (m *mockDB) UpsertAuthUser(context.Context, string, string) error  { return nil }
+func (m *mockDB) SeatPlayer(context.Context, string, string, int) error   { return nil }
+func (m *mockDB) UnseatPlayer(context.Context, string, string) error      { return nil }
+func (m *mockDB) SetReady(context.Context, string, string, bool) error    { return nil }
+func (m *mockDB) BeginHand(context.Context, *db.Hand) (int64, error)      { return 1, nil }
+func (m *mockDB) AppendAction(context.Context, *db.Action) (int64, error) { return 1, nil }
+func (m *mockDB) ListActions(context.Context, int64) ([]db.Action, error) { return nil, nil }
+func (m *mockDB) UpsertAuthUser(context.Context, string, string) error    { return nil }
 func (m *mockDB) GetAuthUserByNickname(context.Context, string) (*db.AuthUser, error) {
 	return nil, fmt.Errorf("not found")
 }

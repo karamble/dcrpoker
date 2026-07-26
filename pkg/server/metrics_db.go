@@ -72,6 +72,27 @@ func (m *metricsDB) DeleteTable(ctx context.Context, id string) error {
 	return err
 }
 
+func (m *metricsDB) BeginHand(ctx context.Context, h *db.Hand) (int64, error) {
+	start := time.Now()
+	v, err := m.inner.BeginHand(ctx, h)
+	m.observe(start, err)
+	return v, err
+}
+
+func (m *metricsDB) AppendAction(ctx context.Context, a *db.Action) (int64, error) {
+	start := time.Now()
+	v, err := m.inner.AppendAction(ctx, a)
+	m.observe(start, err)
+	return v, err
+}
+
+func (m *metricsDB) ListActions(ctx context.Context, handID int64) ([]db.Action, error) {
+	start := time.Now()
+	v, err := m.inner.ListActions(ctx, handID)
+	m.observe(start, err)
+	return v, err
+}
+
 func (m *metricsDB) ListTableIDs(ctx context.Context) ([]string, error) {
 	start := time.Now()
 	v, err := m.inner.ListTableIDs(ctx)

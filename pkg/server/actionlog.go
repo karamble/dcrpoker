@@ -1,13 +1,16 @@
 package server
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
+	"github.com/vctt94/pokerbisonrelay/pkg/server/internal/db"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -25,10 +28,26 @@ import (
 type actionLogs struct {
 	mu     sync.Mutex
 	chains map[string]*gamelog.Chain
+	// hands maps a match's hand number to its database row, so actions can
+	// be filed against the hand they belong to. A hand row is created by
+	// the first action of that hand rather than at deal time: the log is
+	// what is being persisted, and a hand nobody acted in has no history.
+	hands map[handKey]int64
+	ord   map[handKey]int
+}
+
+// handKey identifies one hand of one match.
+type handKey struct {
+	matchID string
+	hand    uint64
 }
 
 func newActionLogs() *actionLogs {
-	return &actionLogs{chains: make(map[string]*gamelog.Chain)}
+	return &actionLogs{
+		chains: make(map[string]*gamelog.Chain),
+		hands:  make(map[handKey]int64),
+		ord:    make(map[handKey]int),
+	}
 }
 
 // chainFor returns the match's chain, creating it from the escrow roster the
@@ -92,6 +111,12 @@ func (s *Server) dropActionLog(matchID string) {
 	}
 	s.actionLogs.mu.Lock()
 	delete(s.actionLogs.chains, matchID)
+	for k := range s.actionLogs.hands {
+		if k.matchID == matchID {
+			delete(s.actionLogs.hands, k)
+			delete(s.actionLogs.ord, k)
+		}
+	}
 	s.actionLogs.mu.Unlock()
 }
 
@@ -155,6 +180,64 @@ func (s *Server) recordAction(table *poker.Table, playerID string, signed *poker
 
 	s.log.Debugf("Logged %s by seat %d at seq %d on table %s",
 		action, seat, entry.Seq, matchID)
+
+	// The signed log is the authority; the database is a queryable copy of
+	// it. A write that fails must not undo an action the table has already
+	// agreed to, so it is reported and not returned.
+	if err := s.persistAction(entry, matchID); err != nil {
+		s.log.Warnf("Could not persist action for table %s: %v", matchID, err)
+	}
+	return nil
+}
+
+// persistAction files a verified entry against its hand in the database, which
+// is what finally populates the hand-history tables.
+func (s *Server) persistAction(e *gamelog.Entry, matchID string) error {
+	if s.db == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	key := handKey{matchID: matchID, hand: e.Hand}
+
+	s.actionLogs.mu.Lock()
+	handID, known := s.actionLogs.hands[key]
+	s.actionLogs.mu.Unlock()
+
+	if !known {
+		id, err := s.db.BeginHand(ctx, &db.Hand{
+			TableID:   matchID,
+			HandNo:    int64(e.Hand),
+			StartedAt: time.Now(),
+		})
+		if err != nil {
+			return fmt.Errorf("begin hand %d: %w", e.Hand, err)
+		}
+		handID = id
+		s.actionLogs.mu.Lock()
+		s.actionLogs.hands[key] = handID
+		s.actionLogs.mu.Unlock()
+	}
+
+	s.actionLogs.mu.Lock()
+	s.actionLogs.ord[key]++
+	ord := s.actionLogs.ord[key]
+	s.actionLogs.mu.Unlock()
+
+	_, err := s.db.AppendAction(ctx, &db.Action{
+		HandID:    handID,
+		Ord:       ord,
+		Street:    e.Street.String(),
+		ActorSeat: int(e.Seat),
+		Action:    string(e.Action),
+		Amount:    e.Amount,
+		IsAllIn:   e.Action == gamelog.ActionAllIn,
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		return fmt.Errorf("append action: %w", err)
+	}
 	return nil
 }
 

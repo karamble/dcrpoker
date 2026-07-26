@@ -39,6 +39,13 @@ type Database interface {
 	UnseatPlayer(ctx context.Context, tableID, playerID string) error
 	SetReady(ctx context.Context, tableID, playerID string, ready bool) error
 
+	// ---- Hand history ----
+	// The canonical record of how a hand was played. Written from the
+	// signed action log, so what is stored is what a seat put its name to.
+	BeginHand(ctx context.Context, h *db.Hand) (int64, error)
+	AppendAction(ctx context.Context, a *db.Action) (int64, error)
+	ListActions(ctx context.Context, handID int64) ([]db.Action, error)
+
 	// ---- Auth ----
 	UpsertAuthUser(ctx context.Context, nickname, userID string) error
 	GetAuthUserByNickname(ctx context.Context, nickname string) (*db.AuthUser, error)

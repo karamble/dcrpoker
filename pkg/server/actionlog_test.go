@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/hex"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
+	"github.com/vctt94/pokerbisonrelay/pkg/server/internal/db"
 )
 
 // loggedTable seeds a two-seat table whose roster has closed, so it keeps a
@@ -242,4 +244,78 @@ func TestLogHeadTracksTheChain(t *testing.T) {
 	srv.dropActionLog("logged-head")
 	head, _ = srv.logHead("logged-head")
 	require.Nil(t, head)
+}
+
+// countingDB records what the hand-history writer actually wrote, so the
+// persistence path is checked rather than assumed.
+type countingDB struct {
+	Database
+	hands   int
+	actions []db.Action
+}
+
+func (c *countingDB) BeginHand(_ context.Context, _ *db.Hand) (int64, error) {
+	c.hands++
+	return int64(c.hands), nil
+}
+
+func (c *countingDB) AppendAction(_ context.Context, a *db.Action) (int64, error) {
+	c.actions = append(c.actions, *a)
+	return int64(len(c.actions)), nil
+}
+
+// The hand-history tables have existed and gone unwritten since they were
+// added. The signed log is what fills them, so what lands there is what a seat
+// actually put its name to.
+func TestActionsArePersistedToHandHistory(t *testing.T) {
+	srv := newTestServerWithState(t)
+	counting := &countingDB{Database: srv.db}
+	srv.db = counting
+
+	table, privs := loggedTable(t, srv, "persisted")
+
+	for _, step := range []struct {
+		seat   uint32
+		action gamelog.Action
+		amount int64
+	}{{0, gamelog.ActionBet, 500}, {1, gamelog.ActionCall, 0}, {0, gamelog.ActionCheck, 0}} {
+		signed := signAt(t, srv, table, privs[step.seat], step.seat, step.action, step.amount)
+		require.NoError(t, srv.recordAction(table, playerID(t, table, step.seat), signed, step.action, step.amount))
+	}
+
+	// One hand row, created by the first action rather than at deal time.
+	require.Equal(t, 1, counting.hands)
+	require.Len(t, counting.actions, 3)
+
+	// Ordering within the hand is what makes the history replayable.
+	for i, want := range []struct {
+		ord    int
+		seat   int
+		action string
+		amount int64
+	}{{1, 0, "bet", 500}, {2, 1, "call", 0}, {3, 0, "check", 0}} {
+		got := counting.actions[i]
+		require.Equal(t, want.ord, got.Ord)
+		require.Equal(t, want.seat, got.ActorSeat)
+		require.Equal(t, want.action, got.Action)
+		require.Equal(t, want.amount, got.Amount)
+		require.Equal(t, "preflop", got.Street)
+	}
+}
+
+// A rejected action must not reach the history either, or the stored record
+// would contain plays the table never accepted.
+func TestRejectedActionsAreNotPersisted(t *testing.T) {
+	srv := newTestServerWithState(t)
+	counting := &countingDB{Database: srv.db}
+	srv.db = counting
+
+	table, privs := loggedTable(t, srv, "persist-reject")
+
+	// Signed by the wrong seat's key.
+	signed := signAt(t, srv, table, privs[1], 0, gamelog.ActionBet, 500)
+	require.Error(t, srv.recordAction(table, playerID(t, table, 0), signed, gamelog.ActionBet, 500))
+
+	require.Zero(t, counting.hands)
+	require.Empty(t, counting.actions)
 }

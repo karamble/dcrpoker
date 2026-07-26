@@ -46,7 +46,10 @@ func (stubDB) UpsertSnapshot(ctx context.Context, _ db.Snapshot) error   { retur
 func (stubDB) UpsertTable(_ context.Context, _ *poker.TableConfig) error { return nil }
 
 // --- Auth ---
-func (stubDB) UpsertAuthUser(ctx context.Context, _, _ string) error { return nil }
+func (stubDB) BeginHand(context.Context, *db.Hand) (int64, error)      { return 1, nil }
+func (stubDB) AppendAction(context.Context, *db.Action) (int64, error) { return 1, nil }
+func (stubDB) ListActions(context.Context, int64) ([]db.Action, error) { return nil, nil }
+func (stubDB) UpsertAuthUser(ctx context.Context, _, _ string) error   { return nil }
 func (stubDB) GetAuthUserByNickname(ctx context.Context, _ string) (*db.AuthUser, error) {
 	return nil, nil
 }
