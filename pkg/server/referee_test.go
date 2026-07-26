@@ -229,6 +229,7 @@ func newTestServerWithState(t *testing.T) *Server {
 	}
 	srv.auth = newAuthState(srv.db)
 	srv.referee = newSchnorrRefereeState(ServerConfig{})
+	srv.actionLogs = newActionLogs()
 	srv.referee.presigns = make(map[string]map[int32]map[string]*refereePreSignCtx)
 	srv.referee.branchGamma = make(map[string]map[int32]string)
 	srv.referee.matchEscrows = make(map[string]map[uint32]string)

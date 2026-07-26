@@ -128,6 +128,7 @@ type PokerClient struct {
 	lastConnectTime     time.Time
 	lastDisconnectTime  time.Time
 	lastGameUpdate      *pokerrpc.GameUpdate
+	signer              *actionSigner
 
 	// Loop coordination
 	ntfnLoopMu      sync.Mutex

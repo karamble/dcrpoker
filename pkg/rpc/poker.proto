@@ -156,12 +156,44 @@ message GameUpdate {
   int64 big_blind = 17;     // Current table big blind (chips)
   int32 blind_level = 18;   // Current blind level index (0-based)
   int64 next_blind_increase_unix_ms = 19; // Unix ms timestamp of next blind increase (0 if disabled/max)
+
+  // Position in the table's signed action log, which a client needs before it
+  // can sign its own next action. log_head is empty on tables that keep no log
+  // - see SignedAction.
+  bytes log_head = 20;
+  uint64 log_seq = 21;
+  uint64 log_hand = 22;
+  uint32 log_street = 23;
+}
+
+// SignedAction is one entry of the table's signed, hash-chained action log,
+// as built by pkg/gamelog. A player signs it with the same session key their
+// escrow is bound to, so the record of who acted is the record of whose money
+// is at stake.
+//
+// It is only kept for tables that have an escrow roster: the roster is what
+// supplies the keys signatures are checked against, and a table playing for
+// nothing has none. The fields mirror gamelog.Entry exactly and are converted
+// without interpretation - the bytes a signature covers are rebuilt by
+// gamelog, never taken from the wire.
+message SignedAction {
+  uint32 version = 1;
+  bytes prev_hash = 2;
+  uint64 seq = 3;
+  uint64 hand = 4;
+  uint32 street = 5;
+  uint32 seat = 6;
+  bytes signer = 7;    // 33-byte compressed session pubkey
+  string action = 8;
+  int64 amount = 9;
+  bytes sig = 10;      // 64-byte Schnorr signature
 }
 
 message MakeBetRequest {
   string player_id = 1;
   string table_id = 2;
   int64 amount = 3;  // Poker chips amount to bet
+  SignedAction signed = 4;
 }
 
 message MakeBetResponse {
@@ -173,6 +205,7 @@ message MakeBetResponse {
 message FoldBetRequest {
   string player_id = 1;
   string table_id = 2;
+  SignedAction signed = 3;
 }
 
 message FoldBetResponse {
@@ -183,6 +216,7 @@ message FoldBetResponse {
 message CheckBetRequest {
   string player_id = 1;
   string table_id = 2;
+  SignedAction signed = 3;
 }
 
 message CheckBetResponse {
@@ -193,6 +227,7 @@ message CheckBetResponse {
 message CallBetRequest {
   string player_id = 1;
   string table_id = 2;
+  SignedAction signed = 3;
 }
 
 message CallBetResponse {

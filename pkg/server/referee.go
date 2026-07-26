@@ -1996,6 +1996,10 @@ func settlementSigs(redeem []byte, fin *pokerrpc.FinalizeInput, ownerSig []byte)
 // has finished/settled. This prevents reusing an already-spent escrow UTXO and
 // stops the chain watcher from tracking it further.
 func (s *Server) cleanupMatchState(matchID string) {
+	// The signed log belongs to the hand that just settled; keeping it would
+	// leak a chain per match for the lifetime of the process.
+	s.dropActionLog(matchID)
+
 	if s.referee == nil || matchID == "" {
 		return
 	}

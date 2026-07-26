@@ -149,6 +149,7 @@ type Server struct {
 	chainParams   *chaincfg.Params
 	dcrd          *rpcclient.Client
 	chainWatcher  *chainwatcher.ChainWatcher
+	actionLogs    *actionLogs
 	adaptorSecret string
 
 	// Schnorr referee state (escrows, presigns, settlements)
@@ -180,6 +181,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	// Initialize auth state
 	pokerServer.auth = newAuthState(db)
 	pokerServer.referee = newSchnorrRefereeState(cfg)
+	pokerServer.actionLogs = newActionLogs()
 
 	// Initialize chainwatcher/dcrd if configured.
 	if err := pokerServer.initChainWatcher(cfg); err != nil {
@@ -470,6 +472,7 @@ func NewTestServer(db Database, logBackend *logging.LogBackend) (*Server, error)
 	// Initialize auth state
 	pokerServer.auth = newAuthState(db)
 	pokerServer.referee = newSchnorrRefereeState(ServerConfig{})
+	pokerServer.actionLogs = newActionLogs()
 
 	// Initialize event processor for deadlock-free architecture
 	pokerServer.eventProcessor = NewEventProcessor(pokerServer, 1000, 3) // queue size: 1000, workers: 3

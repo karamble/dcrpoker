@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 )
@@ -450,6 +451,8 @@ func (gsh *GameStateHandler) buildGameUpdateFromSnapshot(tableSnapshot *TableSna
 // buildGameUpdateFromTableSnapshot builds a GameUpdate for a single requesting
 // player from an already-collected TableSnapshot.
 func (gsh *GameStateHandler) buildGameUpdateFromTableSnapshot(tableSnapshot *TableSnapshot, requestingPlayerID string) (*pokerrpc.GameUpdate, error) {
+	logHead, logSeq := gsh.server.logHead(tableSnapshot.ID)
+
 	// Early return if no game snapshot - return basic table info without game data
 	if tableSnapshot.GameSnapshot == nil {
 		// Build players list from snapshot data
@@ -653,7 +656,31 @@ func (gsh *GameStateHandler) buildGameUpdateFromTableSnapshot(tableSnapshot *Tab
 		BigBlind:                tableSnapshot.GameSnapshot.BigBlind,
 		BlindLevel:              int32(tableSnapshot.GameSnapshot.BlindLevel),
 		NextBlindIncreaseUnixMs: tableSnapshot.GameSnapshot.NextBlindIncreaseUnixMs,
+
+		// Where the table's signed action log stands. A player cannot sign
+		// their next action without it, since every entry chains to the one
+		// before. Empty on tables that keep no log.
+		LogHead:   logHead,
+		LogSeq:    logSeq,
+		LogHand:   uint64(tableSnapshot.GameSnapshot.Round),
+		LogStreet: uint32(streetForPhase(tableSnapshot.GameSnapshot.Phase)),
 	}, nil
+}
+
+// streetForPhase maps the engine's phase onto the log's betting street. Only
+// betting streets can carry an action, so anything else folds onto preflop
+// rather than inventing a street the log does not have.
+func streetForPhase(phase pokerrpc.GamePhase) gamelog.Street {
+	switch phase {
+	case pokerrpc.GamePhase_FLOP:
+		return gamelog.StreetFlop
+	case pokerrpc.GamePhase_TURN:
+		return gamelog.StreetTurn
+	case pokerrpc.GamePhase_RIVER:
+		return gamelog.StreetRiver
+	default:
+		return gamelog.StreetPreFlop
+	}
 }
 
 // toRPCPlayerState maps saved state strings to the protobuf enum.

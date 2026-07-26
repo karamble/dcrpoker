@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 	"google.golang.org/grpc/codes"
@@ -176,6 +177,12 @@ func (s *Server) MakeBet(ctx context.Context, req *pokerrpc.MakeBetRequest) (*po
 		}
 	}
 
+	// Log before the engine acts, so an action the log will not accept never
+	// reaches the game and the record can never lag the state it explains.
+	if err := s.recordAction(table, req.PlayerId, req.GetSigned(), gamelog.ActionBet, req.Amount); err != nil {
+		return nil, err
+	}
+
 	if err := table.MakeBet(req.PlayerId, req.Amount); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -250,6 +257,10 @@ func (s *Server) FoldBet(ctx context.Context, req *pokerrpc.FoldBetRequest) (*po
 		return nil, status.Error(codes.FailedPrecondition, "game not started")
 	}
 
+	if err := s.recordAction(table, req.PlayerId, req.GetSigned(), gamelog.ActionFold, 0); err != nil {
+		return nil, err
+	}
+
 	if err := table.HandleFold(req.PlayerId); err != nil {
 		// Invalid-at-this-time actions are a client precondition issue, not server-internal.
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -295,6 +306,10 @@ func (s *Server) CallBet(ctx context.Context, req *pokerrpc.CallBetRequest) (*po
 				break
 			}
 		}
+	}
+
+	if err := s.recordAction(table, req.PlayerId, req.GetSigned(), gamelog.ActionCall, 0); err != nil {
+		return nil, err
 	}
 
 	if err := table.HandleCall(req.PlayerId); err != nil {
@@ -370,6 +385,10 @@ func (s *Server) CheckBet(ctx context.Context, req *pokerrpc.CheckBetRequest) (*
 	}
 	if !table.IsGameStarted() {
 		return nil, status.Error(codes.FailedPrecondition, "game not started")
+	}
+
+	if err := s.recordAction(table, req.PlayerId, req.GetSigned(), gamelog.ActionCheck, 0); err != nil {
+		return nil, err
 	}
 
 	if err := table.HandleCheck(req.PlayerId); err != nil {

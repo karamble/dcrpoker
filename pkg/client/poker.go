@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 )
 
@@ -60,9 +61,14 @@ func (pc *PokerClient) Fold(ctx context.Context) error {
 		return fmt.Errorf("not at any table")
 	}
 
-	_, err := pc.PokerService.FoldBet(ctx, &pokerrpc.FoldBetRequest{
+	signed, err := pc.signAction(gamelog.ActionFold, 0)
+	if err != nil {
+		return err
+	}
+	_, err = pc.PokerService.FoldBet(ctx, &pokerrpc.FoldBetRequest{
 		PlayerId: pc.ID.String(),
 		TableId:  currentTableID,
+		Signed:   signed,
 	})
 	return err
 }
@@ -74,9 +80,14 @@ func (pc *PokerClient) Check(ctx context.Context) error {
 		return fmt.Errorf("not at any table")
 	}
 
-	_, err := pc.PokerService.CheckBet(ctx, &pokerrpc.CheckBetRequest{
+	signed, err := pc.signAction(gamelog.ActionCheck, 0)
+	if err != nil {
+		return err
+	}
+	_, err = pc.PokerService.CheckBet(ctx, &pokerrpc.CheckBetRequest{
 		PlayerId: pc.ID.String(),
 		TableId:  currentTableID,
+		Signed:   signed,
 	})
 	return err
 }
@@ -88,10 +99,15 @@ func (pc *PokerClient) Call(ctx context.Context, currentBet int64) error {
 		return fmt.Errorf("not at any table")
 	}
 
+	signed, err := pc.signAction(gamelog.ActionCall, 0)
+	if err != nil {
+		return err
+	}
 	// Use dedicated Call RPC to avoid race with fetching current bet separately
-	_, err := pc.PokerService.CallBet(ctx, &pokerrpc.CallBetRequest{
+	_, err = pc.PokerService.CallBet(ctx, &pokerrpc.CallBetRequest{
 		PlayerId: pc.ID.String(),
 		TableId:  currentTableID,
+		Signed:   signed,
 	})
 	return err
 }
@@ -103,10 +119,15 @@ func (pc *PokerClient) Raise(ctx context.Context, amount int64) error {
 		return fmt.Errorf("not at any table")
 	}
 
-	_, err := pc.PokerService.MakeBet(ctx, &pokerrpc.MakeBetRequest{
+	signed, err := pc.signAction(gamelog.ActionBet, amount)
+	if err != nil {
+		return err
+	}
+	_, err = pc.PokerService.MakeBet(ctx, &pokerrpc.MakeBetRequest{
 		PlayerId: pc.ID.String(),
 		TableId:  currentTableID,
 		Amount:   amount,
+		Signed:   signed,
 	})
 	return err
 }
@@ -118,10 +139,15 @@ func (pc *PokerClient) Bet(ctx context.Context, amount int64) error {
 		return fmt.Errorf("not at any table")
 	}
 
-	_, err := pc.PokerService.MakeBet(ctx, &pokerrpc.MakeBetRequest{
+	signed, err := pc.signAction(gamelog.ActionBet, amount)
+	if err != nil {
+		return err
+	}
+	_, err = pc.PokerService.MakeBet(ctx, &pokerrpc.MakeBetRequest{
 		PlayerId: pc.ID.String(),
 		TableId:  currentTableID,
 		Amount:   amount,
+		Signed:   signed,
 	})
 	return err
 }
