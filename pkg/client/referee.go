@@ -26,21 +26,57 @@ var schnorrV0ExtraTag = func() [32]byte {
 	return out
 }()
 
+// DefaultMaxSettlementFeeAtoms bounds the fee a client will accept in a
+// server-proposed settlement draft. Keep in sync with the server's
+// DefaultSettlementFeeAtoms.
+const DefaultMaxSettlementFeeAtoms uint64 = 10_000
+
+// PresignPolicy is what a client demands of a server-proposed settlement draft
+// before it will pre-sign it. A zero MaxFeeAtoms means
+// DefaultMaxSettlementFeeAtoms.
+type PresignPolicy struct {
+	PayoutAddress string
+	MaxFeeAtoms   uint64
+}
+
+func (p PresignPolicy) maxFee() uint64 {
+	if p.MaxFeeAtoms == 0 {
+		return DefaultMaxSettlementFeeAtoms
+	}
+	return p.MaxFeeAtoms
+}
+
 // RefereeClient wraps PokerReferee RPCs with presign helpers.
 type RefereeClient struct {
-	rc    pokerrpc.PokerRefereeClient
-	log   slog.Logger
-	token string
+	rc     pokerrpc.PokerRefereeClient
+	log    slog.Logger
+	token  string
+	policy PresignPolicy
+}
+
+// RefereeOption customizes a RefereeClient.
+type RefereeOption func(*RefereeClient)
+
+// WithPresignPolicy sets what the client requires of settlement drafts.
+func WithPresignPolicy(p PresignPolicy) RefereeOption {
+	return func(c *RefereeClient) { c.policy = p }
 }
 
 // NewRefereeClient constructs a referee client using an existing gRPC conn.
-func NewRefereeClient(conn pokerrpc.PokerRefereeClient, log slog.Logger, token string) *RefereeClient {
-	return &RefereeClient{rc: conn, log: log, token: token}
+func NewRefereeClient(conn pokerrpc.PokerRefereeClient, log slog.Logger, token string, opts ...RefereeOption) *RefereeClient {
+	c := &RefereeClient{rc: conn, log: log, token: token}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Referee returns a RefereeClient bound to this PokerClient's connection/token.
+// The presign policy is seeded from the client's configured payout address so
+// drafts are checked against where this player expects to be paid.
 func (pc *PokerClient) Referee(token string) *RefereeClient {
-	return NewRefereeClient(pokerrpc.NewPokerRefereeClient(pc.conn), pc.log, token)
+	return NewRefereeClient(pokerrpc.NewPokerRefereeClient(pc.conn), pc.log, token,
+		WithPresignPolicy(PresignPolicy{PayoutAddress: pc.PayoutAddress()}))
 }
 
 // SetPayoutAddress verifies a signed code and binds the payout address to the current session/user.
@@ -126,10 +162,13 @@ func (c *RefereeClient) StartPresign(ctx context.Context, matchID, tableID strin
 		return err
 	}
 
-	// Track expected branches and which have been acknowledged by VerifyOk.
-	// The server sends NeedPreSigs once per branch before any VerifyOk,
-	// so we discover the full branch set from NeedPreSigs messages.
+	// Track which branches have been acknowledged by VerifyOk. The branch set
+	// is pinned to the draft itself — one branch per input, since every escrow
+	// is one possible winner — rather than discovered from whatever the server
+	// chooses to send. A server that withholds a branch cannot make this seat
+	// believe presigning is complete.
 	branches := make(map[int32]bool) // branch -> acked
+	totalBranches := 0
 
 	for {
 		msg, err := stream.Recv()
@@ -137,10 +176,23 @@ func (c *RefereeClient) StartPresign(ctx context.Context, matchID, tableID strin
 			return err
 		}
 		if need := msg.GetNeedPreSigs(); need != nil {
+			n, err := draftBranchCount(need)
+			if err != nil {
+				return err
+			}
+			switch {
+			case totalBranches == 0:
+				totalBranches = n
+			case totalBranches != n:
+				return fmt.Errorf("branch count changed mid-stream: %d then %d", totalBranches, n)
+			}
+			if need.Branch < 0 || int(need.Branch) >= totalBranches {
+				return fmt.Errorf("branch %d out of range for %d branches", need.Branch, totalBranches)
+			}
 			if _, ok := branches[need.Branch]; !ok {
 				branches[need.Branch] = false
 			}
-			pres, err := BuildVerifyOk(xPrivHex, need)
+			pres, err := BuildVerifyOk(xPrivHex, need, c.policy)
 			if err != nil {
 				return err
 			}
@@ -159,18 +211,14 @@ func (c *RefereeClient) StartPresign(ctx context.Context, matchID, tableID strin
 		}
 		if ok := msg.GetVerifyOk(); ok != nil {
 			// Mark this branch as acknowledged.
-			if _, exists := branches[ok.Branch]; !exists {
-				branches[ok.Branch] = true
-			} else {
-				branches[ok.Branch] = true
-			}
+			branches[ok.Branch] = true
 
-			// Check if all known branches have been acknowledged.
-			allAcked := len(branches) > 0
-			for _, acked := range branches {
-				if !acked {
+			// Presigning is complete only once every branch of the draft has
+			// been seen and acknowledged, not merely those the server sent.
+			allAcked := totalBranches > 0 && len(branches) == totalBranches
+			for i := 0; allAcked && i < totalBranches; i++ {
+				if !branches[int32(i)] {
 					allAcked = false
-					break
 				}
 			}
 			if allAcked {
@@ -378,7 +426,7 @@ func VerifyPreSig(ctx *pokerrpc.NeedPreSigs, compPubkey []byte, ps *pokerrpc.Pre
 
 // validateNeedPreSigs ensures the server-provided draft and inputs are consistent
 // with each other before we derive and return pre-signatures.
-func validateNeedPreSigs(need *pokerrpc.NeedPreSigs) error {
+func validateNeedPreSigs(need *pokerrpc.NeedPreSigs, pol PresignPolicy) error {
 	if need == nil {
 		return fmt.Errorf("nil need presigs")
 	}
@@ -445,7 +493,86 @@ func validateNeedPreSigs(need *pokerrpc.NeedPreSigs) error {
 			return fmt.Errorf("parse adaptor point for %s: %w", in.InputId, err)
 		}
 	}
+
+	return validateDraftOutputs(&tx, need, pol)
+}
+
+// validateDraftOutputs checks the part of a draft that decides where the money
+// goes. Without it a client pre-signs whatever destination the server names.
+//
+// A settlement draft is winner-take-all: exactly one output, worth the sum of
+// the inputs less a bounded fee. Branches are numbered by draft input index and
+// branch b pays the owner of input b, so a client can recognize the branch that
+// pays it and require that output to match its own payout address. Branches
+// paying somebody else are checked for shape and fee only, because a client
+// cannot know another player's address. That is still sufficient in aggregate:
+// every branch is strictly checked by the player it pays, so a draft with a
+// redirected payout can never collect a full set of presigs.
+func validateDraftOutputs(tx *wire.MsgTx, need *pokerrpc.NeedPreSigs, pol PresignPolicy) error {
+	if len(tx.TxOut) != 1 {
+		return fmt.Errorf("draft tx has %d outputs, want exactly 1", len(tx.TxOut))
+	}
+
+	var totalIn int64
+	for i, txIn := range tx.TxIn {
+		if txIn.ValueIn <= 0 {
+			return fmt.Errorf("draft input %d has non-positive value %d", i, txIn.ValueIn)
+		}
+		totalIn += txIn.ValueIn
+	}
+
+	payout := tx.TxOut[0].Value
+	if payout <= 0 {
+		return fmt.Errorf("draft payout %d is not positive", payout)
+	}
+	if payout > totalIn {
+		return fmt.Errorf("draft payout %d exceeds inputs %d", payout, totalIn)
+	}
+	if fee := uint64(totalIn - payout); fee > pol.maxFee() {
+		return fmt.Errorf("draft fee %d exceeds maximum %d", fee, pol.maxFee())
+	}
+
+	// The server sends each client only its own inputs, so this branch pays
+	// this client when one of them sits at index == branch.
+	paysUs := false
+	for _, in := range need.Inputs {
+		if int32(in.InputIndex) == need.Branch {
+			paysUs = true
+			break
+		}
+	}
+	if !paysUs {
+		return nil
+	}
+
+	if strings.TrimSpace(pol.PayoutAddress) == "" {
+		return fmt.Errorf("refusing to presign branch %d: no payout address configured", need.Branch)
+	}
+	want, err := paymentScriptForAddress(pol.PayoutAddress)
+	if err != nil {
+		return fmt.Errorf("payout address: %w", err)
+	}
+	if !bytes.Equal(tx.TxOut[0].PkScript, want) {
+		return fmt.Errorf("draft branch %d pays a script other than the configured payout address", need.Branch)
+	}
 	return nil
+}
+
+// draftBranchCount reports how many branches a match has. Every escrow is one
+// draft input and one possible winner, so the input count is the branch count.
+func draftBranchCount(need *pokerrpc.NeedPreSigs) (int, error) {
+	raw, err := hex.DecodeString(need.DraftTxHex)
+	if err != nil {
+		return 0, fmt.Errorf("decode draft tx: %w", err)
+	}
+	var tx wire.MsgTx
+	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+		return 0, fmt.Errorf("deserialize draft tx: %w", err)
+	}
+	if len(tx.TxIn) == 0 {
+		return 0, fmt.Errorf("draft tx has no inputs")
+	}
+	return len(tx.TxIn), nil
 }
 
 // BuildVerifyOk validates the server-provided NeedPreSigs and derives adaptor
@@ -458,8 +585,8 @@ func validateNeedPreSigs(need *pokerrpc.NeedPreSigs) error {
 //	R' = k·G + T   (even-Y enforced in computePreSig)
 //
 // Server check (equivalent form): s'G + eX + T ?= R'   // i.e. s'G ?= R' - eX - T
-func BuildVerifyOk(xPrivHex string, need *pokerrpc.NeedPreSigs) ([]*pokerrpc.PreSignature, error) {
-	if err := validateNeedPreSigs(need); err != nil {
+func BuildVerifyOk(xPrivHex string, need *pokerrpc.NeedPreSigs, pol PresignPolicy) ([]*pokerrpc.PreSignature, error) {
+	if err := validateNeedPreSigs(need, pol); err != nil {
 		return nil, fmt.Errorf("server presign validation failed: %w", err)
 	}
 	return buildPresigs(xPrivHex, need)

@@ -61,12 +61,14 @@ func TestRefereePresignFlow(t *testing.T) {
 	logBackend := testenv.NewLogBackend()
 	pcAlice, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: alicePayout,
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)
 	require.NoError(t, err)
 	pcBob, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: bobPayout,
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)
@@ -199,6 +201,7 @@ func TestRefereePresignFlowSixPlayers(t *testing.T) {
 	for i, p := range players {
 		pc, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 			Datadir:       t.TempDir(),
+			PayoutAddress: payouts[i],
 			LogBackend:    logBackend,
 			Notifications: client.NewNotificationManager(),
 		}, env.DialTarget(), env.DialOptions()...)
@@ -355,12 +358,14 @@ func TestGetFinalizeBundleForWinner(t *testing.T) {
 	logBackend := testenv.NewLogBackend()
 	pcAlice, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: alicePayout,
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)
 	require.NoError(t, err)
 	pcBob, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: bobPayout,
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)
@@ -545,12 +550,14 @@ func TestSettlementMatchIDFromTable(t *testing.T) {
 	logBackend := testenv.NewLogBackend()
 	pcAlice, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: alicePayout,
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)
 	require.NoError(t, err)
 	pcBob, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: bobPayout,
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)
@@ -662,12 +669,14 @@ func TestGameDoesNotStartWithoutPresign(t *testing.T) {
 	logBackend := testenv.NewLogBackend()
 	pcAlice, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: "TsRnk22spGQJTpKFcRBc281rmfNFpywh337",
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)
 	require.NoError(t, err)
 	pcBob, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: "TsgsQwSZTkbXPGdFBg5z3wthjkQs1EeKcJ5",
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)
@@ -840,6 +849,7 @@ func TestEscrowFundingAmountMismatchBug(t *testing.T) {
 	logBackend := testenv.NewLogBackend()
 	pcAlice, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
 		Datadir:       t.TempDir(),
+		PayoutAddress: alicePayout,
 		LogBackend:    logBackend,
 		Notifications: client.NewNotificationManager(),
 	}, env.DialTarget(), env.DialOptions()...)

@@ -384,6 +384,9 @@ func (pc *PokerClient) dialWithOptions(dialTarget string, dialOpts ...grpc.DialO
 func (pc *PokerClient) PayoutAddress() string {
 	pc.RLock()
 	defer pc.RUnlock()
+	if pc.cfg == nil {
+		return ""
+	}
 	return pc.cfg.PayoutAddress
 }
 

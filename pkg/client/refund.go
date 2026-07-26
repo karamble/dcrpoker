@@ -93,27 +93,9 @@ func signSchnorrV0(privHex, mHex string) ([]byte, error) {
 // broadcasting it once CSV has matured on-chain.
 func BuildCSVRefundTx(privHex, utxoTxid string, utxoVout uint32, utxoValue uint64, redeemHex, destAddr string, feeAtoms uint64, csvBlocks uint32) (string, error) {
 	// Decode destination address across known networks and get payment script.
-	paramsList := []*chaincfg.Params{
-		chaincfg.TestNet3Params(),
-		chaincfg.MainNetParams(),
-		chaincfg.SimNetParams(),
-		chaincfg.RegNetParams(),
-	}
-	var pkScript []byte
-	var lastErr error
-	for _, p := range paramsList {
-		addr, err := stdaddr.DecodeAddress(strings.TrimSpace(destAddr), p)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		_, pk := addr.PaymentScript()
-		pkScript = pk
-		lastErr = nil
-		break
-	}
-	if pkScript == nil {
-		return "", fmt.Errorf("bad dest address: %v", lastErr)
+	pkScript, err := paymentScriptForAddress(destAddr)
+	if err != nil {
+		return "", fmt.Errorf("bad dest address: %v", err)
 	}
 
 	if feeAtoms == 0 {
@@ -337,4 +319,31 @@ func (pc *PokerClient) RefundEscrow(escrowID, destAddr string, feeAtoms uint64, 
 		CSVBlocks:   csvBlocks,
 		CanRefund:   true,
 	}, nil
+}
+
+// paymentScriptForAddress decodes a Decred address against the known networks
+// and returns its payment script. The script itself is network independent, so
+// callers can compare scripts without knowing which network they are on.
+func paymentScriptForAddress(address string) ([]byte, error) {
+	paramsList := []*chaincfg.Params{
+		chaincfg.TestNet3Params(),
+		chaincfg.MainNetParams(),
+		chaincfg.SimNetParams(),
+		chaincfg.RegNetParams(),
+	}
+	trimmed := strings.TrimSpace(address)
+	if trimmed == "" {
+		return nil, fmt.Errorf("empty address")
+	}
+	var lastErr error
+	for _, p := range paramsList {
+		addr, err := stdaddr.DecodeAddress(trimmed, p)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_, pkScript := addr.PaymentScript()
+		return pkScript, nil
+	}
+	return nil, fmt.Errorf("decode address: %v", lastErr)
 }
