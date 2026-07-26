@@ -22,11 +22,13 @@ import (
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
 	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
 	"github.com/vctt94/pokerbisonrelay/pkg/chainwatcher"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 	"github.com/vctt94/pokerbisonrelay/pkg/statemachine"
@@ -65,6 +67,7 @@ type schnorrMatchKey struct {
 type presignInput struct {
 	InputID         string
 	OwnerUID        zkidentity.ShortID
+	OwnerPubkey     []byte
 	SeatIndex       uint32
 	AmountAtoms     uint64
 	RedeemScriptHex string
@@ -191,6 +194,7 @@ func (es *refereeEscrowSession) latestFundingCopy() chainwatcher.DepositUpdate {
 type escrowSnapshot struct {
 	EscrowID        string
 	OwnerUID        zkidentity.ShortID
+	CompPubkey      []byte
 	SeatIndex       uint32
 	PayoutAddr      string
 	AmountAtoms     uint64
@@ -205,6 +209,7 @@ func (es *refereeEscrowSession) snapshot() escrowSnapshot {
 	return escrowSnapshot{
 		EscrowID:        es.EscrowID,
 		OwnerUID:        es.OwnerUID,
+		CompPubkey:      append([]byte(nil), es.CompPubkey...),
 		SeatIndex:       es.SeatIndex,
 		PayoutAddr:      es.PayoutAddr,
 		AmountAtoms:     es.AmountAtoms,
@@ -225,6 +230,7 @@ type schnorrRefereeState struct {
 	matchEscrows       map[string]map[uint32]string                       // matchKey -> seat -> escrowID
 	settlementEscrows  map[string]map[uint32]string                       // matchKey -> frozen seat -> escrowID captured when presigning starts
 	presigns           map[string]map[int32]map[string]*refereePreSignCtx // matchKey -> branch -> inputID -> ctx
+	cosigs             map[string]map[int32]map[string]map[string]string  // matchKey -> branch -> inputID -> signer pubkey hex -> sig hex
 	branchGamma        map[string]map[int32]string                        // matchKey -> branch -> gammaHex
 	presignComplete    map[string]map[uint32]bool                         // matchKey -> seat -> completed
 	pendingSettlements map[string]bool                                    // matchKey -> settlement still pending
@@ -239,6 +245,7 @@ func newSchnorrRefereeState(cfg ServerConfig) *schnorrRefereeState {
 		matchEscrows:       make(map[string]map[uint32]string),
 		settlementEscrows:  make(map[string]map[uint32]string),
 		presigns:           make(map[string]map[int32]map[string]*refereePreSignCtx),
+		cosigs:             make(map[string]map[int32]map[string]map[string]string),
 		branchGamma:        make(map[string]map[int32]string),
 		presignComplete:    make(map[string]map[uint32]bool),
 		pendingSettlements: make(map[string]bool),
@@ -322,6 +329,7 @@ func (s *Server) buildWTADrafts(matchID string, escrows []*refereeEscrowSession)
 			inputs = append(inputs, presignInput{
 				InputID:         fmt.Sprintf("%s:%d", es.BoundUTXO.Txid, es.BoundUTXO.Vout),
 				OwnerUID:        es.OwnerUID,
+				OwnerPubkey:     es.CompPubkey,
 				SeatIndex:       es.SeatIndex,
 				AmountAtoms:     es.BoundUTXO.Value,
 				RedeemScriptHex: es.RedeemScriptHex,
@@ -1001,7 +1009,7 @@ func (s *Server) SettlementStream(stream pokerrpc.PokerReferee_SettlementStreamS
 		if len(compPubkey) != 33 {
 			return status.Errorf(codes.FailedPrecondition, "escrow %s missing session pubkey", es.EscrowID)
 		}
-		if err := s.storePresigs(matchID, ps.Branch, uid, compPubkey, draft, ps.Presigs); err != nil {
+		if err := s.storePresigs(matchID, ps.Branch, uid, compPubkey, draft, ps.Presigs, ps.Cosigs); err != nil {
 			return status.Errorf(codes.InvalidArgument, "presig verify: %v", err)
 		}
 		// Ack success for this branch.
@@ -2053,7 +2061,7 @@ func (s *Server) verifyPresig(ps *pokerrpc.PreSignature, in presignInput, compPu
 
 // storePresigs verifies and stores presign artifacts for a branch.
 // compPubkey is the 33-byte compressed session pubkey X = xG for the caller.
-func (s *Server) storePresigs(matchID string, branch int32, uid zkidentity.ShortID, compPubkey []byte, draft branchDraft, presigs []*pokerrpc.PreSignature) error {
+func (s *Server) storePresigs(matchID string, branch int32, uid zkidentity.ShortID, compPubkey []byte, draft branchDraft, presigs []*pokerrpc.PreSignature, cosigs []*pokerrpc.CoSignature) error {
 	inputs := make(map[string]presignInput)
 	ownerCount := 0
 	for _, in := range draft.Inputs {
@@ -2067,6 +2075,9 @@ func (s *Server) storePresigs(matchID string, branch int32, uid zkidentity.Short
 	}
 	if len(presigs) != ownerCount {
 		return fmt.Errorf("expected %d presigs, got %d", ownerCount, len(presigs))
+	}
+	if err := s.storeCosigs(matchID, branch, uid, compPubkey, inputs, cosigs); err != nil {
+		return err
 	}
 
 	s.referee.mu.Lock()
@@ -2389,4 +2400,88 @@ func (s *Server) SetPayoutAddress(ctx context.Context, req *pokerrpc.SetPayoutAd
 		Ok:      true,
 		Address: addrStr,
 	}, nil
+}
+
+// storeCosigs verifies and records the caller's ordinary signatures over the
+// draft inputs they do not own. The settlement branch of every escrow needs a
+// signature from the whole table, so each player contributes one per foreign
+// input; the owner's own slot is the adaptor presig stored separately.
+//
+// These are not adaptor-locked and so prove nothing about which branch won -
+// that is still gated by the owner's presig. They only prove this player
+// agreed to this draft.
+func (s *Server) storeCosigs(matchID string, branch int32, uid zkidentity.ShortID, compPubkey []byte, inputs map[string]presignInput, cosigs []*pokerrpc.CoSignature) error {
+	signerHex := hex.EncodeToString(compPubkey)
+	signerPub, err := secp256k1.ParsePubKey(compPubkey)
+	if err != nil {
+		return fmt.Errorf("bad session pubkey: %w", err)
+	}
+
+	seen := make(map[string]bool, len(cosigs))
+	for _, cs := range cosigs {
+		in, ok := inputs[cs.InputId]
+		if !ok {
+			return fmt.Errorf("cosig for unknown input %s", cs.InputId)
+		}
+		// A player's own input carries an adaptor presig, never a plain
+		// signature: accepting one here would hand out a settlement
+		// signature that is not gated on the branch having won.
+		if in.OwnerUID == uid {
+			return fmt.Errorf("cosig offered for input %s the caller owns", cs.InputId)
+		}
+		if len(cs.SignerPubkey) != 0 && !bytes.Equal(cs.SignerPubkey, compPubkey) {
+			return fmt.Errorf("cosig for %s claims another signer", cs.InputId)
+		}
+		if seen[cs.InputId] {
+			return fmt.Errorf("duplicate cosig for input %s", cs.InputId)
+		}
+		seen[cs.InputId] = true
+
+		if err := verifySchnorrSig(cs.SigHex, in.SighashHex, signerPub); err != nil {
+			return fmt.Errorf("cosig verification failed for %s: %w", cs.InputId, err)
+		}
+	}
+
+	s.referee.mu.Lock()
+	defer s.referee.mu.Unlock()
+	if s.referee.cosigs[matchID] == nil {
+		s.referee.cosigs[matchID] = make(map[int32]map[string]map[string]string)
+	}
+	if s.referee.cosigs[matchID][branch] == nil {
+		s.referee.cosigs[matchID][branch] = make(map[string]map[string]string)
+	}
+	for _, cs := range cosigs {
+		if s.referee.cosigs[matchID][branch][cs.InputId] == nil {
+			s.referee.cosigs[matchID][branch][cs.InputId] = make(map[string]string)
+		}
+		s.referee.cosigs[matchID][branch][cs.InputId][signerHex] = cs.SigHex
+	}
+	return nil
+}
+
+// verifySchnorrSig checks a consensus Schnorr signature (64 bytes of [r,s] plus
+// a trailing hash type byte) against a sighash.
+func verifySchnorrSig(sigHex, sighashHex string, pub *secp256k1.PublicKey) error {
+	raw, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return fmt.Errorf("decode signature: %w", err)
+	}
+	if len(raw) != escrow.SigLen {
+		return fmt.Errorf("signature is %d bytes, want %d", len(raw), escrow.SigLen)
+	}
+	if raw[len(raw)-1] != byte(txscript.SigHashAll) {
+		return fmt.Errorf("signature hash type is %d, want SigHashAll", raw[len(raw)-1])
+	}
+	m, err := hex.DecodeString(sighashHex)
+	if err != nil || len(m) != 32 {
+		return fmt.Errorf("bad sighash")
+	}
+	sig, err := schnorr.ParseSignature(raw[:64])
+	if err != nil {
+		return fmt.Errorf("parse signature: %w", err)
+	}
+	if !sig.Verify(m, pub) {
+		return fmt.Errorf("signature does not verify")
+	}
+	return nil
 }
