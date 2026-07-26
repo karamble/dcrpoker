@@ -11,9 +11,11 @@ import (
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/wire"
 	"github.com/decred/slog"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -109,17 +111,92 @@ func (c *RefereeClient) GetEscrowStatus(ctx context.Context, escrowID string) (*
 	})
 }
 
-// OpenEscrow opens a Schnorr escrow for a table/session/seat using the caller's token.
-func (c *RefereeClient) OpenEscrow(ctx context.Context, amountAtoms uint64, csvBlocks uint32, compPubkey []byte) (*pokerrpc.OpenEscrowResponse, error) {
+// OpenEscrow opens a Schnorr escrow for a table/session seat using the caller's
+// token.
+//
+// The deposit address is the hash of a script naming every seat's session key,
+// so it does not exist until the last seat has opened. Until then the response
+// carries RosterReady false, SeatsPending, and no address; callers repeat the
+// request, which is idempotent per seat, until the roster closes.
+//
+// Once it is ready the script is rebuilt here from the roster the referee
+// reported and checked against the address it handed back, so funding never
+// rests on the referee having been honest about either.
+func (c *RefereeClient) OpenEscrow(ctx context.Context, tableID, sessionID string, amountAtoms uint64, csvBlocks uint32, compPubkey []byte) (*pokerrpc.OpenEscrowResponse, error) {
 	if c.token != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, "token", c.token)
 	}
-	req := &pokerrpc.OpenEscrowRequest{
+	resp, err := c.rc.OpenEscrow(ctx, &pokerrpc.OpenEscrowRequest{
 		AmountAtoms: amountAtoms,
 		CsvBlocks:   csvBlocks,
 		CompPubkey:  compPubkey,
+		TableId:     tableID,
+		SessionId:   sessionID,
+	})
+	if err != nil {
+		return nil, err
 	}
-	return c.rc.OpenEscrow(ctx, req)
+	if !resp.GetRosterReady() {
+		return resp, nil
+	}
+	if err := VerifyEscrowRoster(resp, compPubkey, csvBlocks); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// VerifyEscrowRoster rebuilds the deposit script from the roster the referee
+// reported and checks that it yields both the script and the address the
+// referee handed back.
+//
+// This is what makes a roster-bound escrow safe to fund. A referee that
+// substituted a key of its own, dropped a member, or pointed the address at a
+// script the client never agreed to fails here - before any funds move - rather
+// than at settlement, when the only remedy left is the CSV refund.
+func VerifyEscrowRoster(resp *pokerrpc.OpenEscrowResponse, compPubkey []byte, csvBlocks uint32) error {
+	members := resp.GetMemberPubkeys()
+	if len(members) == 0 {
+		return fmt.Errorf("escrow roster reported ready but carries no member keys")
+	}
+
+	want, err := escrow.RedeemScript(compPubkey, members, csvBlocks)
+	if err != nil {
+		return fmt.Errorf("rebuild redeem script from roster: %w", err)
+	}
+	got, err := hex.DecodeString(resp.GetRedeemScriptHex())
+	if err != nil {
+		return fmt.Errorf("decode redeem script: %w", err)
+	}
+	if !bytes.Equal(want, got) {
+		return fmt.Errorf("redeem script does not match the roster the referee reported")
+	}
+
+	// The address is only worth funding if it is the P2SH of that exact
+	// script, so check the hash rather than taking the address on trust.
+	pkScript, err := hex.DecodeString(resp.GetPkScriptHex())
+	if err != nil {
+		return fmt.Errorf("decode pk script: %w", err)
+	}
+	wantPk, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_HASH160).
+		AddData(dcrutil.Hash160(want)).
+		AddOp(txscript.OP_EQUAL).
+		Script()
+	if err != nil {
+		return fmt.Errorf("build pk script: %w", err)
+	}
+	if !bytes.Equal(wantPk, pkScript) {
+		return fmt.Errorf("pk script is not the P2SH of the roster redeem script")
+	}
+
+	addrScript, err := paymentScriptForAddress(resp.GetDepositAddr())
+	if err != nil {
+		return fmt.Errorf("decode deposit address: %w", err)
+	}
+	if !bytes.Equal(addrScript, pkScript) {
+		return fmt.Errorf("deposit address does not pay the roster escrow script")
+	}
+	return nil
 }
 
 // BindEscrow binds escrow funding (txid:vout) to a table/session seat.

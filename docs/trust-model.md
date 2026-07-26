@@ -26,13 +26,16 @@ There is no peer-to-peer path between players.
 
 Custody of funds, and only that.
 
-Each player opens a per-depositor P2SH escrow whose redeem script
-(`buildPerDepositorRedeemScript`, `pkg/server/referee.go:2145`) has two
-branches, both paying exclusively to the player's own session key `X`:
+Each player opens a per-depositor P2SH escrow whose redeem script (`pkg/escrow`,
+built by `OpenEscrow`) has two branches:
 
-- `OP_IF` → winner branch: `X` + `OP_CHECKSIGALTVERIFY` (sigtype 2,
-  schnorr-secp256k1)
-- `OP_ELSE` → `csvBlocks OP_CHECKSEQUENCEVERIFY OP_DROP` → same key
+- `OP_IF` → settlement branch: one `OP_CHECKSIGALTVERIFY` (sigtype 2,
+  schnorr-secp256k1) per table member, in canonical key order
+- `OP_ELSE` → `csvBlocks OP_CHECKSEQUENCEVERIFY OP_DROP` → the depositor's own
+  session key `X`, alone
+
+Until 2026-07-27 both branches paid exclusively to `X`, which is the defect
+described in the next section; the settlement branch now takes the whole table.
 
 The client sends the server only the compressed pubkey
 (`OpenEscrowRequest.comp_pubkey`). The private scalar never leaves the client;
@@ -105,18 +108,45 @@ spends, no proper subset does, a forged signature does not, signatures in the
 wrong order do not, the owner alone cannot touch the settlement branch, and
 refund still works alone once CSV matures.
 
-**It is not yet wired in.** `buildPerDepositorRedeemScript`
-(`pkg/server/referee.go:2145`) still produces every live deposit address, so the
-defect above is open in running code until the referee, the client and the
-escrow lifecycle are moved over.
+**It is wired in as of 2026-07-27.** `OpenEscrow` (`pkg/server/referee.go`)
+builds every deposit script through `pkg/escrow`, and
+`buildPerDepositorRedeemScript` is no longer on any live path.
 
 #### Roster-first funding
 
 n-of-n makes the redeem script, and therefore the deposit address, depend on the
 whole roster. An escrow can no longer be opened, funded, and bound to whatever
-table later — which is exactly what `OpenEscrow` and the bindable-escrow reuse
-in `escrow_archive.go` do today. A table must instead lock registration, publish
-every session key, and only then have players fund and wait for confirmations.
+table later. A table must instead lock registration, publish every session key,
+and only then have players fund and wait for confirmations.
+
+That is what `OpenEscrow` now does. It requires a `table_id` and a seat at that
+table, takes the table's seat count as the roster size, and refuses any amount
+that is not the table buy-in — winner-take-all only divides a pot fairly across
+equal stakes. Until the last seat has opened, the response carries
+`roster_ready=false`, `seats_pending`, an escrow id, and *no address at all*:
+`deposit_addr`, `redeem_script_hex` and `pk_script_hex` stay empty, because an
+address issued early is one a later arrival would change out from under whoever
+funded it. The last seat to open closes the roster for everyone at once, and
+the keys in it are frozen from that moment — a member cannot then swap a key or
+take over a seat that other players' scripts already name.
+
+Calls are idempotent per seat, so a client polls the same RPC until its address
+appears rather than opening a second escrow.
+
+The address is not taken on trust. `roster_ready` responses also carry
+`member_pubkeys` in canonical order, and `VerifyEscrowRoster`
+(`pkg/client/referee.go`) rebuilds the script locally from that roster and
+checks it yields both the redeem script and the P2SH address it was handed. A
+referee that substituted a key of its own, dropped a member, or pointed the
+address at some other script fails there — before funds move, rather than at
+settlement when the only remedy left is the CSV refund.
+
+Still open: the bindable-escrow reuse in `pkg/client/escrow_archive.go` and
+`GetBindableEscrows`, which assume an escrow is fundable before it knows its
+table and reusable across tables. Neither holds under n-of-n. `BindEscrow`'s
+unknown-escrow path also still reconstructs an owner key by reading bytes 2–35
+of a client-supplied redeem script, which under a roster script is the first
+canonical member rather than the owner.
 
 The cost falls on no-shows. A deposit is roster-specific, so if one player locks
 in and never funds, everyone who did fund waits out the CSV — roughly five hours

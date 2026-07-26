@@ -180,9 +180,23 @@ func handleClientCmd(handle uint32, cc *clientCtx, cmd *cmd) (interface{}, error
 				return nil, fmt.Errorf("payout address not set; visit Sign Address to verify one before opening escrow")
 			}
 			ref := cc.c.Referee(cc.Token)
-			resp, err := ref.OpenEscrow(cc.ctx, uint64(req.BetAtoms), uint32(req.CSVBlocks), compPub)
+			if req.TableID == "" {
+				return nil, fmt.Errorf("table_id required; escrow is bound to a table roster")
+			}
+			resp, err := ref.OpenEscrow(cc.ctx, req.TableID, req.SessionID, uint64(req.BetAtoms), uint32(req.CSVBlocks), compPub)
 			if err != nil {
 				return nil, err
+			}
+			// While seats are still missing there is no address to deposit to
+			// or cache: the script commits to keys that have not arrived yet.
+			// The caller repeats this command until the roster closes.
+			if !resp.GetRosterReady() {
+				return map[string]any{
+					"escrow_id":     resp.EscrowId,
+					"match_id":      resp.MatchId,
+					"roster_ready":  false,
+					"seats_pending": resp.GetSeatsPending(),
+				}, nil
 			}
 			// Persist escrow info locally for history/refund flows.
 			info := &client.EscrowInfo{
@@ -205,6 +219,9 @@ func handleClientCmd(handle uint32, cc *clientCtx, cmd *cmd) (interface{}, error
 				"pk_script_hex":          resp.PkScriptHex,
 				"redeem_script_hex":      resp.RedeemScriptHex,
 				"required_confirmations": resp.RequiredConfirmations,
+				"match_id":               resp.MatchId,
+				"roster_ready":           true,
+				"seats_pending":          uint32(0),
 			}, nil
 		}
 

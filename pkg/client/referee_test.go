@@ -6,9 +6,12 @@ import (
 	"testing"
 
 	"github.com/decred/dcrd/chaincfg/chainhash"
+	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/txscript/v4"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 )
 
@@ -18,6 +21,7 @@ const (
 	testOtherAddr  = "TsgsQwSZTkbXPGdFBg5z3wthjkQs1EeKcJ5"
 
 	testInputAtoms  = 1_000_000
+	testCSVBlocks   = uint32(64)
 	testPayoutAtoms = testInputAtoms - int64(DefaultMaxSettlementFeeAtoms)
 )
 
@@ -227,11 +231,17 @@ func TestBuildPresigsSplitsOwnedAndForeignInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	foreign := *need.Inputs[0]
-	foreign.InputId = "ff" + need.Inputs[0].InputId[2:]
-	foreign.InputIndex = 1
-	foreign.OwnerPubkey = otherPriv.PubKey().SerializeCompressed()
-	need.Inputs = append(need.Inputs, &foreign)
+	own := need.Inputs[0]
+	foreign := &pokerrpc.NeedPreSigsInput{
+		InputId:         "ff" + own.InputId[2:],
+		RedeemScriptHex: own.RedeemScriptHex,
+		SighashHex:      own.SighashHex,
+		AdaptorPointHex: own.AdaptorPointHex,
+		InputIndex:      1,
+		AmountAtoms:     own.AmountAtoms,
+		OwnerPubkey:     otherPriv.PubKey().SerializeCompressed(),
+	}
+	need.Inputs = append(need.Inputs, foreign)
 
 	signed, err := buildPresigs(testPrivHex, need, ownPub)
 	if err != nil {
@@ -263,5 +273,123 @@ func TestBuildPresigsRejectsDraftWeDoNotOwn(t *testing.T) {
 
 	if _, err := buildPresigs(testPrivHex, need, testOwnPub(t)); err == nil {
 		t.Fatalf("expected refusal to sign a draft with no input of ours")
+	}
+}
+
+// buildRosterResponse builds the OpenEscrowResponse an honest referee returns
+// for a two-seat roster, along with the caller's own session key.
+func buildRosterResponse(t *testing.T) (*pokerrpc.OpenEscrowResponse, []byte) {
+	t.Helper()
+
+	ownPub := testOwnPub(t)
+	otherPriv, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	members := [][]byte{ownPub, otherPriv.PubKey().SerializeCompressed()}
+
+	redeem, err := escrow.RedeemScript(ownPub, members, testCSVBlocks)
+	if err != nil {
+		t.Fatalf("redeem script: %v", err)
+	}
+	canonical, err := escrow.CanonicalMembers(members)
+	if err != nil {
+		t.Fatalf("canonical members: %v", err)
+	}
+	addr, err := stdaddr.NewAddressScriptHash(0, redeem, chaincfg.TestNet3Params())
+	if err != nil {
+		t.Fatalf("script hash address: %v", err)
+	}
+	_, pkScript := addr.PaymentScript()
+
+	return &pokerrpc.OpenEscrowResponse{
+		EscrowId:        "esc1",
+		DepositAddr:     addr.String(),
+		RedeemScriptHex: hex.EncodeToString(redeem),
+		PkScriptHex:     hex.EncodeToString(pkScript),
+		RosterReady:     true,
+		MemberPubkeys:   canonical,
+	}, ownPub
+}
+
+func TestVerifyEscrowRosterAcceptsHonestResponse(t *testing.T) {
+	resp, ownPub := buildRosterResponse(t)
+	if err := VerifyEscrowRoster(resp, ownPub, testCSVBlocks); err != nil {
+		t.Fatalf("expected an honest roster response to verify, got %v", err)
+	}
+}
+
+// The referee is the one party that gains from a script the table did not
+// agree to, so each way it could hand back a bad one has to be caught before
+// the client funds it.
+func TestVerifyEscrowRosterRejectsTamperedResponses(t *testing.T) {
+	strangerPriv, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	stranger := strangerPriv.PubKey().SerializeCompressed()
+
+	cases := []struct {
+		name   string
+		tamper func(*pokerrpc.OpenEscrowResponse, []byte)
+	}{{
+		name: "member swapped for a referee key",
+		tamper: func(r *pokerrpc.OpenEscrowResponse, own []byte) {
+			for i, m := range r.MemberPubkeys {
+				if !bytes.Equal(m, own) {
+					r.MemberPubkeys[i] = stranger
+					break
+				}
+			}
+		},
+	}, {
+		name: "roster reduced to the caller alone",
+		tamper: func(r *pokerrpc.OpenEscrowResponse, own []byte) {
+			r.MemberPubkeys = [][]byte{own}
+		},
+	}, {
+		name: "no members reported",
+		tamper: func(r *pokerrpc.OpenEscrowResponse, _ []byte) {
+			r.MemberPubkeys = nil
+		},
+	}, {
+		name: "redeem script does not match the roster",
+		tamper: func(r *pokerrpc.OpenEscrowResponse, _ []byte) {
+			raw, _ := hex.DecodeString(r.RedeemScriptHex)
+			raw[len(raw)-2] ^= 0xff
+			r.RedeemScriptHex = hex.EncodeToString(raw)
+		},
+	}, {
+		name: "pk script pays a different script",
+		tamper: func(r *pokerrpc.OpenEscrowResponse, _ []byte) {
+			raw, _ := hex.DecodeString(r.PkScriptHex)
+			raw[3] ^= 0xff
+			r.PkScriptHex = hex.EncodeToString(raw)
+		},
+	}, {
+		name: "deposit address points elsewhere",
+		tamper: func(r *pokerrpc.OpenEscrowResponse, _ []byte) {
+			r.DepositAddr = testPayoutAddr
+		},
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, ownPub := buildRosterResponse(t)
+			tc.tamper(resp, ownPub)
+			if err := VerifyEscrowRoster(resp, ownPub, testCSVBlocks); err == nil {
+				t.Fatalf("expected rejection: %s", tc.name)
+			}
+		})
+	}
+}
+
+// A client that accepted a script built for a different timelock would be
+// funding an address whose refund branch it cannot spend on the schedule it
+// asked for.
+func TestVerifyEscrowRosterRejectsForeignCSV(t *testing.T) {
+	resp, ownPub := buildRosterResponse(t)
+	if err := VerifyEscrowRoster(resp, ownPub, testCSVBlocks+1); err == nil {
+		t.Fatalf("expected rejection when the script commits to another csv delay")
 	}
 }

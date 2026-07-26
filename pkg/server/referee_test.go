@@ -11,6 +11,7 @@ import (
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/stretchr/testify/require"
 	"github.com/vctt94/pokerbisonrelay/pkg/chainwatcher"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 	"github.com/vctt94/pokerbisonrelay/pkg/server/internal/db"
@@ -57,14 +58,40 @@ func (m *mockDB) ListAllAuthUsers(context.Context) ([]db.AuthUser, error) {
 	return nil, nil
 }
 
+// seedRosterTable registers a table whose seats are the escrow roster, since an
+// escrow cannot be opened without one.
+func seedRosterTable(t *testing.T, s *Server, tableID string, seats int, buyIn uint64) *poker.Table {
+	t.Helper()
+	table := poker.NewTable(poker.TableConfig{
+		ID:         tableID,
+		BuyIn:      int64(buyIn),
+		MinPlayers: seats,
+		MaxPlayers: seats,
+		Log:        s.log,
+	})
+	s.tables.Store(tableID, table)
+	return table
+}
+
+// seatPlayer sits a player at the table so OpenEscrow accepts them as a member
+// of the roster.
+func seatPlayer(t *testing.T, table *poker.Table, uidStr string, seat uint32) {
+	t.Helper()
+	user := poker.NewUser(uidStr, table, &poker.AddUserOptions{Seat: int(seat)})
+	require.NoError(t, table.AddUser(user))
+}
+
 // seedEscrow seeds an escrow session with funding + presign metadata for tests.
-func seedEscrow(t *testing.T, s *Server, uidStr, token, txid string, seat uint32, amount uint64) (*refereePreSignCtx, string) {
+// The escrow only gets an address once every seat of tableID has opened one, so
+// callers seed the whole roster before expecting a funded escrow.
+func seedEscrow(t *testing.T, s *Server, table *poker.Table, uidStr, token, txid string, seat uint32, amount uint64) (*refereePreSignCtx, string) {
 	t.Helper()
 
 	var uid zkidentity.ShortID
 	require.NoError(t, uid.FromString(uidStr))
 	// register payout + token
 	s.TestSeedSession(token, uid, "TsRnk22spGQJTpKFcRBc281rmfNFpywh337", uidStr)
+	seatPlayer(t, table, uid.String(), seat)
 
 	priv, _ := secp256k1.GeneratePrivateKey()
 	compPub := priv.PubKey().SerializeCompressed()
@@ -73,6 +100,7 @@ func seedEscrow(t *testing.T, s *Server, uidStr, token, txid string, seat uint32
 		CsvBlocks:   64,
 		Token:       token,
 		CompPubkey:  compPub,
+		TableId:     table.GetConfig().ID,
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, openResp.EscrowId)
@@ -95,6 +123,24 @@ func seedEscrow(t *testing.T, s *Server, uidStr, token, txid string, seat uint32
 		WinnerCandidateUID: uid,
 	}
 	return psCtx, openResp.EscrowId
+}
+
+// applyRosterScripts copies each escrow's deposit script into its presign
+// context. The scripts only exist once the last seat has opened, so tests seed
+// the whole roster first and then pick them up here.
+func applyRosterScripts(t *testing.T, s *Server, ctxs []*refereePreSignCtx, escrowIDs []string) {
+	t.Helper()
+	for i, id := range escrowIDs {
+		s.referee.mu.RLock()
+		es := s.referee.escrows[id]
+		s.referee.mu.RUnlock()
+		require.NotNil(t, es, "escrow %s missing", id)
+		snap := es.snapshot()
+		require.NotEmpty(t, snap.RedeemScriptHex, "escrow %s has no script; roster never closed", id)
+		if ctxs[i] != nil {
+			ctxs[i].RedeemScriptHex = snap.RedeemScriptHex
+		}
+	}
 }
 
 func bytesFromHex(t *testing.T, h string) []byte {
@@ -131,8 +177,10 @@ func TestGetFinalizeBundleSuccess(t *testing.T) {
 	srv := newTestServerWithState(t)
 	srv.chainParams = selectChainParams("testnet")
 
-	ctx1, esc1 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000001", "tok1", "aaaa", 0, amount)
-	ctx2, esc2 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000002", "tok2", "bbbb", 1, amount)
+	table := seedRosterTable(t, srv, matchID, 2, amount)
+	ctx1, esc1 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000001", "tok1", "aaaa", 0, amount)
+	ctx2, esc2 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000002", "tok2", "bbbb", 1, amount)
+	applyRosterScripts(t, srv, []*refereePreSignCtx{ctx1, ctx2}, []string{esc1, esc2})
 
 	// bind match escrows
 	srv.referee.matchEscrows[matchID] = map[uint32]string{0: esc1, 1: esc2}
@@ -181,9 +229,11 @@ func TestGetFinalizeBundleSuccessThreePlayers(t *testing.T) {
 	srv := newTestServerWithState(t)
 	srv.chainParams = selectChainParams("testnet")
 
-	ctx1, esc1 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000001", "tok1", "aaaa", 0, amount)
-	ctx2, esc2 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000002", "tok2", "bbbb", 1, amount)
-	ctx3, esc3 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000003", "tok3", "cccc", 2, amount)
+	table := seedRosterTable(t, srv, matchID, 3, amount)
+	ctx1, esc1 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000001", "tok1", "aaaa", 0, amount)
+	ctx2, esc2 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000002", "tok2", "bbbb", 1, amount)
+	ctx3, esc3 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000003", "tok3", "cccc", 2, amount)
+	applyRosterScripts(t, srv, []*refereePreSignCtx{ctx1, ctx2, ctx3}, []string{esc1, esc2, esc3})
 
 	// Set SeatIndex and add to escrows map
 	srv.referee.matchEscrows[matchID] = map[uint32]string{0: esc1, 1: esc2, 2: esc3}
@@ -238,9 +288,11 @@ func TestGetFinalizeBundleUsesFrozenSettlementRoster(t *testing.T) {
 	srv := newTestServerWithState(t)
 	srv.chainParams = selectChainParams("testnet")
 
-	ctx1, esc1 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000011", "tok11", "aaaa", 0, amount)
-	ctx2, esc2 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000012", "tok12", "bbbb", 1, amount)
-	ctx3, esc3 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000013", "tok13", "cccc", 2, amount)
+	table := seedRosterTable(t, srv, matchID, 3, amount)
+	ctx1, esc1 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000011", "tok11", "aaaa", 0, amount)
+	ctx2, esc2 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000012", "tok12", "bbbb", 1, amount)
+	ctx3, esc3 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000013", "tok13", "cccc", 2, amount)
+	applyRosterScripts(t, srv, []*refereePreSignCtx{ctx1, ctx2, ctx3}, []string{esc1, esc2, esc3})
 
 	srv.referee.matchEscrows[matchID] = map[uint32]string{0: esc1, 1: esc2, 2: esc3}
 	srv.referee.escrows[esc1].SeatIndex = 0
@@ -502,8 +554,9 @@ func TestCleanupMatchState(t *testing.T) {
 
 	srv := newTestServerWithState(t)
 
-	_, esc1 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000001", "tok1", "aaaa", 0, amount)
-	_, esc2 := seedEscrow(t, srv, "0000000000000000000000000000000000000000000000000000000000000002", "tok2", "bbbb", 1, amount)
+	table := seedRosterTable(t, srv, matchID, 2, amount)
+	_, esc1 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000001", "tok1", "aaaa", 0, amount)
+	_, esc2 := seedEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000002", "tok2", "bbbb", 1, amount)
 
 	// Bind escrows to the match and seed presign metadata.
 	srv.referee.matchEscrows[matchID] = map[uint32]string{0: esc1, 1: esc2}
@@ -554,4 +607,156 @@ func TestCleanupMatchState(t *testing.T) {
 	es2.mu.RUnlock()
 	_, err = ensureBoundFunding(es2)
 	require.ErrorContains(t, err, "spent")
+}
+
+// openRosterEscrow is the OpenEscrow call a seated player makes.
+func openRosterEscrow(t *testing.T, s *Server, table *poker.Table, uidStr, token string, seat uint32, amount uint64, pub []byte) *pokerrpc.OpenEscrowResponse {
+	t.Helper()
+	var uid zkidentity.ShortID
+	require.NoError(t, uid.FromString(uidStr))
+	s.TestSeedSession(token, uid, "TsRnk22spGQJTpKFcRBc281rmfNFpywh337", uidStr)
+	if table.GetUser(uid.String()) == nil {
+		seatPlayer(t, table, uid.String(), seat)
+	}
+	resp, err := s.OpenEscrow(context.Background(), &pokerrpc.OpenEscrowRequest{
+		AmountAtoms: amount,
+		CsvBlocks:   64,
+		Token:       token,
+		CompPubkey:  pub,
+		TableId:     table.GetConfig().ID,
+	})
+	require.NoError(t, err)
+	return resp
+}
+
+func testSessionKey(t *testing.T) []byte {
+	t.Helper()
+	priv, err := secp256k1.GeneratePrivateKey()
+	require.NoError(t, err)
+	return priv.PubKey().SerializeCompressed()
+}
+
+// A deposit address commits to every seat's key, so it cannot exist before the
+// last seat has published one. Handing one out early would let a player fund a
+// script that a later arrival then changes out from under them.
+func TestOpenEscrowWithholdsAddressUntilRosterCloses(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	table := seedRosterTable(t, srv, "roster-table", 2, amount)
+
+	pubA := testSessionKey(t)
+	first := openRosterEscrow(t, srv, table,
+		"0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount, pubA)
+	require.False(t, first.GetRosterReady(), "roster cannot be ready with a seat still empty")
+	require.EqualValues(t, 1, first.GetSeatsPending())
+	require.Empty(t, first.GetDepositAddr(), "no address may be issued before the roster closes")
+	require.Empty(t, first.GetRedeemScriptHex())
+	require.Empty(t, first.GetPkScriptHex())
+	require.NotEmpty(t, first.GetEscrowId())
+
+	second := openRosterEscrow(t, srv, table,
+		"0000000000000000000000000000000000000000000000000000000000000002", "tokB", 1, amount, testSessionKey(t))
+	require.True(t, second.GetRosterReady(), "the last seat to open closes the roster")
+	require.Zero(t, second.GetSeatsPending())
+	require.NotEmpty(t, second.GetDepositAddr())
+	require.Len(t, second.GetMemberPubkeys(), 2)
+
+	// The roster closes for everyone at once, so the first player picks up the
+	// same address by asking again rather than opening a second escrow.
+	again := openRosterEscrow(t, srv, table,
+		"0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount, pubA)
+	require.Equal(t, first.GetEscrowId(), again.GetEscrowId(), "reopening must not mint a new escrow")
+	require.True(t, again.GetRosterReady())
+	require.NotEmpty(t, again.GetDepositAddr())
+
+	// Each member funds a different address: the settlement branch is shared,
+	// but the refund branch names only its owner.
+	require.NotEqual(t, again.GetDepositAddr(), second.GetDepositAddr())
+	require.Equal(t, again.GetMemberPubkeys(), second.GetMemberPubkeys(),
+		"every member's script commits to the same roster")
+}
+
+// The script the referee hands back has to be the one the roster implies, or
+// clients rebuilding it locally would reject it.
+func TestOpenEscrowScriptMatchesRoster(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	table := seedRosterTable(t, srv, "roster-script", 2, amount)
+
+	pubA, pubB := testSessionKey(t), testSessionKey(t)
+	openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount, pubA)
+	resp := openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000002", "tokB", 1, amount, pubB)
+	require.True(t, resp.GetRosterReady())
+
+	want, err := escrow.RedeemScript(pubB, [][]byte{pubA, pubB}, 64)
+	require.NoError(t, err)
+	require.Equal(t, hex.EncodeToString(want), resp.GetRedeemScriptHex())
+
+	n, err := escrow.MemberCount(want)
+	require.NoError(t, err)
+	require.Equal(t, 2, n, "settlement must take a signature from every member")
+
+	_, addr, err := pkScriptAndAddrFromRedeem(want, srv.chainParams)
+	require.NoError(t, err)
+	require.Equal(t, addr, resp.GetDepositAddr())
+}
+
+// Once the roster is closed the keys in it are load-bearing: other members may
+// already have funded scripts naming them, so they can no longer be swapped.
+func TestOpenEscrowRejectsKeyChangeAfterRosterCloses(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	table := seedRosterTable(t, srv, "roster-frozen", 2, amount)
+
+	openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount, testSessionKey(t))
+	openRosterEscrow(t, srv, table, "0000000000000000000000000000000000000000000000000000000000000002", "tokB", 1, amount, testSessionKey(t))
+
+	_, err := srv.OpenEscrow(context.Background(), &pokerrpc.OpenEscrowRequest{
+		AmountAtoms: amount,
+		CsvBlocks:   64,
+		Token:       "tokA",
+		CompPubkey:  testSessionKey(t),
+		TableId:     "roster-frozen",
+	})
+	require.ErrorContains(t, err, "closed roster")
+}
+
+func TestOpenEscrowRequiresSeatAndBuyIn(t *testing.T) {
+	const amount = uint64(1_000_000)
+	srv := newTestServerWithState(t)
+	table := seedRosterTable(t, srv, "roster-gate", 2, amount)
+
+	var uid zkidentity.ShortID
+	require.NoError(t, uid.FromString("0000000000000000000000000000000000000000000000000000000000000009"))
+	srv.TestSeedSession("tokX", uid, "TsRnk22spGQJTpKFcRBc281rmfNFpywh337", uid.String())
+
+	// A player who holds no seat is not part of the roster.
+	_, err := srv.OpenEscrow(context.Background(), &pokerrpc.OpenEscrowRequest{
+		AmountAtoms: amount,
+		CsvBlocks:   64,
+		Token:       "tokX",
+		CompPubkey:  testSessionKey(t),
+		TableId:     "roster-gate",
+	})
+	require.ErrorContains(t, err, "not seated")
+
+	// Winner-take-all is only fair across equal stakes.
+	seatPlayer(t, table, uid.String(), 0)
+	_, err = srv.OpenEscrow(context.Background(), &pokerrpc.OpenEscrowRequest{
+		AmountAtoms: amount + 1,
+		CsvBlocks:   64,
+		Token:       "tokX",
+		CompPubkey:  testSessionKey(t),
+		TableId:     "roster-gate",
+	})
+	require.ErrorContains(t, err, "buy-in")
+
+	// And an escrow has to name a table at all.
+	_, err = srv.OpenEscrow(context.Background(), &pokerrpc.OpenEscrowRequest{
+		AmountAtoms: amount,
+		CsvBlocks:   64,
+		Token:       "tokX",
+		CompPubkey:  testSessionKey(t),
+	})
+	require.ErrorContains(t, err, "table_id required")
 }

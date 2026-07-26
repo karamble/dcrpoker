@@ -329,6 +329,10 @@ type openEscrowReq struct {
 	CSVBlocks  int64  `json:"csv_blocks"`
 	CompPubkey string `json:"comp_pubkey"` // hex-encoded 33-byte session pubkey
 	KeyIndex   int64  `json:"key_index"`
+	// The escrow script names every seat at the table, so opening one is
+	// bound to a table rather than standing on its own.
+	TableID   string `json:"table_id"`
+	SessionID string `json:"session_id"`
 }
 
 type preSignReq struct {

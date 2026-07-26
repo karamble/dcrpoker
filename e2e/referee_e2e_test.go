@@ -27,6 +27,40 @@ func settlementTestBuyIn() uint64 {
 	return server.DefaultSettlementFeeAtoms/2 + 1_000
 }
 
+// openRosterEscrows opens one escrow per seated player and returns them with
+// their deposit scripts filled in.
+//
+// The escrow script names every seat at the table, so no deposit address exists
+// until the last player has opened. Everyone but that last player therefore
+// gets an escrow id and nothing else on the first pass, and asks again once the
+// roster has closed - which is what a client does in the field, and what the
+// second loop here stands in for.
+func openRosterEscrows(t *testing.T, ctx context.Context, tableID string, amount uint64, csvBlocks uint32, refs []*client.RefereeClient, pubs [][]byte) []*pokerrpc.OpenEscrowResponse {
+	t.Helper()
+
+	out := make([]*pokerrpc.OpenEscrowResponse, len(refs))
+	for i, ref := range refs {
+		resp, err := ref.OpenEscrow(ctx, tableID, "", amount, csvBlocks, pubs[i])
+		require.NoError(t, err, "seat %d should be able to open an escrow", i)
+		require.NotEmpty(t, resp.EscrowId)
+		out[i] = resp
+	}
+	for i, ref := range refs {
+		if out[i].GetRosterReady() {
+			continue
+		}
+		resp, err := ref.OpenEscrow(ctx, tableID, "", amount, csvBlocks, pubs[i])
+		require.NoError(t, err)
+		require.True(t, resp.GetRosterReady(),
+			"roster should be closed for seat %d once every seat has opened", i)
+		require.Equal(t, out[i].EscrowId, resp.EscrowId,
+			"reopening a seat's escrow must return the same escrow, not a new one")
+		require.NotEmpty(t, resp.DepositAddr)
+		out[i] = resp
+	}
+	return out
+}
+
 // TestRefereePresignFlow exercises the client referee helper through the UI stubs:
 // - two players login, open escrow with session key, bind to match/table/seat via SettlementHello,
 // - presign completes for both branches.
@@ -92,12 +126,9 @@ func TestRefereePresignFlow(t *testing.T) {
 	refAlice := pcAlice.Referee(pcAliceToken)
 	refBob := pcBob.Referee(pcBobToken)
 	amount := buyIn // Must match table buy-in for referee binding
-	escrowA, err := refAlice.OpenEscrow(ctx, amount, 64, alicePub)
-	require.NoError(t, err)
-	escrowB, err := refBob.OpenEscrow(ctx, amount, 64, bobPub)
-	require.NoError(t, err)
-	require.NotEmpty(t, escrowA.EscrowId)
-	require.NotEmpty(t, escrowB.EscrowId)
+	escrows := openRosterEscrows(t, ctx, tableID, amount, 64,
+		[]*client.RefereeClient{refAlice, refBob}, [][]byte{alicePub, bobPub})
+	escrowA, escrowB := escrows[0], escrows[1]
 
 	// Manually mark escrows as funded/bound (chainwatcher not exercised in test).
 	env.PokerSrv.TestBindEscrowFunding(escrowA.EscrowId, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0, amount)
@@ -211,20 +242,25 @@ func TestRefereePresignFlowSixPlayers(t *testing.T) {
 		pub := priv.PubKey().SerializeCompressed()
 		token := env.EnsureTestSession(ctx, p, p)
 		ref := pc.Referee(token)
-		esc, err := ref.OpenEscrow(ctx, amount, 64, pub)
-		require.NoError(t, err)
-		require.NotEmpty(t, esc.EscrowId)
-
-		// Bind funding manually.
-		env.PokerSrv.TestBindEscrowFunding(esc.EscrowId, fmt.Sprintf("%064x", i+1), 0, amount)
 
 		seats = append(seats, seatClient{
-			ref:      ref,
-			pub:      pub,
-			privHex:  hex.EncodeToString(priv.Serialize()),
-			escrowID: esc.EscrowId,
-			seat:     uint32(i),
+			ref:     ref,
+			pub:     pub,
+			privHex: hex.EncodeToString(priv.Serialize()),
+			seat:    uint32(i),
 		})
+	}
+
+	// Escrows open as a roster: nobody has a deposit address until the last
+	// seat has opened, so funding only starts once they all have.
+	refs := make([]*client.RefereeClient, len(seats))
+	pubs := make([][]byte, len(seats))
+	for i, sc := range seats {
+		refs[i], pubs[i] = sc.ref, sc.pub
+	}
+	for i, esc := range openRosterEscrows(t, ctx, tableID, amount, 64, refs, pubs) {
+		seats[i].escrowID = esc.EscrowId
+		env.PokerSrv.TestBindEscrowFunding(esc.EscrowId, fmt.Sprintf("%064x", i+1), 0, amount)
 	}
 
 	errCh := make(chan error, len(seats))
@@ -380,15 +416,17 @@ func TestGetFinalizeBundleForWinner(t *testing.T) {
 	bobPriv, _ := secp256k1.GeneratePrivateKey()
 	bobPub := bobPriv.PubKey().SerializeCompressed()
 
+	// Seat both players first: the escrow roster is the table's seats, so a
+	// player has to hold one before they can escrow against it.
+	_, err = env.JoinTable(ctx, "bob", tableID)
+	require.NoError(t, err, "bob should be able to join table")
+
 	// Open escrows.
 	refAlice := pcAlice.Referee(pcAliceToken)
 	refBob := pcBob.Referee(pcBobToken)
-	escrowA, err := refAlice.OpenEscrow(ctx, buyIn, 64, alicePub)
-	require.NoError(t, err)
-	escrowB, err := refBob.OpenEscrow(ctx, buyIn, 64, bobPub)
-	require.NoError(t, err)
-	require.NotEmpty(t, escrowA.EscrowId)
-	require.NotEmpty(t, escrowB.EscrowId)
+	escrows := openRosterEscrows(t, ctx, tableID, buyIn, 64,
+		[]*client.RefereeClient{refAlice, refBob}, [][]byte{alicePub, bobPub})
+	escrowA, escrowB := escrows[0], escrows[1]
 
 	// Manually mark escrows as funded/bound.
 	env.PokerSrv.TestBindEscrowFunding(escrowA.EscrowId, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0, buyIn)
@@ -568,19 +606,19 @@ func TestSettlementMatchIDFromTable(t *testing.T) {
 	bobPriv, _ := secp256k1.GeneratePrivateKey()
 	bobPub := bobPriv.PubKey().SerializeCompressed()
 
+	// Seat both players via the normal lobby flow (alice is host; bob joins)
+	// before opening escrows: the roster is the table's seats.
+	_, err = env.JoinTable(ctx, "bob", tableID)
+	require.NoError(t, err, "bob should be able to join table")
+
 	refAlice := pcAlice.Referee(aliceToken)
 	refBob := pcBob.Referee(bobToken)
-	escrowA, err := refAlice.OpenEscrow(ctx, buyIn, 64, alicePub)
-	require.NoError(t, err)
-	escrowB, err := refBob.OpenEscrow(ctx, buyIn, 64, bobPub)
-	require.NoError(t, err)
+	escrows := openRosterEscrows(t, ctx, tableID, buyIn, 64,
+		[]*client.RefereeClient{refAlice, refBob}, [][]byte{alicePub, bobPub})
+	escrowA, escrowB := escrows[0], escrows[1]
 
 	env.PokerSrv.TestBindEscrowFunding(escrowA.EscrowId, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0, buyIn)
 	env.PokerSrv.TestBindEscrowFunding(escrowB.EscrowId, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 0, buyIn)
-
-	// Ensure both players are seated via normal lobby flow (alice is host; bob joins).
-	_, err = env.JoinTable(ctx, "bob", tableID)
-	require.NoError(t, err, "bob should be able to join table")
 
 	// For WTA poker, matchID = tableID (no sessionID suffix needed)
 	matchID := tableID
@@ -691,25 +729,26 @@ func TestGameDoesNotStartWithoutPresign(t *testing.T) {
 	bobPriv, _ := secp256k1.GeneratePrivateKey()
 	bobPub := bobPriv.PubKey().SerializeCompressed()
 
+	// Seat bob before escrows open: the roster is the table's seats, so a
+	// player has to hold one before they can escrow against it.
+	_, err = env.LobbyClient.JoinTable(ctx, &pokerrpc.JoinTableRequest{
+		PlayerId: bobPlayerID,
+		TableId:  tableID,
+	})
+	require.NoError(t, err)
+
 	// Open escrows.
 	refAlice := pcAlice.Referee(pcAliceToken)
 	refBob := pcBob.Referee(pcBobToken)
-	escrowA, err := refAlice.OpenEscrow(ctx, buyIn, 64, alicePub)
-	require.NoError(t, err)
-	escrowB, err := refBob.OpenEscrow(ctx, buyIn, 64, bobPub)
-	require.NoError(t, err)
+	escrows := openRosterEscrows(t, ctx, tableID, buyIn, 64,
+		[]*client.RefereeClient{refAlice, refBob}, [][]byte{alicePub, bobPub})
+	escrowA, escrowB := escrows[0], escrows[1]
 
 	// Mark escrows as funded.
 	txidA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	txidB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	env.PokerSrv.TestBindEscrowFunding(escrowA.EscrowId, txidA, 0, buyIn)
 	env.PokerSrv.TestBindEscrowFunding(escrowB.EscrowId, txidB, 0, buyIn)
-
-	_, err = env.LobbyClient.JoinTable(ctx, &pokerrpc.JoinTableRequest{
-		PlayerId: bobPlayerID,
-		TableId:  tableID,
-	})
-	require.NoError(t, err)
 
 	// Bind escrows to the table/match using proper RPC calls (not test helpers).
 	// For poker tables, matchID = tableID (no sessionID suffix needed).
@@ -857,81 +896,77 @@ func TestEscrowFundingAmountMismatchBug(t *testing.T) {
 
 	pcAliceToken := aliceToken
 
+	// Seed bob too: the roster is the table's seats, so a two-seat table needs
+	// both of them before any escrow gets an address.
+	bobPayout := "TsgsQwSZTkbXPGdFBg5z3wthjkQs1EeKcJ5"
+	bobToken := env.EnsureTestSession(ctx, "bob", "bob")
+	var bobUID zkidentity.ShortID
+	_ = bobUID.FromString(testenv.PlayerIDToShortIDString("bob"))
+	env.PokerSrv.TestSeedSession(bobToken, bobUID, bobPayout, "bob")
+
+	pcBob, err := client.NewPokerClientWithDialOptions(ctx, &client.ClientConfig{
+		Datadir:       t.TempDir(),
+		PayoutAddress: bobPayout,
+		LogBackend:    logBackend,
+		Notifications: client.NewNotificationManager(),
+	}, env.DialTarget(), env.DialOptions()...)
+	require.NoError(t, err)
+
 	// Generate session keys for escrows
 	priv1, _ := secp256k1.GeneratePrivateKey()
 	pub1 := priv1.PubKey().SerializeCompressed()
 	priv2, _ := secp256k1.GeneratePrivateKey()
 	pub2 := priv2.PubKey().SerializeCompressed()
 
-	// Open escrow 1 with 0.01 BTC (1000000 satoshis) - NOT funding it yet
+	alicePlayerID := "alice"
+	amount1 := uint64(1_000_000)  // the table buy-in
+	amount2 := uint64(10_000_000) // ten times it
+
+	tableID := env.CreateTableWithBuyIn(ctx, alicePlayerID, 2, 2, int64(amount1))
+	matchID := tableID
+	_, err = env.JoinTable(ctx, alicePlayerID, tableID)
+	require.NoError(t, err, "JoinTable should succeed")
+	_, err = env.JoinTable(ctx, "bob", tableID)
+	require.NoError(t, err, "bob should be able to join table")
+
 	refAlice := pcAlice.Referee(pcAliceToken)
-	amount1 := uint64(1_000_000) // 0.01 BTC
-	escrow1, err := refAlice.OpenEscrow(ctx, amount1, 64, pub1)
-	require.NoError(t, err)
-	require.NotEmpty(t, escrow1.EscrowId)
-	t.Logf("Opened escrow 1: %s with amount %d satoshis (0.01 BTC)", escrow1.EscrowId, amount1)
+	refBob := pcBob.Referee(bobToken)
 
-	// Open escrow 2 with 0.1 BTC (10000000 satoshis)
-	amount2 := uint64(10_000_000) // 0.1 BTC
-	escrow2, err := refAlice.OpenEscrow(ctx, amount2, 64, pub2)
-	require.NoError(t, err)
-	require.NotEmpty(t, escrow2.EscrowId)
-	t.Logf("Opened escrow 2: %s with amount %d satoshis (0.1 BTC)", escrow2.EscrowId, amount2)
+	// Winner-take-all splits the pot evenly only if every stake is the same,
+	// so an escrow for the wrong amount is refused where it is opened rather
+	// than surfacing later as a funding mismatch against some other escrow.
+	_, err = refAlice.OpenEscrow(ctx, tableID, "", amount2, 64, pub2)
+	require.Error(t, err, "an escrow that does not match the table buy-in must be refused")
+	require.Contains(t, err.Error(), "buy-in")
 
-	// Now fund escrow 1 with 0.01 BTC (1000000 satoshis)
-	// The bug: TestBindEscrowFunding uses the 'amount' parameter in classifyEscrowFundingState
-	// instead of es.AmountAtoms. If we accidentally pass the wrong amount (e.g., amount2),
-	// it will check against that wrong amount instead of escrow1's actual AmountAtoms.
+	escrows := openRosterEscrows(t, ctx, tableID, amount1, 64,
+		[]*client.RefereeClient{refAlice, refBob}, [][]byte{pub1, pub2})
+	escrow1 := escrows[0]
+	t.Logf("Opened escrow 1: %s with amount %d atoms", escrow1.EscrowId, amount1)
+
+	// Fund escrow 1 and check the status reports its own amount. The bug this
+	// covers had classifyEscrowFundingState judge an escrow against whatever
+	// amount the caller passed rather than the escrow's own AmountAtoms, so a
+	// second escrow of a different size could make this one look unfunded.
 	txid1 := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-
-	// Simulate the bug: if TestBindEscrowFunding is called with the wrong amount parameter
-	// (e.g., if someone mistakenly passes amount2 instead of amount1), it will fail.
-	// But actually, the real bug is that TestBindEscrowFunding should use es.AmountAtoms
-	// instead of the amount parameter at all.
-
-	// First, let's see what happens if we call it correctly (with amount1):
 	env.PokerSrv.TestBindEscrowFunding(escrow1.EscrowId, txid1, 0, amount1)
 
-	// Verify escrow 1 status - check that it has the correct amount
 	status1, err := refAlice.GetEscrowStatus(ctx, escrow1.EscrowId)
 	require.NoError(t, err)
 	require.Equal(t, amount1, status1.GetAmountAtoms(), "Escrow 1 should have amount1")
 	t.Logf("Escrow 1 status: OK=%v, Amount=%d, UTXOCount=%d", status1.GetOk(), status1.GetAmountAtoms(), status1.GetUtxoCount())
 
-	// Now try to bind escrow 1 - this is where the bug would manifest during actual usage
-	// Create a table with buy-in matching escrow 1's amount
-	// We need to use the player ID that matches the session
-	alicePlayerID := "alice"
-	tableID := env.CreateTableWithBuyIn(ctx, alicePlayerID, 2, 2, int64(amount1))
-	matchID := tableID
 	outpoint1 := fmt.Sprintf("%s:0", txid1)
-
-	// Join the table first (required before binding escrow) using helper that aligns IDs/tokens.
-	_, err = env.JoinTable(ctx, alicePlayerID, tableID)
-	require.NoError(t, err, "JoinTable should succeed")
-
-	// Bind escrow 1 - this should work, but will fail if the bug exists
 	bindResp, err := refAlice.BindEscrow(ctx, tableID, "", matchID, 0, outpoint1, escrow1.RedeemScriptHex, 64)
-
-	// If the bug exists, BindEscrow will fail with an amount mismatch error
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "expected funding 10000000 but found 1000000") ||
 			strings.Contains(errMsg, "funding amount mismatch") ||
 			strings.Contains(errMsg, "expected 10000000") ||
 			strings.Contains(errMsg, "have 1000000 want 10000000") {
-			t.Fatalf("BUG REPRODUCED: BindEscrow failed because it checked against wrong escrow's amount. Error: %v", err)
+			t.Fatalf("BUG REPRODUCED: BindEscrow checked against another escrow's amount: %v", err)
 		}
-		// Some other error - re-raise it
 		require.NoError(t, err, "BindEscrow should succeed")
 	}
-
-	// If we get here without the bug being triggered, verify the escrow is correctly bound
 	require.Equal(t, escrow1.EscrowId, bindResp.EscrowId)
-
-	// The test should fail if the bug exists, so if we reach here, either:
-	// 1. The bug is fixed, or
-	// 2. The test needs to be adjusted to better trigger the bug scenario
-	// For now, we'll mark this as a test that should fail when the bug exists
-	t.Log("Test completed - if bug exists, it should have failed above")
 }
