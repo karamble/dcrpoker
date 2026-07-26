@@ -22,11 +22,16 @@ const (
 )
 
 type OpenEscrowRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AmountAtoms   uint64                 `protobuf:"varint,1,opt,name=amount_atoms,json=amountAtoms,proto3" json:"amount_atoms,omitempty"`
-	CsvBlocks     uint32                 `protobuf:"varint,2,opt,name=csv_blocks,json=csvBlocks,proto3" json:"csv_blocks,omitempty"`
-	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`                             // auth token from Login
-	CompPubkey    []byte                 `protobuf:"bytes,4,opt,name=comp_pubkey,json=compPubkey,proto3" json:"comp_pubkey,omitempty"` // 33-byte compressed session key X = xG
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	AmountAtoms uint64                 `protobuf:"varint,1,opt,name=amount_atoms,json=amountAtoms,proto3" json:"amount_atoms,omitempty"`
+	CsvBlocks   uint32                 `protobuf:"varint,2,opt,name=csv_blocks,json=csvBlocks,proto3" json:"csv_blocks,omitempty"`
+	Token       string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`                             // auth token from Login
+	CompPubkey  []byte                 `protobuf:"bytes,4,opt,name=comp_pubkey,json=compPubkey,proto3" json:"comp_pubkey,omitempty"` // 33-byte compressed session key X = xG
+	// Roster the escrow is bound to. The settlement branch of the redeem script
+	// carries one key per table member, so the script - and therefore the
+	// deposit address - cannot be derived until every seat has published a key.
+	TableId       string `protobuf:"bytes,5,opt,name=table_id,json=tableId,proto3" json:"table_id,omitempty"`
+	SessionId     string `protobuf:"bytes,6,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -89,6 +94,20 @@ func (x *OpenEscrowRequest) GetCompPubkey() []byte {
 	return nil
 }
 
+func (x *OpenEscrowRequest) GetTableId() string {
+	if x != nil {
+		return x.TableId
+	}
+	return ""
+}
+
+func (x *OpenEscrowRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
 type OpenEscrowResponse struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	EscrowId              string                 `protobuf:"bytes,1,opt,name=escrow_id,json=escrowId,proto3" json:"escrow_id,omitempty"`
@@ -97,8 +116,18 @@ type OpenEscrowResponse struct {
 	PkScriptHex           string                 `protobuf:"bytes,4,opt,name=pk_script_hex,json=pkScriptHex,proto3" json:"pk_script_hex,omitempty"`             // hex-encoded pkScript to watch for funding
 	MatchId               string                 `protobuf:"bytes,5,opt,name=match_id,json=matchId,proto3" json:"match_id,omitempty"`                           // table_id|session_id
 	RequiredConfirmations uint32                 `protobuf:"varint,6,opt,name=required_confirmations,json=requiredConfirmations,proto3" json:"required_confirmations,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// roster_ready reports whether every seat has published a session key. While
+	// false the escrow exists but has no deposit address yet: deposit_addr,
+	// redeem_script_hex and pk_script_hex are empty and funding must wait.
+	RosterReady bool `protobuf:"varint,7,opt,name=roster_ready,json=rosterReady,proto3" json:"roster_ready,omitempty"`
+	// member_pubkeys is the canonical roster the redeem script commits to, in
+	// the order the script checks. Clients rebuild the script from this to check
+	// the deposit address rather than trusting the one they were handed.
+	MemberPubkeys [][]byte `protobuf:"bytes,8,rep,name=member_pubkeys,json=memberPubkeys,proto3" json:"member_pubkeys,omitempty"`
+	// seats_pending counts seats that have not published a key yet.
+	SeatsPending  uint32 `protobuf:"varint,9,opt,name=seats_pending,json=seatsPending,proto3" json:"seats_pending,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OpenEscrowResponse) Reset() {
@@ -169,6 +198,27 @@ func (x *OpenEscrowResponse) GetMatchId() string {
 func (x *OpenEscrowResponse) GetRequiredConfirmations() uint32 {
 	if x != nil {
 		return x.RequiredConfirmations
+	}
+	return 0
+}
+
+func (x *OpenEscrowResponse) GetRosterReady() bool {
+	if x != nil {
+		return x.RosterReady
+	}
+	return false
+}
+
+func (x *OpenEscrowResponse) GetMemberPubkeys() [][]byte {
+	if x != nil {
+		return x.MemberPubkeys
+	}
+	return nil
+}
+
+func (x *OpenEscrowResponse) GetSeatsPending() uint32 {
+	if x != nil {
+		return x.SeatsPending
 	}
 	return 0
 }
@@ -961,8 +1011,13 @@ type NeedPreSigsInput struct {
 	AdaptorPointHex string                 `protobuf:"bytes,4,opt,name=adaptor_point_hex,json=adaptorPointHex,proto3" json:"adaptor_point_hex,omitempty"` // compressed adaptor point T for this branch
 	InputIndex      uint32                 `protobuf:"varint,5,opt,name=input_index,json=inputIndex,proto3" json:"input_index,omitempty"`                 // index inside the draft transaction
 	AmountAtoms     uint64                 `protobuf:"varint,6,opt,name=amount_atoms,json=amountAtoms,proto3" json:"amount_atoms,omitempty"`              // input amount to bind sighash
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// owner_pubkey is the session key of the player whose escrow this input is.
+	// Every input of every branch is sent to every player now: the escrow's
+	// settlement branch needs a signature from the whole table, so a client
+	// adaptor-presigns the input it owns and plainly co-signs all the others.
+	OwnerPubkey   []byte `protobuf:"bytes,7,opt,name=owner_pubkey,json=ownerPubkey,proto3" json:"owner_pubkey,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *NeedPreSigsInput) Reset() {
@@ -1037,12 +1092,22 @@ func (x *NeedPreSigsInput) GetAmountAtoms() uint64 {
 	return 0
 }
 
-// Client → Server: presigs for the requested branch/input set.
+func (x *NeedPreSigsInput) GetOwnerPubkey() []byte {
+	if x != nil {
+		return x.OwnerPubkey
+	}
+	return nil
+}
+
+// Client → Server: signatures for the requested branch. presigs covers the
+// caller's own inputs (adaptor-locked, so only the winning branch completes);
+// cosigs covers every other input on the same draft.
 type ProvidePreSigs struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MatchId       string                 `protobuf:"bytes,1,opt,name=match_id,json=matchId,proto3" json:"match_id,omitempty"`
 	Branch        int32                  `protobuf:"varint,2,opt,name=branch,proto3" json:"branch,omitempty"` // winner seat index
 	Presigs       []*PreSignature        `protobuf:"bytes,3,rep,name=presigs,proto3" json:"presigs,omitempty"`
+	Cosigs        []*CoSignature         `protobuf:"bytes,4,rep,name=cosigs,proto3" json:"cosigs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1094,6 +1159,13 @@ func (x *ProvidePreSigs) GetBranch() int32 {
 func (x *ProvidePreSigs) GetPresigs() []*PreSignature {
 	if x != nil {
 		return x.Presigs
+	}
+	return nil
+}
+
+func (x *ProvidePreSigs) GetCosigs() []*CoSignature {
+	if x != nil {
+		return x.Cosigs
 	}
 	return nil
 }
@@ -1158,6 +1230,69 @@ func (x *PreSignature) GetSPrimeHex() string {
 	return ""
 }
 
+// CoSignature is an ordinary consensus Schnorr signature over a draft input the
+// signer does not own. It is not adaptor-locked: branch selection is already
+// gated by the owner's presig, and these only prove the table agreed.
+type CoSignature struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InputId       string                 `protobuf:"bytes,1,opt,name=input_id,json=inputId,proto3" json:"input_id,omitempty"`
+	SignerPubkey  []byte                 `protobuf:"bytes,2,opt,name=signer_pubkey,json=signerPubkey,proto3" json:"signer_pubkey,omitempty"` // whose signature this is
+	SigHex        string                 `protobuf:"bytes,3,opt,name=sig_hex,json=sigHex,proto3" json:"sig_hex,omitempty"`                   // 65 bytes: 64 [r,s] plus the hash type byte
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CoSignature) Reset() {
+	*x = CoSignature{}
+	mi := &file_pokerreferee_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CoSignature) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CoSignature) ProtoMessage() {}
+
+func (x *CoSignature) ProtoReflect() protoreflect.Message {
+	mi := &file_pokerreferee_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CoSignature.ProtoReflect.Descriptor instead.
+func (*CoSignature) Descriptor() ([]byte, []int) {
+	return file_pokerreferee_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *CoSignature) GetInputId() string {
+	if x != nil {
+		return x.InputId
+	}
+	return ""
+}
+
+func (x *CoSignature) GetSignerPubkey() []byte {
+	if x != nil {
+		return x.SignerPubkey
+	}
+	return nil
+}
+
+func (x *CoSignature) GetSigHex() string {
+	if x != nil {
+		return x.SigHex
+	}
+	return ""
+}
+
 // Server → Client: indicates presigs were verified and stored.
 type VerifyPreSigsOk struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1169,7 +1304,7 @@ type VerifyPreSigsOk struct {
 
 func (x *VerifyPreSigsOk) Reset() {
 	*x = VerifyPreSigsOk{}
-	mi := &file_pokerreferee_proto_msgTypes[14]
+	mi := &file_pokerreferee_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1181,7 +1316,7 @@ func (x *VerifyPreSigsOk) String() string {
 func (*VerifyPreSigsOk) ProtoMessage() {}
 
 func (x *VerifyPreSigsOk) ProtoReflect() protoreflect.Message {
-	mi := &file_pokerreferee_proto_msgTypes[14]
+	mi := &file_pokerreferee_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1194,7 +1329,7 @@ func (x *VerifyPreSigsOk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyPreSigsOk.ProtoReflect.Descriptor instead.
 func (*VerifyPreSigsOk) Descriptor() ([]byte, []int) {
-	return file_pokerreferee_proto_rawDescGZIP(), []int{14}
+	return file_pokerreferee_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *VerifyPreSigsOk) GetMatchId() string {
@@ -1222,7 +1357,7 @@ type SettlementError struct {
 
 func (x *SettlementError) Reset() {
 	*x = SettlementError{}
-	mi := &file_pokerreferee_proto_msgTypes[15]
+	mi := &file_pokerreferee_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1234,7 +1369,7 @@ func (x *SettlementError) String() string {
 func (*SettlementError) ProtoMessage() {}
 
 func (x *SettlementError) ProtoReflect() protoreflect.Message {
-	mi := &file_pokerreferee_proto_msgTypes[15]
+	mi := &file_pokerreferee_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1247,7 +1382,7 @@ func (x *SettlementError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettlementError.ProtoReflect.Descriptor instead.
 func (*SettlementError) Descriptor() ([]byte, []int) {
-	return file_pokerreferee_proto_rawDescGZIP(), []int{15}
+	return file_pokerreferee_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SettlementError) GetMatchId() string {
@@ -1274,7 +1409,7 @@ type GetFinalizeBundleRequest struct {
 
 func (x *GetFinalizeBundleRequest) Reset() {
 	*x = GetFinalizeBundleRequest{}
-	mi := &file_pokerreferee_proto_msgTypes[16]
+	mi := &file_pokerreferee_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1286,7 +1421,7 @@ func (x *GetFinalizeBundleRequest) String() string {
 func (*GetFinalizeBundleRequest) ProtoMessage() {}
 
 func (x *GetFinalizeBundleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pokerreferee_proto_msgTypes[16]
+	mi := &file_pokerreferee_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1299,7 +1434,7 @@ func (x *GetFinalizeBundleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFinalizeBundleRequest.ProtoReflect.Descriptor instead.
 func (*GetFinalizeBundleRequest) Descriptor() ([]byte, []int) {
-	return file_pokerreferee_proto_rawDescGZIP(), []int{16}
+	return file_pokerreferee_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetFinalizeBundleRequest) GetMatchId() string {
@@ -1329,7 +1464,7 @@ type GetFinalizeBundleResponse struct {
 
 func (x *GetFinalizeBundleResponse) Reset() {
 	*x = GetFinalizeBundleResponse{}
-	mi := &file_pokerreferee_proto_msgTypes[17]
+	mi := &file_pokerreferee_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1341,7 +1476,7 @@ func (x *GetFinalizeBundleResponse) String() string {
 func (*GetFinalizeBundleResponse) ProtoMessage() {}
 
 func (x *GetFinalizeBundleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pokerreferee_proto_msgTypes[17]
+	mi := &file_pokerreferee_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1354,7 +1489,7 @@ func (x *GetFinalizeBundleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetFinalizeBundleResponse.ProtoReflect.Descriptor instead.
 func (*GetFinalizeBundleResponse) Descriptor() ([]byte, []int) {
-	return file_pokerreferee_proto_rawDescGZIP(), []int{17}
+	return file_pokerreferee_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetFinalizeBundleResponse) GetMatchId() string {
@@ -1399,13 +1534,18 @@ type FinalizeInput struct {
 	SPrimeHex        string                 `protobuf:"bytes,3,opt,name=s_prime_hex,json=sPrimeHex,proto3" json:"s_prime_hex,omitempty"`
 	InputIndex       uint32                 `protobuf:"varint,4,opt,name=input_index,json=inputIndex,proto3" json:"input_index,omitempty"`
 	RedeemScriptHex  string                 `protobuf:"bytes,5,opt,name=redeem_script_hex,json=redeemScriptHex,proto3" json:"redeem_script_hex,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// cosigs are the other table members' signatures over this input, which the
+	// settlement branch also requires. Ordered as the redeem script checks them;
+	// the owner's slot is the one completed from the presig above.
+	Cosigs        []*CoSignature `protobuf:"bytes,6,rep,name=cosigs,proto3" json:"cosigs,omitempty"`
+	OwnerPubkey   []byte         `protobuf:"bytes,7,opt,name=owner_pubkey,json=ownerPubkey,proto3" json:"owner_pubkey,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *FinalizeInput) Reset() {
 	*x = FinalizeInput{}
-	mi := &file_pokerreferee_proto_msgTypes[18]
+	mi := &file_pokerreferee_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1417,7 +1557,7 @@ func (x *FinalizeInput) String() string {
 func (*FinalizeInput) ProtoMessage() {}
 
 func (x *FinalizeInput) ProtoReflect() protoreflect.Message {
-	mi := &file_pokerreferee_proto_msgTypes[18]
+	mi := &file_pokerreferee_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1430,7 +1570,7 @@ func (x *FinalizeInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeInput.ProtoReflect.Descriptor instead.
 func (*FinalizeInput) Descriptor() ([]byte, []int) {
-	return file_pokerreferee_proto_rawDescGZIP(), []int{18}
+	return file_pokerreferee_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *FinalizeInput) GetInputId() string {
@@ -1468,6 +1608,20 @@ func (x *FinalizeInput) GetRedeemScriptHex() string {
 	return ""
 }
 
+func (x *FinalizeInput) GetCosigs() []*CoSignature {
+	if x != nil {
+		return x.Cosigs
+	}
+	return nil
+}
+
+func (x *FinalizeInput) GetOwnerPubkey() []byte {
+	if x != nil {
+		return x.OwnerPubkey
+	}
+	return nil
+}
+
 type SetPayoutAddressRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`         // active session token (already logged in)
@@ -1480,7 +1634,7 @@ type SetPayoutAddressRequest struct {
 
 func (x *SetPayoutAddressRequest) Reset() {
 	*x = SetPayoutAddressRequest{}
-	mi := &file_pokerreferee_proto_msgTypes[19]
+	mi := &file_pokerreferee_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1492,7 +1646,7 @@ func (x *SetPayoutAddressRequest) String() string {
 func (*SetPayoutAddressRequest) ProtoMessage() {}
 
 func (x *SetPayoutAddressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pokerreferee_proto_msgTypes[19]
+	mi := &file_pokerreferee_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1505,7 +1659,7 @@ func (x *SetPayoutAddressRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPayoutAddressRequest.ProtoReflect.Descriptor instead.
 func (*SetPayoutAddressRequest) Descriptor() ([]byte, []int) {
-	return file_pokerreferee_proto_rawDescGZIP(), []int{19}
+	return file_pokerreferee_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SetPayoutAddressRequest) GetToken() string {
@@ -1547,7 +1701,7 @@ type SetPayoutAddressResponse struct {
 
 func (x *SetPayoutAddressResponse) Reset() {
 	*x = SetPayoutAddressResponse{}
-	mi := &file_pokerreferee_proto_msgTypes[20]
+	mi := &file_pokerreferee_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1559,7 +1713,7 @@ func (x *SetPayoutAddressResponse) String() string {
 func (*SetPayoutAddressResponse) ProtoMessage() {}
 
 func (x *SetPayoutAddressResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pokerreferee_proto_msgTypes[20]
+	mi := &file_pokerreferee_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1572,7 +1726,7 @@ func (x *SetPayoutAddressResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetPayoutAddressResponse.ProtoReflect.Descriptor instead.
 func (*SetPayoutAddressResponse) Descriptor() ([]byte, []int) {
-	return file_pokerreferee_proto_rawDescGZIP(), []int{20}
+	return file_pokerreferee_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SetPayoutAddressResponse) GetOk() bool {
@@ -1600,21 +1754,27 @@ var File_pokerreferee_proto protoreflect.FileDescriptor
 
 const file_pokerreferee_proto_rawDesc = "" +
 	"\n" +
-	"\x12pokerreferee.proto\x12\x05poker\"\x8c\x01\n" +
+	"\x12pokerreferee.proto\x12\x05poker\"\xc6\x01\n" +
 	"\x11OpenEscrowRequest\x12!\n" +
 	"\famount_atoms\x18\x01 \x01(\x04R\vamountAtoms\x12\x1d\n" +
 	"\n" +
 	"csv_blocks\x18\x02 \x01(\rR\tcsvBlocks\x12\x14\n" +
 	"\x05token\x18\x03 \x01(\tR\x05token\x12\x1f\n" +
 	"\vcomp_pubkey\x18\x04 \x01(\fR\n" +
-	"compPubkey\"\xf6\x01\n" +
+	"compPubkey\x12\x19\n" +
+	"\btable_id\x18\x05 \x01(\tR\atableId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x06 \x01(\tR\tsessionId\"\xe5\x02\n" +
 	"\x12OpenEscrowResponse\x12\x1b\n" +
 	"\tescrow_id\x18\x01 \x01(\tR\bescrowId\x12!\n" +
 	"\fdeposit_addr\x18\x02 \x01(\tR\vdepositAddr\x12*\n" +
 	"\x11redeem_script_hex\x18\x03 \x01(\tR\x0fredeemScriptHex\x12\"\n" +
 	"\rpk_script_hex\x18\x04 \x01(\tR\vpkScriptHex\x12\x19\n" +
 	"\bmatch_id\x18\x05 \x01(\tR\amatchId\x125\n" +
-	"\x16required_confirmations\x18\x06 \x01(\rR\x15requiredConfirmations\"\x84\x02\n" +
+	"\x16required_confirmations\x18\x06 \x01(\rR\x15requiredConfirmations\x12!\n" +
+	"\froster_ready\x18\a \x01(\bR\vrosterReady\x12%\n" +
+	"\x0emember_pubkeys\x18\b \x03(\fR\rmemberPubkeys\x12#\n" +
+	"\rseats_pending\x18\t \x01(\rR\fseatsPending\"\x84\x02\n" +
 	"\x11BindEscrowRequest\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x19\n" +
 	"\btable_id\x18\x02 \x01(\tR\atableId\x12\x1d\n" +
@@ -1686,7 +1846,7 @@ const file_pokerreferee_proto_rawDesc = "" +
 	"\x06branch\x18\x02 \x01(\x05R\x06branch\x12 \n" +
 	"\fdraft_tx_hex\x18\x03 \x01(\tR\n" +
 	"draftTxHex\x12/\n" +
-	"\x06inputs\x18\x04 \x03(\v2\x17.poker.NeedPreSigsInputR\x06inputs\"\xea\x01\n" +
+	"\x06inputs\x18\x04 \x03(\v2\x17.poker.NeedPreSigsInputR\x06inputs\"\x8d\x02\n" +
 	"\x10NeedPreSigsInput\x12\x19\n" +
 	"\binput_id\x18\x01 \x01(\tR\ainputId\x12*\n" +
 	"\x11redeem_script_hex\x18\x02 \x01(\tR\x0fredeemScriptHex\x12\x1f\n" +
@@ -1695,15 +1855,21 @@ const file_pokerreferee_proto_rawDesc = "" +
 	"\x11adaptor_point_hex\x18\x04 \x01(\tR\x0fadaptorPointHex\x12\x1f\n" +
 	"\vinput_index\x18\x05 \x01(\rR\n" +
 	"inputIndex\x12!\n" +
-	"\famount_atoms\x18\x06 \x01(\x04R\vamountAtoms\"r\n" +
+	"\famount_atoms\x18\x06 \x01(\x04R\vamountAtoms\x12!\n" +
+	"\fowner_pubkey\x18\a \x01(\fR\vownerPubkey\"\x9e\x01\n" +
 	"\x0eProvidePreSigs\x12\x19\n" +
 	"\bmatch_id\x18\x01 \x01(\tR\amatchId\x12\x16\n" +
 	"\x06branch\x18\x02 \x01(\x05R\x06branch\x12-\n" +
-	"\apresigs\x18\x03 \x03(\v2\x13.poker.PreSignatureR\apresigs\"x\n" +
+	"\apresigs\x18\x03 \x03(\v2\x13.poker.PreSignatureR\apresigs\x12*\n" +
+	"\x06cosigs\x18\x04 \x03(\v2\x12.poker.CoSignatureR\x06cosigs\"x\n" +
 	"\fPreSignature\x12\x19\n" +
 	"\binput_id\x18\x01 \x01(\tR\ainputId\x12-\n" +
 	"\x13r_prime_compact_hex\x18\x02 \x01(\tR\x10rPrimeCompactHex\x12\x1e\n" +
-	"\vs_prime_hex\x18\x03 \x01(\tR\tsPrimeHex\"D\n" +
+	"\vs_prime_hex\x18\x03 \x01(\tR\tsPrimeHex\"f\n" +
+	"\vCoSignature\x12\x19\n" +
+	"\binput_id\x18\x01 \x01(\tR\ainputId\x12#\n" +
+	"\rsigner_pubkey\x18\x02 \x01(\fR\fsignerPubkey\x12\x17\n" +
+	"\asig_hex\x18\x03 \x01(\tR\x06sigHex\"D\n" +
 	"\x0fVerifyPreSigsOk\x12\x19\n" +
 	"\bmatch_id\x18\x01 \x01(\tR\amatchId\x12\x16\n" +
 	"\x06branch\x18\x02 \x01(\x05R\x06branch\"B\n" +
@@ -1720,14 +1886,16 @@ const file_pokerreferee_proto_rawDesc = "" +
 	"\fdraft_tx_hex\x18\x03 \x01(\tR\n" +
 	"draftTxHex\x12\x1b\n" +
 	"\tgamma_hex\x18\x04 \x01(\tR\bgammaHex\x12,\n" +
-	"\x06inputs\x18\x05 \x03(\v2\x14.poker.FinalizeInputR\x06inputs\"\xc6\x01\n" +
+	"\x06inputs\x18\x05 \x03(\v2\x14.poker.FinalizeInputR\x06inputs\"\x95\x02\n" +
 	"\rFinalizeInput\x12\x19\n" +
 	"\binput_id\x18\x01 \x01(\tR\ainputId\x12-\n" +
 	"\x13r_prime_compact_hex\x18\x02 \x01(\tR\x10rPrimeCompactHex\x12\x1e\n" +
 	"\vs_prime_hex\x18\x03 \x01(\tR\tsPrimeHex\x12\x1f\n" +
 	"\vinput_index\x18\x04 \x01(\rR\n" +
 	"inputIndex\x12*\n" +
-	"\x11redeem_script_hex\x18\x05 \x01(\tR\x0fredeemScriptHex\"{\n" +
+	"\x11redeem_script_hex\x18\x05 \x01(\tR\x0fredeemScriptHex\x12*\n" +
+	"\x06cosigs\x18\x06 \x03(\v2\x12.poker.CoSignatureR\x06cosigs\x12!\n" +
+	"\fowner_pubkey\x18\a \x01(\fR\vownerPubkey\"{\n" +
 	"\x17SetPayoutAddressRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x1c\n" +
@@ -1760,7 +1928,7 @@ func file_pokerreferee_proto_rawDescGZIP() []byte {
 	return file_pokerreferee_proto_rawDescData
 }
 
-var file_pokerreferee_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_pokerreferee_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_pokerreferee_proto_goTypes = []any{
 	(*OpenEscrowRequest)(nil),         // 0: poker.OpenEscrowRequest
 	(*OpenEscrowResponse)(nil),        // 1: poker.OpenEscrowResponse
@@ -1776,42 +1944,45 @@ var file_pokerreferee_proto_goTypes = []any{
 	(*NeedPreSigsInput)(nil),          // 11: poker.NeedPreSigsInput
 	(*ProvidePreSigs)(nil),            // 12: poker.ProvidePreSigs
 	(*PreSignature)(nil),              // 13: poker.PreSignature
-	(*VerifyPreSigsOk)(nil),           // 14: poker.VerifyPreSigsOk
-	(*SettlementError)(nil),           // 15: poker.SettlementError
-	(*GetFinalizeBundleRequest)(nil),  // 16: poker.GetFinalizeBundleRequest
-	(*GetFinalizeBundleResponse)(nil), // 17: poker.GetFinalizeBundleResponse
-	(*FinalizeInput)(nil),             // 18: poker.FinalizeInput
-	(*SetPayoutAddressRequest)(nil),   // 19: poker.SetPayoutAddressRequest
-	(*SetPayoutAddressResponse)(nil),  // 20: poker.SetPayoutAddressResponse
+	(*CoSignature)(nil),               // 14: poker.CoSignature
+	(*VerifyPreSigsOk)(nil),           // 15: poker.VerifyPreSigsOk
+	(*SettlementError)(nil),           // 16: poker.SettlementError
+	(*GetFinalizeBundleRequest)(nil),  // 17: poker.GetFinalizeBundleRequest
+	(*GetFinalizeBundleResponse)(nil), // 18: poker.GetFinalizeBundleResponse
+	(*FinalizeInput)(nil),             // 19: poker.FinalizeInput
+	(*SetPayoutAddressRequest)(nil),   // 20: poker.SetPayoutAddressRequest
+	(*SetPayoutAddressResponse)(nil),  // 21: poker.SetPayoutAddressResponse
 }
 var file_pokerreferee_proto_depIdxs = []int32{
 	9,  // 0: poker.SettlementStreamMessage.hello:type_name -> poker.SettlementHello
 	10, // 1: poker.SettlementStreamMessage.need_pre_sigs:type_name -> poker.NeedPreSigs
 	12, // 2: poker.SettlementStreamMessage.provide_pre_sigs:type_name -> poker.ProvidePreSigs
-	14, // 3: poker.SettlementStreamMessage.verify_ok:type_name -> poker.VerifyPreSigsOk
-	15, // 4: poker.SettlementStreamMessage.error:type_name -> poker.SettlementError
+	15, // 3: poker.SettlementStreamMessage.verify_ok:type_name -> poker.VerifyPreSigsOk
+	16, // 4: poker.SettlementStreamMessage.error:type_name -> poker.SettlementError
 	11, // 5: poker.NeedPreSigs.inputs:type_name -> poker.NeedPreSigsInput
 	13, // 6: poker.ProvidePreSigs.presigs:type_name -> poker.PreSignature
-	18, // 7: poker.GetFinalizeBundleResponse.inputs:type_name -> poker.FinalizeInput
-	0,  // 8: poker.PokerReferee.OpenEscrow:input_type -> poker.OpenEscrowRequest
-	2,  // 9: poker.PokerReferee.BindEscrow:input_type -> poker.BindEscrowRequest
-	6,  // 10: poker.PokerReferee.PublishSessionKey:input_type -> poker.PublishSessionKeyRequest
-	8,  // 11: poker.PokerReferee.SettlementStream:input_type -> poker.SettlementStreamMessage
-	16, // 12: poker.PokerReferee.GetFinalizeBundle:input_type -> poker.GetFinalizeBundleRequest
-	4,  // 13: poker.PokerReferee.GetEscrowStatus:input_type -> poker.GetEscrowStatusRequest
-	19, // 14: poker.PokerReferee.SetPayoutAddress:input_type -> poker.SetPayoutAddressRequest
-	1,  // 15: poker.PokerReferee.OpenEscrow:output_type -> poker.OpenEscrowResponse
-	3,  // 16: poker.PokerReferee.BindEscrow:output_type -> poker.BindEscrowResponse
-	7,  // 17: poker.PokerReferee.PublishSessionKey:output_type -> poker.PublishSessionKeyResponse
-	8,  // 18: poker.PokerReferee.SettlementStream:output_type -> poker.SettlementStreamMessage
-	17, // 19: poker.PokerReferee.GetFinalizeBundle:output_type -> poker.GetFinalizeBundleResponse
-	5,  // 20: poker.PokerReferee.GetEscrowStatus:output_type -> poker.GetEscrowStatusResponse
-	20, // 21: poker.PokerReferee.SetPayoutAddress:output_type -> poker.SetPayoutAddressResponse
-	15, // [15:22] is the sub-list for method output_type
-	8,  // [8:15] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	14, // 7: poker.ProvidePreSigs.cosigs:type_name -> poker.CoSignature
+	19, // 8: poker.GetFinalizeBundleResponse.inputs:type_name -> poker.FinalizeInput
+	14, // 9: poker.FinalizeInput.cosigs:type_name -> poker.CoSignature
+	0,  // 10: poker.PokerReferee.OpenEscrow:input_type -> poker.OpenEscrowRequest
+	2,  // 11: poker.PokerReferee.BindEscrow:input_type -> poker.BindEscrowRequest
+	6,  // 12: poker.PokerReferee.PublishSessionKey:input_type -> poker.PublishSessionKeyRequest
+	8,  // 13: poker.PokerReferee.SettlementStream:input_type -> poker.SettlementStreamMessage
+	17, // 14: poker.PokerReferee.GetFinalizeBundle:input_type -> poker.GetFinalizeBundleRequest
+	4,  // 15: poker.PokerReferee.GetEscrowStatus:input_type -> poker.GetEscrowStatusRequest
+	20, // 16: poker.PokerReferee.SetPayoutAddress:input_type -> poker.SetPayoutAddressRequest
+	1,  // 17: poker.PokerReferee.OpenEscrow:output_type -> poker.OpenEscrowResponse
+	3,  // 18: poker.PokerReferee.BindEscrow:output_type -> poker.BindEscrowResponse
+	7,  // 19: poker.PokerReferee.PublishSessionKey:output_type -> poker.PublishSessionKeyResponse
+	8,  // 20: poker.PokerReferee.SettlementStream:output_type -> poker.SettlementStreamMessage
+	18, // 21: poker.PokerReferee.GetFinalizeBundle:output_type -> poker.GetFinalizeBundleResponse
+	5,  // 22: poker.PokerReferee.GetEscrowStatus:output_type -> poker.GetEscrowStatusResponse
+	21, // 23: poker.PokerReferee.SetPayoutAddress:output_type -> poker.SetPayoutAddressResponse
+	17, // [17:24] is the sub-list for method output_type
+	10, // [10:17] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_pokerreferee_proto_init() }
@@ -1832,7 +2003,7 @@ func file_pokerreferee_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pokerreferee_proto_rawDesc), len(file_pokerreferee_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

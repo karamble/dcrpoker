@@ -38,6 +38,11 @@ message OpenEscrowRequest {
   uint32 csv_blocks = 2;
   string token = 3; // auth token from Login
   bytes comp_pubkey = 4; // 33-byte compressed session key X = xG
+  // Roster the escrow is bound to. The settlement branch of the redeem script
+  // carries one key per table member, so the script - and therefore the
+  // deposit address - cannot be derived until every seat has published a key.
+  string table_id = 5;
+  string session_id = 6;
 }
 
 message OpenEscrowResponse {
@@ -47,6 +52,17 @@ message OpenEscrowResponse {
   string pk_script_hex = 4;       // hex-encoded pkScript to watch for funding
   string match_id = 5;            // table_id|session_id
   uint32 required_confirmations = 6;
+
+  // roster_ready reports whether every seat has published a session key. While
+  // false the escrow exists but has no deposit address yet: deposit_addr,
+  // redeem_script_hex and pk_script_hex are empty and funding must wait.
+  bool roster_ready = 7;
+  // member_pubkeys is the canonical roster the redeem script commits to, in
+  // the order the script checks. Clients rebuild the script from this to check
+  // the deposit address rather than trusting the one they were handed.
+  repeated bytes member_pubkeys = 8;
+  // seats_pending counts seats that have not published a key yet.
+  uint32 seats_pending = 9;
 }
 
 // ---------- Bind escrow ----------
@@ -145,19 +161,36 @@ message NeedPreSigsInput {
   string adaptor_point_hex = 4;  // compressed adaptor point T for this branch
   uint32 input_index = 5;        // index inside the draft transaction
   uint64 amount_atoms = 6;       // input amount to bind sighash
+  // owner_pubkey is the session key of the player whose escrow this input is.
+  // Every input of every branch is sent to every player now: the escrow's
+  // settlement branch needs a signature from the whole table, so a client
+  // adaptor-presigns the input it owns and plainly co-signs all the others.
+  bytes owner_pubkey = 7;
 }
 
-// Client → Server: presigs for the requested branch/input set.
+// Client → Server: signatures for the requested branch. presigs covers the
+// caller's own inputs (adaptor-locked, so only the winning branch completes);
+// cosigs covers every other input on the same draft.
 message ProvidePreSigs {
   string match_id = 1;
   int32 branch = 2; // winner seat index
   repeated PreSignature presigs = 3;
+  repeated CoSignature cosigs = 4;
 }
 
 message PreSignature {
   string input_id = 1;
   string r_prime_compact_hex = 2; // 33-byte even-Y R'
   string s_prime_hex = 3;         // 32-byte s'
+}
+
+// CoSignature is an ordinary consensus Schnorr signature over a draft input the
+// signer does not own. It is not adaptor-locked: branch selection is already
+// gated by the owner's presig, and these only prove the table agreed.
+message CoSignature {
+  string input_id = 1;
+  bytes signer_pubkey = 2; // whose signature this is
+  string sig_hex = 3;      // 65 bytes: 64 [r,s] plus the hash type byte
 }
 
 // Server → Client: indicates presigs were verified and stored.
@@ -193,6 +226,11 @@ message FinalizeInput {
   string s_prime_hex = 3;
   uint32 input_index = 4;
   string redeem_script_hex = 5;
+  // cosigs are the other table members' signatures over this input, which the
+  // settlement branch also requires. Ordered as the redeem script checks them;
+  // the owner's slot is the one completed from the presig above.
+  repeated CoSignature cosigs = 6;
+  bytes owner_pubkey = 7;
 }
 
 message SetPayoutAddressRequest {
