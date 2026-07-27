@@ -309,6 +309,38 @@ func (t *tables) tick(height int64) []outgoing {
 	return out
 }
 
+// needSeating reports the tables that have agreed a membership and are waiting
+// on the block their seating is drawn from.
+func (t *tables) needSeating(height int64) map[string]uint32 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	out := map[string]uint32{}
+	for sid, tbl := range t.m {
+		at := tbl.form.BeaconHeight()
+		if tbl.form.State() == membership.Settled && !tbl.form.Seated() && height >= int64(at) {
+			out[sid] = at
+		}
+	}
+	return out
+}
+
+// seat draws a table's seating from the block the whole table derives.
+func (t *tables) seat(sid string, beacon []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tbl := t.m[sid]
+	if tbl == nil {
+		return
+	}
+	if err := tbl.form.SetBeacon(beacon); err != nil {
+		log.Printf("pokerplugin: table %s: %v", sid, err)
+		return
+	}
+	tbl.startWatching()
+}
+
 // deliver routes one decoded message to the table it is for.
 func (t *tables) deliver(ctx context.Context, d transport.Delivery) []outgoing {
 	// The session has to be one we joined, and the conversation the one the
@@ -533,6 +565,8 @@ func (tbl *table) startWatching() {
 	}
 	seats, ok := tbl.form.Seats()
 	if !ok {
+		// No seating yet, so no table to follow. It arrives with the
+		// block the seats are drawn from.
 		return
 	}
 	matchID, ok := tbl.form.MatchID()
@@ -553,16 +587,20 @@ func (tbl *table) publishJoin() []outgoing {
 }
 
 func (tbl *table) publishRoster() []outgoing {
-	seats := map[uint32][]byte{}
+	// Only a peer that has a membership can claim one: short of a full table
+	// there is nothing to assert, and saying so anyway would be claiming
+	// agreement with a set nobody holds.
+	//
+	// Seating is a later and separate thing - it waits for the block it is
+	// drawn from - so an assertion must not wait on it, or no table would
+	// ever agree and every one of them would have to sit out its deadline.
 	var assertion *membership.Assertion
+	if a, err := tbl.form.Assertion(); err == nil {
+		assertion = a
+	}
+	seats := map[uint32][]byte{}
 	if s, ok := tbl.form.Seats(); ok {
 		seats = s
-		// Only a peer that has a membership can claim one. Short of a
-		// full table there is nothing to assert, and saying so anyway
-		// would be claiming agreement with a set nobody holds.
-		if a, err := tbl.form.Assertion(); err == nil {
-			assertion = a
-		}
 	}
 	body := schema.RosterFrom(tbl.terms, seats, tbl.form.Joins(), assertion)
 	return []outgoing{tbl.frame(schema.KindRoster, body, wire.ClassState)}

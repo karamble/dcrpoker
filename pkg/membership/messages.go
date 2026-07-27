@@ -27,6 +27,7 @@ var (
 	joinTag   = []byte("gaming/table/join/v1")
 	rosterTag = []byte("gaming/table/roster/v1")
 	assertTag = []byte("gaming/table/assert/v1")
+	seatTag   = []byte("gaming/table/seats/v1")
 	commitTag = []byte("gaming/table/commit/v1")
 )
 

@@ -439,13 +439,27 @@ or it is free and a stranger can abort any table; and `PostBond`
 (`pkg/server/referee.go`) has no proof of possession today — it takes the owner
 key from the script and files the bond under the caller's token, so only a
 first-come outpoint check stops one player claiming another's bond, and
-peer-to-peer there is no registry to be first at. **And the button must stop
-being seat 0**: `g.dealer` starts at `0` (`pkg/poker/game.go`) with players in
-ascending seat order, so ordering seats by key hands the first hand's button —
-and, under the rotating dealer, the first equivocation-capable position — to
-whoever grinds the lowest key. `CanonicalMembers` already documents that its
-order holds "regardless of seat assignment"; conflating the two is what creates
-the surface.
+peer-to-peer there is no registry to be first at. **Seats are drawn from a block, as of 2026-07-27.** They used to follow
+canonical key order, which meant seat 0 — and with it the first hand's button,
+and under the rotating dealer the first equivocation-capable position — went to
+whoever ground the lowest key. `CanonicalMembers` already documented that its
+order holds "regardless of seat assignment"; the two were only ever the same
+thing for want of anything better to be the other.
+
+The draw is an explicit Fisher-Yates seeded by the roster hash and the hash of
+the block at `Until + 2`: past the deadline, so it did not exist while anyone
+was choosing a key, and a little past so a one-block reorganisation cannot
+reseat a table that has been dealt. Every member derives the height from the
+terms alone, so there is nothing to agree about which block it is.
+
+Two things fall out of it. The engine's hardcoded first dealer stops mattering,
+because seat 0 is no longer a position anybody can aim at — `pkg/poker` needed
+no change at all. And seating is now strictly later than agreement: the roster
+hash commits to the *key set*, so the beacon cannot alter what anyone committed
+to, and a table has a membership before it has seats.
+
+Grinding it would mean grinding a block, which is a different threat model
+buying a poker button.
 
 #### Ordering without consensus
 

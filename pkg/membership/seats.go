@@ -1,0 +1,81 @@
+package membership
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+
+	"github.com/decred/dcrd/crypto/blake256"
+)
+
+// Seats are drawn from a block nobody could see when they chose their key.
+//
+// They have to be. The escrow script names members in canonical key order, and
+// it is tempting to seat them in that order too - but seat order decides the
+// button, and a session key is an HMAC of a local seed that anybody can
+// generate until one sorts low. Seating by key would hand the first hand's
+// button, and under a rotating dealer the first relay, to whoever ground the
+// hardest.
+//
+// escrow.CanonicalMembers says as much about its own ordering: it fixes the
+// script layout and the signing order "regardless of seat assignment". The two
+// were only ever the same thing for want of something better to be the other.
+//
+// What is used instead is a block hash from after everybody committed. It is a
+// fact all of them can check and none of them could predict, which is exactly
+// what a seat draw needs and exactly what a clock or a proposer is not. Grinding
+// it means grinding a block, which is a different threat model and buys a poker
+// button.
+
+// BeaconDepth is how far past the admission deadline the drawing block sits.
+//
+// Past, so the hash did not exist when keys were being chosen. A little past,
+// so a one-block reorganisation does not reseat a table that has already been
+// dealt.
+const BeaconDepth uint32 = 2
+
+// BeaconHeight is the block a table draws its seats from. Every member derives
+// it from the terms alone, so there is nothing to agree.
+func BeaconHeight(t Terms) uint32 { return t.Until + BeaconDepth }
+
+// SeatOrder draws the seating for a membership.
+//
+// The permutation is an explicit Fisher-Yates from a counter-based digest
+// rather than anything a language supplies, because two implementations have to
+// produce the same table and a shuffle nobody wrote down is one they will
+// eventually disagree about.
+func SeatOrder(roster [32]byte, beacon []byte, canonical [][]byte) (map[uint32][]byte, error) {
+	if len(canonical) == 0 {
+		return nil, fmt.Errorf("no members to seat")
+	}
+	if len(beacon) == 0 {
+		return nil, fmt.Errorf("no beacon to draw from")
+	}
+
+	order := make([][]byte, len(canonical))
+	copy(order, canonical)
+
+	for i := len(order) - 1; i > 0; i-- {
+		j := seatDraw(roster, beacon, uint32(i)) % uint64(i+1)
+		order[i], order[j] = order[j], order[i]
+	}
+
+	seats := make(map[uint32][]byte, len(order))
+	for i, key := range order {
+		seats[uint32(i)] = key
+	}
+	return seats, nil
+}
+
+// seatDraw is one step of the shuffle: a number from the roster, the block and
+// the position being filled.
+func seatDraw(roster [32]byte, beacon []byte, i uint32) uint64 {
+	var b bytes.Buffer
+	b.Write(seatTag)
+	b.Write(roster[:])
+	_ = binary.Write(&b, binary.BigEndian, uint32(len(beacon)))
+	b.Write(beacon)
+	_ = binary.Write(&b, binary.BigEndian, i)
+	sum := blake256.Sum256(b.Bytes())
+	return binary.BigEndian.Uint64(sum[:8])
+}

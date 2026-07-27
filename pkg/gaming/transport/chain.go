@@ -52,6 +52,22 @@ func (b *Bridge) ChainTip(ctx context.Context) (ChainTip, error) {
 	return tip, err
 }
 
+// BlockHash reports the hash of the block at a height.
+//
+// By height rather than by asking for the tip, because a table draws its
+// seating from one: the tip moves, and two peers reading it a second apart
+// would seat the same table differently.
+func (b *Bridge) BlockHash(ctx context.Context, height uint32) (string, error) {
+	var out struct {
+		Height int64  `json:"height"`
+		Hash   string `json:"hash"`
+	}
+	err := b.getJSON(ctx, "/chain/blockhash", url.Values{
+		"height": {strconv.FormatUint(uint64(height), 10)},
+	}, &out)
+	return out.Hash, err
+}
+
 // Outpoint reports what is at txid:vout.
 func (b *Bridge) Outpoint(ctx context.Context, txid string, vout uint32) (Outpoint, error) {
 	var out Outpoint

@@ -496,9 +496,13 @@ func TestSeatsAndCanonicalOrderAreBothReported(t *testing.T) {
 	if !ok {
 		t.Fatal("no members after settling")
 	}
+	// Seating waits for the block it is drawn from; the membership does not.
+	if err := fs[0].SetBeacon(testBeacon()); err != nil {
+		t.Fatalf("beacon: %v", err)
+	}
 	seats, ok := fs[0].Seats()
 	if !ok {
-		t.Fatal("no seats after settling")
+		t.Fatal("no seats after the draw")
 	}
 	if len(seats) != len(members) {
 		t.Fatalf("%d seats for %d members", len(seats), len(members))
@@ -870,5 +874,130 @@ func TestJoiningNeedsCredentialsThatCouldWork(t *testing.T) {
 				t.Fatal("a table was joined without a bond")
 			}
 		})
+	}
+}
+
+func testBeacon() []byte {
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = byte(i * 7)
+	}
+	return b
+}
+
+// Every member draws the same table from the same block. If they did not, they
+// would disagree about who acts when, which is the one thing seats decide.
+func TestEverySeatDrawIsTheSameFromTheSameBlock(t *testing.T) {
+	terms := testTerms(6)
+	fs := settleAll(t, terms, players(t, 6))
+
+	var want map[uint32][]byte
+	for i, f := range fs {
+		if f.Seated() {
+			t.Fatalf("peer %d was seated before the block was drawn", i)
+		}
+		if _, ok := f.Seats(); ok {
+			t.Fatalf("peer %d had seats before the block was drawn", i)
+		}
+		if err := f.SetBeacon(testBeacon()); err != nil {
+			t.Fatalf("peer %d: %v", i, err)
+		}
+		seats, ok := f.Seats()
+		if !ok {
+			t.Fatalf("peer %d has no seats after the draw", i)
+		}
+		if want == nil {
+			want = seats
+			continue
+		}
+		if len(seats) != len(want) {
+			t.Fatalf("peer %d seated %d, want %d", i, len(seats), len(want))
+		}
+		for seat, key := range want {
+			if !bytes.Equal(seats[seat], key) {
+				t.Fatalf("peer %d put a different key in seat %d", i, seat)
+			}
+		}
+	}
+}
+
+// The whole point. Seating by canonical key order would hand seat zero - and
+// with it the first hand's button - to whoever generated the lowest key.
+func TestSeatingIsNotTheOrderTheScriptNamesMembersIn(t *testing.T) {
+	terms := testTerms(6)
+	creds := make([]Credentials, 0, 6)
+	for _, p := range players(t, 6) {
+		creds = append(creds, testCreds(t, p))
+	}
+
+	// Draw the same membership under many different blocks: if seating
+	// followed the key order, seat zero would never move.
+	firsts := map[string]int{}
+	for i := range 32 {
+		f, err := NewFormation(terms, creds[0])
+		if err != nil {
+			t.Fatalf("new formation: %v", err)
+		}
+		for _, c := range creds[1:] {
+			j, err := SignJoin(terms, c)
+			if err != nil {
+				t.Fatalf("sign join: %v", err)
+			}
+			if err := f.AddJoin(j); err != nil {
+				t.Fatalf("add join: %v", err)
+			}
+		}
+		beacon := testBeacon()
+		beacon[0] = byte(i)
+		if err := f.SetBeacon(beacon); err != nil {
+			t.Fatalf("beacon: %v", err)
+		}
+		seats, ok := f.Seats()
+		if !ok {
+			t.Fatal("no seats after the draw")
+		}
+		firsts[string(seats[0])]++
+	}
+
+	if len(firsts) < 2 {
+		t.Fatal("seat zero never moved, so it is still something a key can win")
+	}
+}
+
+// Seating is drawn once. A second block would reseat a table that may already
+// have been dealt.
+func TestSeatingIsDrawnOnce(t *testing.T) {
+	terms := testTerms(3)
+	fs := settleAll(t, terms, players(t, 3))
+	f := fs[0]
+
+	if err := f.SetBeacon(testBeacon()); err != nil {
+		t.Fatalf("beacon: %v", err)
+	}
+	first, _ := f.Seats()
+
+	other := testBeacon()
+	other[0] ^= 0xff
+	if err := f.SetBeacon(other); err != nil {
+		t.Fatalf("second beacon: %v", err)
+	}
+	again, _ := f.Seats()
+
+	for seat, key := range first {
+		if !bytes.Equal(again[seat], key) {
+			t.Fatal("a second block reseated the table")
+		}
+	}
+	if err := f.SetBeacon(nil); err == nil {
+		t.Fatal("an empty beacon was accepted")
+	}
+}
+
+// The block is one from after everybody committed, so it did not exist when
+// anyone was choosing a key.
+func TestTheDrawingBlockIsPastTheDeadline(t *testing.T) {
+	terms := testTerms(2)
+	if got := BeaconHeight(terms); got <= terms.Until {
+		t.Fatalf("seating is drawn at height %d, which is not past the deadline %d", got, terms.Until)
 	}
 }

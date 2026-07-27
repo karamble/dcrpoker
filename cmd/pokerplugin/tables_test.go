@@ -197,7 +197,7 @@ func acceptInvite(t *testing.T, p *plugin, inv schema.Invite) {
 // something asynchronous stays honest about being asynchronous.
 func waitFor(t *testing.T, want membership.State, peers ...*plugin) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(45 * time.Second)
 	for {
 		done := true
 		for _, p := range peers {

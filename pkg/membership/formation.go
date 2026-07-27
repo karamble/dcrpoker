@@ -78,6 +78,10 @@ type Formation struct {
 	canonical [][]byte
 	roster    [32]byte
 	conflict  *ConflictingCommits
+	// beacon is the block hash the seating was drawn from. Until it is
+	// known there is no seating, only a membership - which is the whole
+	// point: seats must not be decided by anything a player chose.
+	beacon []byte
 }
 
 // NewFormation starts forming the table these terms describe, joining it with
@@ -341,23 +345,45 @@ func (f *Formation) Members() ([][]byte, bool) {
 	return out, true
 }
 
+// SetBeacon supplies the block the seating is drawn from.
+//
+// The caller reads it, because Formation touches no chain. What it must not do
+// is read it early: the block has to be one that did not exist when the members
+// were choosing their keys, or the draw is something a player can grind.
+func (f *Formation) SetBeacon(hash []byte) error {
+	if len(hash) == 0 {
+		return fmt.Errorf("no beacon")
+	}
+	if f.beacon != nil {
+		// Seating is drawn once. A second beacon would reseat a table
+		// that may already have been dealt.
+		return nil
+	}
+	f.beacon = append([]byte(nil), hash...)
+	return nil
+}
+
+// BeaconHeight is the block this table draws its seating from.
+func (f *Formation) BeaconHeight() uint32 { return BeaconHeight(f.terms) }
+
+// Seated reports whether the seating has been drawn.
+func (f *Formation) Seated() bool { return f.beacon != nil && f.canonical != nil }
+
 // Seats reports which key holds which seat.
 //
-// Seat order and canonical key order are deliberately separate concepts, as
-// escrow.CanonicalMembers says of its own ordering: it fixes the script layout
-// "regardless of seat assignment". They coincide here only because there is
-// nothing better yet to assign seats with. That is a placeholder and a known
-// weakness - the first hand's button is seat 0, and session keys are free to
-// generate, so ordering seats by key hands the button to whoever grinds the
-// lowest one. Permuting seats by a chain beacon drawn after everyone has
-// committed is what fixes it, and this is the one function that has to change.
+// It is empty until the beacon arrives, and that is the point rather than a
+// limitation. Seat order decides the button, so seating by canonical key order
+// would hand the first hand's button to whoever generated the lowest key - and
+// escrow.CanonicalMembers says of its own ordering that it holds "regardless of
+// seat assignment". The two were only ever the same thing for want of anything
+// better to be the other.
 func (f *Formation) Seats() (map[uint32][]byte, bool) {
-	if f.canonical == nil {
+	if !f.Seated() {
 		return nil, false
 	}
-	seats := make(map[uint32][]byte, len(f.canonical))
-	for i, k := range f.canonical {
-		seats[uint32(i)] = k
+	seats, err := SeatOrder(f.roster, f.beacon, f.canonical)
+	if err != nil {
+		return nil, false
 	}
 	return seats, true
 }
@@ -386,6 +412,8 @@ func (f *Formation) MatchID() (string, bool) {
 }
 
 // Roster renders the settled membership in the shape the escrow layer wants.
+// It needs the seating as well as the agreement, so it is empty until the
+// beacon has been drawn.
 func (f *Formation) Roster() (*Roster, bool) {
 	seats, ok := f.Seats()
 	if !ok || f.state != Settled {

@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -189,6 +190,7 @@ func (p *plugin) watchChain(ctx context.Context) {
 			}
 		} else {
 			p.publish(ctx, p.tables.tick(tip.Height))
+			p.drawSeats(ctx, tip.Height)
 		}
 
 		select {
@@ -196,6 +198,27 @@ func (p *plugin) watchChain(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+// drawSeats gives each settled table the block its seating comes from.
+//
+// It is a block from after everybody committed, so the draw is something no
+// player could have predicted when choosing a key - which matters because seat
+// order decides the button, and session keys are free to generate.
+func (p *plugin) drawSeats(ctx context.Context, height int64) {
+	for sid, at := range p.tables.needSeating(height) {
+		hash, err := p.bridge.BlockHash(ctx, at)
+		if err != nil {
+			log.Printf("pokerplugin: table %s: cannot read the block it seats from: %v", sid, err)
+			continue
+		}
+		raw, err := hex.DecodeString(hash)
+		if err != nil || len(raw) == 0 {
+			log.Printf("pokerplugin: table %s: block %d has no usable hash", sid, at)
+			continue
+		}
+		p.tables.seat(sid, raw)
 	}
 }
 
