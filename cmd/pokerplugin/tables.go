@@ -249,7 +249,16 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 
 	// Announce ourselves. Everything else follows from other people's
 	// joins arriving.
-	return tbl.publishJoin(), nil
+	out := tbl.publishJoin()
+	if rec != nil {
+		// A table read back from disk is the clearest case of having
+		// missed something: anything published while this process was
+		// not running was published once and is gone. Our own join will
+		// not shake it loose either, because a peer that has already
+		// committed has nothing new to say about it.
+		out = append(out, tbl.publishResync()...)
+	}
+	return out, nil
 }
 
 // resume puts back the position this key already took for this session.
