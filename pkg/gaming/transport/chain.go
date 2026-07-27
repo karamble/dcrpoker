@@ -68,13 +68,36 @@ func (b *Bridge) BlockHash(ctx context.Context, height uint32) (string, error) {
 	return out.Hash, err
 }
 
-// Outpoint reports what is at txid:vout.
+// Outpoint reports what is at txid:vout, once it is in a block.
+//
+// Confirmed only, because this is what decides whether somebody else's deposit
+// is worth staking against and an unconfirmed transaction can still be
+// replaced.
 func (b *Bridge) Outpoint(ctx context.Context, txid string, vout uint32) (Outpoint, error) {
-	var out Outpoint
-	err := b.getJSON(ctx, "/chain/outpoint", url.Values{
+	return b.outpoint(ctx, txid, vout, false)
+}
+
+// UnconfirmedOutpoint reports what is at txid:vout, whether or not it is in a
+// block yet.
+//
+// It answers a different question, which is why it has its own name: finding
+// which output of a payment you have just made is yours cannot wait for a
+// block, because there is not one. Never use it to judge another player's
+// bond - that is the case Outpoint exists for.
+func (b *Bridge) UnconfirmedOutpoint(ctx context.Context, txid string, vout uint32) (Outpoint, error) {
+	return b.outpoint(ctx, txid, vout, true)
+}
+
+func (b *Bridge) outpoint(ctx context.Context, txid string, vout uint32, includeMempool bool) (Outpoint, error) {
+	q := url.Values{
 		"txid": {strings.TrimSpace(txid)},
 		"vout": {strconv.FormatUint(uint64(vout), 10)},
-	}, &out)
+	}
+	if includeMempool {
+		q.Set("mempool", "1")
+	}
+	var out Outpoint
+	err := b.getJSON(ctx, "/chain/outpoint", q, &out)
 	return out, err
 }
 

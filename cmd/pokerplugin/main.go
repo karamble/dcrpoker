@@ -252,6 +252,7 @@ func (p *plugin) routes() http.Handler {
 	// player cannot join anything.
 	mux.HandleFunc("/bond", p.guard(p.handleBond))
 	mux.HandleFunc("/bond/fund", p.guard(p.handleBondFund))
+	mux.HandleFunc("/bond/set", p.guard(p.handleBondSet))
 	return mux
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -185,12 +186,95 @@ func (p *plugin) handleBondFund(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"outpoint": outpoint, "funded": true, "txid": settled.TxID})
 }
 
+// handleBondSet records a deposit that already exists.
+//
+// The bond address is public and anyone may pay it, so a bond can arrive
+// without this process having asked for it - from a wallet directly, or from a
+// funding request whose outcome was lost. Without this, the only way to get a
+// bond would be to ask for another one, which would pay twice for the same
+// seat.
+//
+// It is checked rather than believed: the deposit has to exist and to pay this
+// player's own bond script. Confirmations are not required here - a peer will
+// refuse a join citing an unconfirmed bond, which resolves itself.
+func (p *plugin) handleBondSet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Outpoint string `json:"outpoint"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	txid, vout, err := splitOutpoint(req.Outpoint)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	script, err := p.id.bondScript()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	_, pkScript, err := escrow.BondAddress(script, p.params)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	out, err := p.bridge.UnconfirmedOutpoint(r.Context(), txid, vout)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	switch {
+	case !out.Found:
+		writeErr(w, http.StatusBadRequest,
+			fmt.Errorf("%s holds no unspent coin", req.Outpoint))
+		return
+	case !strings.EqualFold(out.PkScriptHex, hex.EncodeToString(pkScript)):
+		// Somebody else's deposit, or the wrong output of the right
+		// transaction. Either way it is not a bond this player can sign
+		// for, so claiming it would only produce joins nobody admits.
+		writeErr(w, http.StatusBadRequest,
+			fmt.Errorf("%s does not pay this player's bond script", req.Outpoint))
+		return
+	case out.ValueAtoms < int64(escrow.MinBondAtoms):
+		writeErr(w, http.StatusBadRequest,
+			fmt.Errorf("%s holds %d atoms, under the %d minimum",
+				req.Outpoint, out.ValueAtoms, escrow.MinBondAtoms))
+		return
+	}
+
+	outpoint := fmt.Sprintf("%s:%d", txid, vout)
+	if err := p.id.setBondDeposit(outpoint); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	log.Printf("pokerplugin: bond recorded at %s (%d confirmations)", outpoint, out.Confirmations)
+	writeJSON(w, map[string]any{
+		"outpoint":      outpoint,
+		"funded":        true,
+		"confirmations": out.Confirmations,
+	})
+}
+
 // findBondOutput works out which output of the funding transaction paid the
 // bond. The host reports a transaction id and nothing about its shape, so this
 // asks about each output until one pays the script this player's bond needs.
+//
+// It asks about unconfirmed outputs, and has to: the payment was broadcast
+// moments ago and is in no block yet. That is the opposite of what deciding
+// against somebody else's bond needs, and using the confirmed-only lookup here
+// found nothing at all - the transaction was paid, and the deposit backing it
+// could not be located.
 func (p *plugin) findBondOutput(ctx context.Context, txid, wantPkScript string) (string, error) {
 	for vout := uint32(0); vout < maxFundingVout; vout++ {
-		out, err := p.bridge.Outpoint(ctx, txid, vout)
+		out, err := p.bridge.UnconfirmedOutpoint(ctx, txid, vout)
 		if err != nil {
 			return "", fmt.Errorf("look up %s:%d: %w", txid, vout, err)
 		}
