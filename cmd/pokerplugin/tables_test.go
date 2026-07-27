@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
@@ -69,11 +70,12 @@ func newHub(t *testing.T) *hub {
 
 func (h *hub) join(t *testing.T, name string) *plugin {
 	t.Helper()
-	id, err := loadIdentity(t.TempDir())
+	dir := t.TempDir()
+	id, err := loadIdentity(dir)
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	p, err := newPlugin(context.Background(), h.srv.URL+"/gaming", name, id)
+	p, err := newPlugin(context.Background(), h.srv.URL+"/gaming", name, id, newStore(dir))
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -353,5 +355,141 @@ func TestJoiningRefusesInvitationsToNothing(t *testing.T) {
 				t.Fatalf("accepted: %s", rec.Body.String())
 			}
 		})
+	}
+}
+
+// deliverJoin hands a table somebody else's join, as the router would.
+func deliverJoin(t *testing.T, p *plugin, terms membership.Terms, priv *secp256k1.PrivateKey) {
+	t.Helper()
+	j, err := membership.SignJoin(terms, priv)
+	if err != nil {
+		t.Fatalf("sign join: %v", err)
+	}
+	blob, err := schema.Encode(schema.KindJoin, terms.SID, schema.JoinFrom(j))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	msg, err := schema.Decode(blob)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	p.tables.deliver(transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
+}
+
+func inviteTerms(inv schema.Invite) membership.Terms {
+	return membership.Terms{
+		Game: inv.Game, GameVer: schema.Version, SID: inv.SID,
+		BuyInAtoms: inv.BuyInAtoms, Seats: inv.Seats, CSVBlocks: inv.CSVBlocks,
+	}
+}
+
+// restart builds a second process over the same data directory, which is what
+// makes it the same player: the seed is there, so the session keys it derives
+// are the ones it held before.
+func restart(t *testing.T, dir, token string) *plugin {
+	t.Helper()
+	id, err := loadIdentity(dir)
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	p, err := newPlugin(context.Background(), "http://host/gaming", token, id, newStore(dir))
+	if err != nil {
+		t.Fatalf("new plugin: %v", err)
+	}
+	return p
+}
+
+// The one that matters. A session key is derived from the seed and the session,
+// so a restart re-derives the same key - and if it then bound to some other
+// membership it would have signed two contradictory commits with one key, which
+// is exactly the proof of equivocation the protocol runs on. An honest player
+// would have framed themselves by rebooting.
+func TestARestartCommitsToTheSameMembership(t *testing.T) {
+	dir := t.TempDir()
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+
+	other, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	before := restart(t, dir, "tok")
+	acceptInvite(t, before, inv)
+	deliverJoin(t, before, terms, other)
+
+	first := before.tables.snapshots()[0]
+	if first.State != membership.Committed.String() && first.State != membership.Settled.String() {
+		t.Fatalf("state is %s, want it bound", first.State)
+	}
+	if first.MatchID == "" {
+		t.Fatal("bound with no membership")
+	}
+
+	// Same directory, so the same player comes back.
+	after := restart(t, dir, "tok")
+	acceptInvite(t, after, inv)
+
+	second := after.tables.snapshots()[0]
+	if second.MatchID != first.MatchID {
+		t.Fatalf("a restart committed to %s, having already committed to %s",
+			second.MatchID, first.MatchID)
+	}
+	if second.State != first.State {
+		t.Fatalf("state came back as %s, was %s", second.State, first.State)
+	}
+	if second.Joined != first.Joined {
+		t.Fatalf("came back holding %d joins, had %d", second.Joined, first.Joined)
+	}
+}
+
+// Aborted is terminal, and has to stay terminal across a restart: a commit
+// arriving after everyone else gave up would otherwise put this process back
+// into a membership nobody is bound to.
+func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
+	dir := t.TempDir()
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+
+	p := restart(t, dir, "tok")
+	acceptInvite(t, p, inv)
+
+	// Two more answer a two seat table, arriving together in somebody's
+	// assertion, so the table is over-full before anyone binds.
+	joins := make([]*membership.Join, 0, 2)
+	for range 2 {
+		priv, err := secp256k1.GeneratePrivateKey()
+		if err != nil {
+			t.Fatalf("generate key: %v", err)
+		}
+		j, err := membership.SignJoin(terms, priv)
+		if err != nil {
+			t.Fatalf("sign join: %v", err)
+		}
+		joins = append(joins, j)
+	}
+	blob, err := schema.Encode(schema.KindRoster, terms.SID,
+		schema.RosterFrom(terms, map[uint32][]byte{}, joins))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	msg, err := schema.Decode(blob)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	p.tables.deliver(transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
+	if got := p.tables.snapshots()[0].State; got != membership.Aborted.String() {
+		t.Fatalf("state is %s, want aborted", got)
+	}
+
+	link, _ := inv.String()
+	body, _ := json.Marshal(map[string]string{"invite": link, "gcid": testGC})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer tok")
+	restart(t, dir, "tok").routes().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a session that ended was rejoined after a restart: %s", rec.Body.String())
 	}
 }

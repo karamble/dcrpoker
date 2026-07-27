@@ -17,11 +17,12 @@ const testToken = "tok"
 
 func testPlugin(t *testing.T) *plugin {
 	t.Helper()
-	id, err := loadIdentity(t.TempDir())
+	dir := t.TempDir()
+	id, err := loadIdentity(dir)
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	p, err := newPlugin(context.Background(), "http://host/gaming", testToken, id)
+	p, err := newPlugin(context.Background(), "http://host/gaming", testToken, id, newStore(dir))
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -123,14 +124,15 @@ func TestCmdRequiresPost(t *testing.T) {
 // A plugin with no way to reach the table, or no identity to reach it as,
 // should refuse to start rather than run unable to play.
 func TestPluginRequiresBridgeAndToken(t *testing.T) {
-	id, err := loadIdentity(t.TempDir())
+	dir := t.TempDir()
+	id, err := loadIdentity(dir)
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	if _, err := newPlugin(context.Background(), "", "tok", id); err == nil {
+	if _, err := newPlugin(context.Background(), "", "tok", id, newStore(dir)); err == nil {
 		t.Fatal("a plugin with no bridge should not start")
 	}
-	if _, err := newPlugin(context.Background(), "http://host/gaming", "", id); err == nil {
+	if _, err := newPlugin(context.Background(), "http://host/gaming", "", id, newStore(dir)); err == nil {
 		t.Fatal("a plugin with no token should not start")
 	}
 }

@@ -65,7 +65,7 @@ func main() {
 		log.Fatalf("pokerplugin: %v", err)
 	}
 
-	p, err := newPlugin(ctx, *bridge, *token, id)
+	p, err := newPlugin(ctx, *bridge, *token, id, newStore(*dataDir))
 	if err != nil {
 		log.Fatalf("pokerplugin: %v", err)
 	}
@@ -108,7 +108,7 @@ type plugin struct {
 	token  string
 }
 
-func newPlugin(ctx context.Context, bridgeURL, token string, id *identity) (*plugin, error) {
+func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *store) (*plugin, error) {
 	b, err := transport.NewBridge(bridgeURL, token, nil)
 	if err != nil {
 		return nil, err
@@ -123,7 +123,7 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity) (*plu
 		log.Printf("pokerplugin: reconnected to the host; frames may have been missed")
 	}
 
-	p := &plugin{ctx: ctx, bridge: b, tables: newTables(), id: id, token: token}
+	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), id: id, token: token}
 	p.router, err = transport.NewRouter(transport.Config{
 		Game:    schema.Game,
 		GameVer: schema.Version,

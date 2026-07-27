@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
@@ -46,11 +47,43 @@ type outgoing struct {
 
 // tables is every table this process is at, by session.
 type tables struct {
-	mu sync.Mutex
-	m  map[string]*table
+	mu    sync.Mutex
+	m     map[string]*table
+	store *store
 }
 
-func newTables() *tables { return &tables{m: make(map[string]*table)} }
+func newTables(st *store) *tables {
+	return &tables{m: make(map[string]*table), store: st}
+}
+
+// persist writes a table's irrevocable position to disk.
+//
+// Failure is logged and not returned, but it is not harmless: a position this
+// process cannot write down is one a restart could contradict. There is nobody
+// to report it to, so the log is where it has to be visible.
+func (t *tables) persist(tbl *table) {
+	if t.store == nil {
+		return
+	}
+	if err := t.store.save(tbl.terms.SID, tbl.record()); err != nil {
+		log.Printf("pokerplugin: table %s: cannot record its position: %v", tbl.terms.SID, err)
+	}
+}
+
+// record renders what has to survive a restart.
+func (tbl *table) record() *record {
+	rec := &record{Terms: schema.TermsFrom(tbl.terms), Bound: tbl.bound}
+	for _, j := range tbl.form.Joins() {
+		rec.Joins = append(rec.Joins, schema.JoinFrom(j))
+	}
+	if h, ok := tbl.form.RosterHash(); ok && tbl.bound {
+		rec.Roster = hex.EncodeToString(h[:])
+	}
+	if tbl.form.State() == membership.Aborted {
+		rec.Aborted, rec.Reason = true, tbl.form.Reason()
+	}
+	return rec
+}
 
 // authorized reports whether frames for a session should be admitted at all.
 //
@@ -108,16 +141,73 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 		return nil, nil
 	}
 
+	rec, err := t.store.load(terms.SID)
+	if err != nil {
+		return nil, err
+	}
+	if rec != nil {
+		if rec.Aborted {
+			// Terminal, and it has to stay terminal across a
+			// restart: a commit arriving after everyone else gave
+			// up would otherwise put this process back into a
+			// membership nobody is bound to.
+			return nil, fmt.Errorf("this session already ended: %s", rec.Reason)
+		}
+		if rec.Terms.Into() != terms {
+			return nil, fmt.Errorf("this session was joined under different terms")
+		}
+	}
+
 	form, err := membership.NewFormation(terms, priv)
 	if err != nil {
 		return nil, err
 	}
 	tbl := &table{terms: terms, gcID: gcID, priv: priv, form: form}
+
+	if rec != nil {
+		if err := tbl.resume(rec); err != nil {
+			return nil, err
+		}
+	}
 	t.m[terms.SID] = tbl
+	t.persist(tbl)
 
 	// Announce ourselves. Everything else follows from other people's
 	// joins arriving.
 	return tbl.publishJoin(), nil
+}
+
+// resume puts back the position this key already took for this session.
+//
+// Rebinding reproduces the same commit rather than a second, different one:
+// the membership is the one that was recorded, and signing is deterministic,
+// so the bytes match what was published before. That is the whole reason this
+// exists - the alternative is a restart signing a contradiction with a key
+// that is derived, not stored, and so is exactly the key it was before.
+func (tbl *table) resume(rec *record) error {
+	for i, wj := range rec.Joins {
+		j, err := wj.Into()
+		if err != nil {
+			return fmt.Errorf("recorded join %d: %w", i, err)
+		}
+		if err := tbl.form.AddJoin(j); err != nil {
+			return fmt.Errorf("recorded join %d: %w", i, err)
+		}
+	}
+	if !rec.Bound {
+		return nil
+	}
+	c, err := tbl.form.Bind(tbl.priv)
+	if err != nil {
+		return fmt.Errorf("cannot take back up the position this key already committed to: %w", err)
+	}
+	if got := hex.EncodeToString(c.Roster[:]); got != rec.Roster {
+		// Refusing to publish anything is the only safe answer: this
+		// key has already said something else about this session.
+		return fmt.Errorf("resuming would commit to %s, but this key already committed to %s", got, rec.Roster)
+	}
+	tbl.bound = true
+	return nil
 }
 
 // leave forgets a table, which also stops admitting frames for it.
@@ -148,6 +238,7 @@ func (t *tables) deliver(d transport.Delivery) []outgoing {
 	}
 
 	out, err := tbl.apply(d.Msg)
+	t.persist(tbl)
 	if err != nil {
 		// A message that does not check is exactly what the signatures
 		// are for. It changes nothing and is not worth failing over.
