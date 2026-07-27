@@ -621,3 +621,18 @@ func LogInfo(id int32, s string) {
 	}
 	cmtx.Unlock()
 }
+
+// Call dispatches one command and returns its JSON result.
+//
+// It is the same entry point the C exports use, without the C. The FFI shape -
+// one entry, a typed command, a JSON payload - happens to be exactly what an
+// HTTP surface needs, so a host driving this over a socket reaches the same
+// vocabulary as the Flutter client did rather than a second one written to
+// drift from it.
+func Call(handle int32, typ CmdType, payload []byte) ([]byte, error) {
+	res := call(&cmd{Type: typ, ClientHandle: handle, Payload: payload})
+	if res == nil {
+		return nil, fmt.Errorf("command %d returned nothing", typ)
+	}
+	return res.Payload, res.Err
+}
