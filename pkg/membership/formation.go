@@ -559,6 +559,25 @@ func (f *Formation) recompute() {
 	f.state = Settled
 }
 
+// Abandon gives up on a table that settled but was never fully funded.
+//
+// It keeps the membership, which is what makes it different from every other
+// abort here. Aborting during formation clears the canonical set because there
+// was never a table; abandoning one that settled must not, because a member who
+// did pay needs their own deposit script to take the refund branch and that
+// script is derived from the membership. Forgetting it would be forgetting
+// where their money is.
+//
+// Only a settled table can be abandoned. Anything earlier has its own way of
+// ending, and anything later has money moving under rules this does not know.
+func (f *Formation) Abandon(reason string) {
+	if f.state != Settled {
+		return
+	}
+	f.state = Aborted
+	f.reason = reason
+}
+
 func (f *Formation) abort(reason string) {
 	f.state = Aborted
 	f.reason = reason

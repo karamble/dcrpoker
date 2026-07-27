@@ -38,6 +38,26 @@ const BeaconDepth uint32 = 2
 // it from the terms alone, so there is nothing to agree.
 func BeaconHeight(t Terms) uint32 { return t.Until + BeaconDepth }
 
+// FundingBlocks is how long a seated table waits for every seat to be paid for.
+//
+// Admission closes at a height and seating is drawn two blocks later; this is
+// the window after that. It is a compromise between two costs that both land on
+// the players who did pay. Too short and somebody who answered their host a
+// little slowly strands the table anyway. Too long and a seat that will never
+// be funded holds everyone else's money for the whole of it - and, until the
+// abort transaction exists peer to peer, the only way out of an abandoned table
+// is each member waiting out their own refund timelock.
+//
+// Sixteen blocks is roughly eighty minutes: long enough to notice a prompt,
+// answer it, and have the payment confirmed, and short enough that a no-show is
+// found out the same hour rather than the next day.
+const FundingBlocks uint32 = 16
+
+// FundingDeadline is the height after which a table that is not fully funded
+// has to be given up on. Derived from the terms, like every other deadline
+// here, so no peer can hold a different one.
+func FundingDeadline(t Terms) uint32 { return BeaconHeight(t) + FundingBlocks }
+
 // SeatOrder draws the seating for a membership.
 //
 // The permutation is an explicit Fisher-Yates from a counter-based digest

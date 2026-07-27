@@ -379,8 +379,37 @@ func (t *tables) tick(height int64) []outgoing {
 			t.persist(tbl)
 		}
 		out = append(out, tbl.askAgain(height)...)
+		if tbl.fundingLapsed(height) {
+			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
+			t.persist(tbl)
+		}
 	}
 	return out
+}
+
+// fundingLapsed gives up on a settled table that was never fully paid for.
+//
+// A seat that is never funded costs everyone who did fund: the stake sits in a
+// script needing every member's signature to move, so until the abort
+// transaction exists here the only way out is each of them waiting out their
+// own refund timelock. Ending it at a known height at least starts that clock
+// rather than leaving a table that will never deal still looking alive.
+//
+// Which seats are funded is this peer's own answer - what it checked against
+// the chain - not what anybody announced.
+func (tbl *table) fundingLapsed(height int64) bool {
+	if height <= 0 || tbl.form.State() != membership.Settled {
+		return false
+	}
+	if height < int64(membership.FundingDeadline(tbl.terms)) {
+		return false
+	}
+	if len(tbl.funded) >= int(tbl.terms.Seats) {
+		return false
+	}
+	tbl.form.Abandon(fmt.Sprintf("only %d of %d seats were funded before the deadline",
+		len(tbl.funded), tbl.terms.Seats))
+	return true
 }
 
 // askAgain re-asks for a commit this table is still short of.
@@ -869,6 +898,23 @@ type snapshot struct {
 	// to. A number that stays above zero means entries are missing rather
 	// than merely late.
 	Waiting int `json:"waiting"`
+
+	// Funded counts the seats this peer has checked against the chain
+	// itself. It is deliberately not "how many players said they paid":
+	// a host reading this is reading what the ledger supports.
+	Funded int `json:"funded"`
+	// Seat is which seat this player holds, once the seating is drawn. A
+	// pointer because seat zero is a real seat and an absent one is not.
+	Seat *uint32 `json:"seat,omitempty"`
+	// DepositAddr is where this player's own stake has to be paid, and
+	// Stake is the output holding it once it has been. Both are empty
+	// until the table settles, because until then the address does not
+	// exist: it is derived from the whole membership.
+	DepositAddr string `json:"depositAddr,omitempty"`
+	Stake       string `json:"stake,omitempty"`
+	// FundingDeadline is the height after which an unfunded table is given
+	// up on. Zero before there is anything to fund.
+	FundingDeadline uint32 `json:"fundingDeadline,omitempty"`
 }
 
 func (t *tables) snapshots() []snapshot {
@@ -892,6 +938,18 @@ func (t *tables) snapshots() []snapshot {
 		}
 		if tbl.watch != nil {
 			s.Waiting = tbl.watch.Waiting()
+		}
+
+		s.Funded = len(tbl.funded)
+		if seat, ok := tbl.form.OurSeat(); ok {
+			s.Seat = &seat
+			s.Stake = tbl.funded[seat]
+			s.FundingDeadline = membership.FundingDeadline(tbl.terms)
+			// Reporting the address is what lets a host show somebody
+			// where their money is going before it goes.
+			if dep, err := tbl.deposit(seat, t.params); err == nil {
+				s.DepositAddr = dep.DepositAddr
+			}
 		}
 		out = append(out, s)
 	}

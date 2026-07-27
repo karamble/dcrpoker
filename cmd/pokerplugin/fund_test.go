@@ -179,6 +179,105 @@ func TestOnlyTheSeatHolderCanFundIt(t *testing.T) {
 	}
 }
 
+// A table nobody finished paying for has to end, at a height every peer
+// derives the same way.
+func TestAnUnfundedTableIsGivenUpOn(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	deadline := int64(membership.FundingDeadline(terms))
+
+	// A block early is still waiting, not still hoping.
+	p.tables.tick(deadline - 1)
+	if got := p.tables.snapshots()[0].State; got != membership.Settled.String() {
+		t.Fatalf("gave up at %d when the deadline is %d (state %s)", deadline-1, deadline, got)
+	}
+
+	p.tables.tick(deadline)
+	s := p.tables.snapshots()[0]
+	if s.State != membership.Aborted.String() {
+		t.Fatalf("state is %s at the funding deadline, want aborted", s.State)
+	}
+	if s.Reason == "" {
+		t.Fatal("gave up on a table without saying why")
+	}
+
+	// The membership survives being given up on. Somebody who did pay needs
+	// it to derive the script their refund spends.
+	if _, ok := p.tables.m[terms.SID].form.MatchID(); !ok {
+		t.Fatal("abandoning the table forgot the membership, and with it where the money is")
+	}
+}
+
+// A table everyone paid for is not given up on, however long it sits.
+func TestAFullyFundedTableSurvivesTheDeadline(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	tbl := p.tables.m[terms.SID]
+	ours, _ := tbl.form.OurSeat()
+	theirs := theirSeat(t, tbl)
+
+	dep, err := tbl.deposit(theirs, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	outpoint := strings.Repeat("9a", 32) + ":0"
+	h.mu.Lock()
+	h.bonds[outpoint] = dep.PkScriptHex
+	h.mu.Unlock()
+	fn, err := membership.SignFunding(terms, theirs, outpoint, other.Session)
+	if err != nil {
+		t.Fatalf("sign funding: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindFunded, schema.FundedFrom(fn))
+
+	p.tables.mu.Lock()
+	tbl.funded[ours] = strings.Repeat("7b", 32) + ":1"
+	p.tables.mu.Unlock()
+
+	p.tables.tick(int64(membership.FundingDeadline(terms)) + 5)
+	if got := p.tables.snapshots()[0].State; got != membership.Settled.String() {
+		t.Fatalf("a table with every seat funded was given up on (state %s)", got)
+	}
+}
+
+// The host has to be able to show somebody where their money is going before
+// it goes, and what the table has actually been paid.
+func TestTheViewReportsWhereTheStakeGoes(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	s := p.tables.snapshots()[0]
+	if s.Seat == nil {
+		t.Fatal("a seated table reports no seat")
+	}
+	if s.DepositAddr == "" {
+		t.Fatal("a settled table reports nowhere to pay")
+	}
+	if s.FundingDeadline != membership.FundingDeadline(terms) {
+		t.Fatalf("reports a funding deadline of %d, want %d", s.FundingDeadline, membership.FundingDeadline(terms))
+	}
+	if s.Funded != 0 || s.Stake != "" {
+		t.Fatalf("reports %d seats funded and a stake at %q before anybody paid", s.Funded, s.Stake)
+	}
+
+	// The address is the one this seat is actually required to pay.
+	want, err := p.tables.m[terms.SID].deposit(*s.Seat, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	if s.DepositAddr != want.DepositAddr {
+		t.Fatalf("reports %s, but seat %d must pay %s", s.DepositAddr, *s.Seat, want.DepositAddr)
+	}
+}
+
 // Funding cannot start before there is a seat to fund.
 func TestFundingWaitsForTheTableToSettle(t *testing.T) {
 	h := newHub(t)
