@@ -150,6 +150,7 @@ type Server struct {
 	dcrd          *rpcclient.Client
 	chainWatcher  *chainwatcher.ChainWatcher
 	actionLogs    *actionLogs
+	publish       *actionPublish
 	adaptorSecret string
 
 	// Schnorr referee state (escrows, presigns, settlements)
@@ -182,6 +183,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	pokerServer.auth = newAuthState(db)
 	pokerServer.referee = newSchnorrRefereeState(cfg)
 	pokerServer.actionLogs = newActionLogs()
+	pokerServer.publish = newActionPublish()
 
 	// Initialize chainwatcher/dcrd if configured.
 	if err := pokerServer.initChainWatcher(cfg); err != nil {

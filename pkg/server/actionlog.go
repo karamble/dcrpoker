@@ -187,6 +187,10 @@ func (s *Server) recordAction(table *poker.Table, playerID string, signed *poker
 	if err := s.persistAction(entry, matchID); err != nil {
 		s.log.Warnf("Could not persist action for table %s: %v", matchID, err)
 	}
+
+	// Relay it to the table, so players can build the same chain rather
+	// than take the server's word for what happened.
+	s.publishAction(entry, matchID)
 	return nil
 }
 
