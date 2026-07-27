@@ -417,8 +417,17 @@ func (t *tables) announceAgain(tbl *table, height int64) []outgoing {
 	if tbl.form.State() != membership.Settled {
 		return nil
 	}
-	if len(tbl.funded) >= int(tbl.terms.Seats) {
-		// Everyone is in. Nothing left to convince anybody of.
+	// Deliberately not "stop once we think every seat is funded". The peer
+	// that still needs to hear this is, by definition, the one whose view
+	// differs from ours, and we cannot see their view - so our own count is
+	// the one thing that must not decide when to stop. It cost a live table:
+	// a stake was announced a second before its block reached the other
+	// node, refused for having no confirmations, and never repeated, because
+	// by then the payer could see both stakes and thought everybody could.
+	//
+	// The deadline decides instead. Past it the stake stops mattering, and
+	// until then this is one small frame per block.
+	if height >= int64(membership.FundingDeadline(tbl.terms)) {
 		return nil
 	}
 	seat, ok := tbl.form.OurSeat()

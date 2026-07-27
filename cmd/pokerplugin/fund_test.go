@@ -225,12 +225,20 @@ func TestAPaidSeatKeepsSayingSo(t *testing.T) {
 		t.Fatal("a table still short of funded stopped saying where its stake is")
 	}
 
-	// Once every seat is in there is nobody left to convince.
+	// Seeing every seat funded ourselves is NOT a reason to stop. The peer
+	// that still needs to hear it is the one whose view differs from ours,
+	// and we cannot see their view - stopping on our own count is how a live
+	// table ended up half funded, with one side certain everybody was in.
 	p.tables.mu.Lock()
 	tbl.funded[theirSeat(t, tbl)] = strings.Repeat("6d", 32) + ":0"
 	p.tables.mu.Unlock()
-	if got := fundedIn(p.tables.tick(at + 3)); len(got) != 0 {
-		t.Fatalf("kept announcing %d times after every seat was funded", len(got))
+	if got := fundedIn(p.tables.tick(at + 3)); len(got) != 1 {
+		t.Fatalf("stopped announcing because our own view said every seat was funded")
+	}
+
+	// The deadline is what stops it. Past there the stake no longer matters.
+	if got := fundedIn(p.tables.tick(int64(membership.FundingDeadline(terms)))); len(got) != 0 {
+		t.Fatal("still announcing past the funding deadline")
 	}
 }
 
