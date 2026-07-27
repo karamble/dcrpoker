@@ -1,0 +1,525 @@
+package membership
+
+import (
+	"bytes"
+	"testing"
+
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+)
+
+func testTerms(seats uint32) Terms {
+	return Terms{
+		Game:       "poker",
+		GameVer:    1,
+		SID:        "0123456789abcdef",
+		BuyInAtoms: 10_000_000,
+		Seats:      seats,
+		CSVBlocks:  64,
+	}
+}
+
+// players returns n keys in ascending canonical order, so a test can say
+// "the lowest key" and mean it.
+func players(t *testing.T, n int) []*secp256k1.PrivateKey {
+	t.Helper()
+	out := make([]*secp256k1.PrivateKey, 0, n)
+	for len(out) < n {
+		priv, err := secp256k1.GeneratePrivateKey()
+		if err != nil {
+			t.Fatalf("generate key: %v", err)
+		}
+		out = append(out, priv)
+	}
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			a := out[i].PubKey().SerializeCompressed()
+			b := out[j].PubKey().SerializeCompressed()
+			if bytes.Compare(a, b) > 0 {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
+}
+
+func joinsFor(t *testing.T, terms Terms, privs []*secp256k1.PrivateKey) []*Join {
+	t.Helper()
+	out := make([]*Join, 0, len(privs))
+	for _, p := range privs {
+		j, err := SignJoin(terms, p)
+		if err != nil {
+			t.Fatalf("sign join: %v", err)
+		}
+		out = append(out, j)
+	}
+	return out
+}
+
+// settleAll runs a full table to Settled: everyone joins, everyone binds,
+// everyone hears everyone's commit.
+func settleAll(t *testing.T, terms Terms, privs []*secp256k1.PrivateKey) []*Formation {
+	t.Helper()
+	all := joinsFor(t, terms, privs)
+
+	fs := make([]*Formation, 0, len(privs))
+	for _, p := range privs {
+		f, err := NewFormation(terms, p)
+		if err != nil {
+			t.Fatalf("new formation: %v", err)
+		}
+		for _, j := range all {
+			if err := f.AddJoin(j); err != nil {
+				t.Fatalf("add join: %v", err)
+			}
+		}
+		fs = append(fs, f)
+	}
+
+	commits := make([]*Commit, 0, len(fs))
+	for i, f := range fs {
+		c, err := f.Bind(privs[i])
+		if err != nil {
+			t.Fatalf("bind: %v", err)
+		}
+		commits = append(commits, c)
+	}
+	for _, f := range fs {
+		for _, c := range commits {
+			if err := f.AddCommit(c); err != nil {
+				t.Fatalf("add commit: %v", err)
+			}
+		}
+	}
+	return fs
+}
+
+func TestAWholeTableSettlesOnOneMembership(t *testing.T) {
+	terms := testTerms(6)
+	fs := settleAll(t, terms, players(t, 6))
+
+	want, ok := fs[0].RosterHash()
+	if !ok {
+		t.Fatal("no roster hash after settling")
+	}
+	for i, f := range fs {
+		if f.State() != Settled {
+			t.Fatalf("peer %d is %s, want settled (%s)", i, f.State(), f.Reason())
+		}
+		got, _ := f.RosterHash()
+		if got != want {
+			t.Fatalf("peer %d settled a different membership", i)
+		}
+		if id, _ := f.MatchID(); id == "" {
+			t.Fatalf("peer %d settled with no match id", i)
+		}
+	}
+}
+
+// Joins arrive over a group chat, which has no ordering at all. If the
+// membership depended on arrival order, two members of one table would derive
+// different deposit addresses and the money would go to two places.
+func TestTheMembershipIsTheSameWhateverOrderJoinsArriveIn(t *testing.T) {
+	terms := testTerms(5)
+	privs := players(t, 5)
+	all := joinsFor(t, terms, privs)
+
+	forward, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range all {
+		_ = forward.AddJoin(j)
+	}
+
+	backward, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for i := len(all) - 1; i >= 0; i-- {
+		_ = backward.AddJoin(all[i])
+	}
+
+	a, ok := forward.RosterHash()
+	if !ok {
+		t.Fatal("forward order did not form")
+	}
+	b, ok := backward.RosterHash()
+	if !ok {
+		t.Fatal("reverse order did not form")
+	}
+	if a != b {
+		t.Fatal("arrival order changed the membership")
+	}
+}
+
+// The counterexample that killed "the lowest N keys of whatever has arrived".
+//
+// Two seats; three players join; C's key sorts lowest. Under the old rule A and
+// B would agree on {A,B} and A would settle, then C's join would reach B alone
+// and B would move to {A,C} - leaving A bound to a membership nobody else would
+// ever sign for. Exact fill makes B abort instead, and A never reaches Settled
+// because B never commits. The table fails, which is the correct outcome; what
+// must never happen is A believing it succeeded.
+func TestALateLowKeyCannotStrandAPeerThatAlreadySettled(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 3)
+	c, a, b := privs[0], privs[1], privs[2] // c sorts lowest
+	joins := joinsFor(t, terms, []*secp256k1.PrivateKey{a, b, c})
+	joinA, joinB, joinC := joins[0], joins[1], joins[2]
+
+	// A sees only A and B.
+	fa, err := NewFormation(terms, a)
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	_ = fa.AddJoin(joinB)
+	if fa.State() != Formed {
+		t.Fatalf("A is %s, want formed", fa.State())
+	}
+	if _, err := fa.Bind(a); err != nil {
+		t.Fatalf("A bind: %v", err)
+	}
+
+	// B sees A, B and C.
+	fb, err := NewFormation(terms, b)
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	_ = fb.AddJoin(joinA)
+	_ = fb.AddJoin(joinC)
+	if fb.State() != Aborted {
+		t.Fatalf("B is %s, want aborted for oversubscription", fb.State())
+	}
+
+	// A is bound but must not settle: nobody else bound to its membership.
+	if fa.State() == Settled {
+		t.Fatal("A settled a membership its counterparty abandoned")
+	}
+	if fa.State() != Committed {
+		t.Fatalf("A is %s, want committed and waiting", fa.State())
+	}
+}
+
+func TestOversubscriptionAbortsRatherThanChoosing(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 3)
+
+	f, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range joinsFor(t, terms, privs[1:]) {
+		_ = f.AddJoin(j)
+	}
+	if f.State() != Aborted {
+		t.Fatalf("state is %s, want aborted", f.State())
+	}
+	if f.Reason() == "" {
+		t.Fatal("aborted without saying why")
+	}
+}
+
+// More players than a table can ever seat must abort, not error out of the
+// selection. escrow.CanonicalMembers refuses more than MaxMembers keys, so a
+// rule that canonicalised everything seen would fail at exactly the case it
+// was meant to handle.
+func TestMoreKeysThanAnyTableCanSeatStillAborts(t *testing.T) {
+	terms := testTerms(uint32(escrow.MaxMembers))
+	privs := players(t, escrow.MaxMembers+2)
+
+	f, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range joinsFor(t, terms, privs[1:]) {
+		if err := f.AddJoin(j); err != nil {
+			t.Fatalf("add join: %v", err)
+		}
+	}
+	if f.State() != Aborted {
+		t.Fatalf("state is %s, want aborted", f.State())
+	}
+}
+
+// Binding is the point of no return. A join that turns up afterwards cannot
+// move what this peer signed, or the signature would mean nothing.
+func TestAJoinAfterBindingCannotChangeTheMembership(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 3)
+	a, b, late := privs[1], privs[2], privs[0]
+
+	f, err := NewFormation(terms, a)
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	_ = f.AddJoin(joinsFor(t, terms, []*secp256k1.PrivateKey{b})[0])
+	before, _ := f.RosterHash()
+	if _, err := f.Bind(a); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	if err := f.AddJoin(joinsFor(t, terms, []*secp256k1.PrivateKey{late})[0]); err != nil {
+		t.Fatalf("add late join: %v", err)
+	}
+	if f.State() != Committed {
+		t.Fatalf("state is %s, want it to stay committed", f.State())
+	}
+	after, _ := f.RosterHash()
+	if after != before {
+		t.Fatal("a late join moved a membership that had been bound")
+	}
+}
+
+// Rejection has to be wholesale. A key that never joined must not be admitted
+// because it arrived alongside real ones.
+func TestAKeyThatNeverJoinedIsNeverAdmitted(t *testing.T) {
+	terms := testTerms(3)
+	privs := players(t, 3)
+
+	f, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	before := len(f.Joins())
+
+	// A join signed for another table's terms, replayed here.
+	other := testTerms(3)
+	other.SID = "abcdef0123456789"
+	forged := joinsFor(t, other, privs[1:2])[0]
+	if err := f.AddJoin(forged); err == nil {
+		t.Fatal("a join for another table was admitted")
+	}
+
+	// A join whose signature is simply wrong.
+	bad := joinsFor(t, terms, privs[2:3])[0]
+	bad.Sig[0] ^= 0xff
+	if err := f.AddJoin(bad); err == nil {
+		t.Fatal("a join with a broken signature was admitted")
+	}
+
+	if got := len(f.Joins()); got != before {
+		t.Fatalf("holding %d joins, want the original %d", got, before)
+	}
+}
+
+// Two players who read different invitations must fail to form a table rather
+// than form one and discover at settlement that they staked different amounts.
+func TestPeersWhoReadDifferentInvitesNeverForm(t *testing.T) {
+	base := testTerms(2)
+	privs := players(t, 2)
+
+	for _, tc := range []struct {
+		name  string
+		alter func(t Terms) Terms
+	}{
+		{"buy-in", func(t Terms) Terms { t.BuyInAtoms *= 10; return t }},
+		{"seats", func(t Terms) Terms { t.Seats = 3; return t }},
+		{"timelock", func(t Terms) Terms { t.CSVBlocks = 1; return t }},
+		{"session", func(t Terms) Terms { t.SID = "beef"; return t }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := NewFormation(base, privs[0])
+			if err != nil {
+				t.Fatalf("new formation: %v", err)
+			}
+			theirs := joinsFor(t, tc.alter(base), privs[1:])[0]
+			if err := f.AddJoin(theirs); err == nil {
+				t.Fatal("a join under different terms was admitted")
+			}
+			if f.State() != Joining {
+				t.Fatalf("state is %s, want still joining", f.State())
+			}
+		})
+	}
+}
+
+// Silence is never punished and never attested. A table that does not fill just
+// does not happen.
+func TestATableShortOneCommitNeverSettles(t *testing.T) {
+	terms := testTerms(3)
+	privs := players(t, 3)
+	all := joinsFor(t, terms, privs)
+
+	f, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range all {
+		_ = f.AddJoin(j)
+	}
+	if _, err := f.Bind(privs[0]); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	// Only one of the other two ever binds.
+	other, err := NewFormation(terms, privs[1])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range all {
+		_ = other.AddJoin(j)
+	}
+	c, err := other.Bind(privs[1])
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if err := f.AddCommit(c); err != nil {
+		t.Fatalf("add commit: %v", err)
+	}
+
+	if f.State() != Committed {
+		t.Fatalf("state is %s, want committed and waiting", f.State())
+	}
+	if _, ok := f.Roster(); ok {
+		t.Fatal("handed out a roster without every member bound to it")
+	}
+}
+
+// One key bound to two memberships is a contradiction anyone can check, and it
+// is the only thing in forming a table that is somebody's fault.
+func TestOneKeyBoundToTwoMembershipsIsAProof(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 2)
+	all := joinsFor(t, terms, privs)
+
+	f, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range all {
+		_ = f.AddJoin(j)
+	}
+
+	honest, err := SignCommit(terms, mustHash(t, f), privs[1])
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	var elsewhere [32]byte
+	elsewhere[0] = 0xff
+	liar, err := SignCommit(terms, elsewhere, privs[1])
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+
+	_ = f.AddCommit(honest)
+	_ = f.AddCommit(liar)
+
+	if f.State() != Aborted {
+		t.Fatalf("state is %s, want aborted", f.State())
+	}
+	proof := f.Conflict()
+	if proof == nil {
+		t.Fatal("aborted on a contradiction without keeping the proof")
+	}
+	if err := proof.Verify(terms); err != nil {
+		t.Fatalf("the proof does not verify: %v", err)
+	}
+
+	// Showing the same commit twice proves nothing.
+	if err := (ConflictingCommits{A: honest, B: honest}).Verify(terms); err == nil {
+		t.Fatal("one commit shown twice was accepted as a contradiction")
+	}
+	// Nor do two different keys disagreeing, which is not a contradiction:
+	// they are just two peers who saw different things.
+	mine, err := SignCommit(terms, elsewhere, privs[0])
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	if err := (ConflictingCommits{A: mine, B: honest}).Verify(terms); err == nil {
+		t.Fatal("two different keys were accepted as a contradiction")
+	}
+}
+
+// A settled table stays settled. It is still sound: the equivocator bound
+// itself to our membership too, so our escrows still need every signature they
+// always did, and making its other table real would cost it a second stake.
+func TestASettledTableIsNotUnwoundByLaterEquivocation(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 2)
+	fs := settleAll(t, terms, privs)
+	f := fs[0]
+
+	var elsewhere [32]byte
+	elsewhere[0] = 0xaa
+	liar, err := SignCommit(terms, elsewhere, privs[1])
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	if err := f.AddCommit(liar); err != nil {
+		t.Fatalf("add commit: %v", err)
+	}
+
+	if f.State() != Settled {
+		t.Fatalf("state is %s, want it to stay settled", f.State())
+	}
+	proof := f.Conflict()
+	if proof == nil {
+		t.Fatal("the contradiction was seen and not kept")
+	}
+	if err := proof.Verify(terms); err != nil {
+		t.Fatalf("the proof does not verify: %v", err)
+	}
+}
+
+func TestSeatsAndCanonicalOrderAreBothReported(t *testing.T) {
+	terms := testTerms(4)
+	fs := settleAll(t, terms, players(t, 4))
+
+	members, ok := fs[0].Members()
+	if !ok {
+		t.Fatal("no members after settling")
+	}
+	seats, ok := fs[0].Seats()
+	if !ok {
+		t.Fatal("no seats after settling")
+	}
+	if len(seats) != len(members) {
+		t.Fatalf("%d seats for %d members", len(seats), len(members))
+	}
+	roster, ok := fs[0].Roster()
+	if !ok {
+		t.Fatal("no roster after settling")
+	}
+	if !roster.Closed() {
+		t.Fatal("a settled roster should be closed")
+	}
+	if roster.Pending() != 0 {
+		t.Fatalf("%d seats still pending on a settled roster", roster.Pending())
+	}
+}
+
+func TestTermsMustDescribeATableThatCouldExist(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		terms Terms
+	}{
+		{"no game", func() Terms { x := testTerms(2); x.Game = ""; return x }()},
+		{"no session", func() Terms { x := testTerms(2); x.SID = " "; return x }()},
+		{"one seat", func() Terms { x := testTerms(2); x.Seats = 1; return x }()},
+		{"too many seats", func() Terms {
+			x := testTerms(2)
+			x.Seats = uint32(escrow.MaxMembers) + 1
+			return x
+		}()},
+		{"no timelock", func() Terms { x := testTerms(2); x.CSVBlocks = 0; return x }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.terms.Validate(); err == nil {
+				t.Fatal("expected a refusal")
+			}
+			if _, err := NewFormation(tc.terms, players(t, 1)[0]); err == nil {
+				t.Fatal("formed a table on terms that cannot exist")
+			}
+		})
+	}
+}
+
+func mustHash(t *testing.T, f *Formation) [32]byte {
+	t.Helper()
+	h, ok := f.RosterHash()
+	if !ok {
+		t.Fatal("no roster hash")
+	}
+	return h
+}
