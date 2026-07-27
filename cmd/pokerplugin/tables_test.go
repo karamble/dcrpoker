@@ -469,6 +469,19 @@ func deliverCommit(t *testing.T, p *plugin, terms membership.Terms, creds member
 	p.tables.deliver(context.Background(), transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
 }
 
+func deliverKind(t *testing.T, p *plugin, terms membership.Terms, kind schema.Kind, body any) []outgoing {
+	t.Helper()
+	blob, err := schema.Encode(kind, terms.SID, body)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	msg, err := schema.Decode(blob)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return p.tables.deliver(context.Background(), transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
+}
+
 // rosterHashOf reads back the membership a table bound itself to.
 func rosterHashOf(t *testing.T, matchID string) [32]byte {
 	t.Helper()
@@ -609,6 +622,125 @@ func TestARestartComesBackSettledAndSeated(t *testing.T) {
 	}
 	if got := hex.EncodeToString(resumed.Beacon()); got != hex.EncodeToString(beacon) {
 		t.Fatalf("came back seated from block %s, was seated from %s", got, hex.EncodeToString(beacon))
+	}
+}
+
+// The cure for a table stuck one signature short.
+//
+// Formation messages are published once. A peer whose stream was down while
+// somebody committed holds every join and still cannot settle, and no amount of
+// waiting helps because nothing will send that commit again. Asking is what
+// gets it back.
+func TestResyncSettlesATableThatMissedACommit(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+	other := h.lend(t, "dd")
+
+	p := h.restart(t, t.TempDir(), "tok")
+	acceptInvite(t, p, inv)
+	deliverJoin(t, p, terms, other)
+	p.tables.tick(int64(terms.Until) + 1)
+
+	stuck := p.tables.snapshots()[0]
+	if stuck.State != membership.Committed.String() {
+		t.Fatalf("state is %s, want committed with the other commit still missing", stuck.State)
+	}
+
+	// The commit that was sent once, while this peer was not listening.
+	c, err := membership.SignCommit(terms, rosterHashOf(t, stuck.MatchID), other.Session)
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindResyncReply, schema.ResyncReply{
+		Commits: []schema.Commit{schema.CommitFrom(c)},
+	})
+
+	healed := p.tables.snapshots()[0]
+	if healed.State != membership.Settled.String() {
+		t.Fatalf("state is %s after a resync carrying the missing commit", healed.State)
+	}
+	if healed.MatchID != stuck.MatchID {
+		t.Fatalf("healed onto membership %s, was bound to %s", healed.MatchID, stuck.MatchID)
+	}
+}
+
+// A resync answer carries the difference, not the table.
+func TestResyncAnswersOnlyWhatTheAskerLacks(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+	other := h.lend(t, "dd")
+
+	p := h.restart(t, t.TempDir(), "tok")
+	acceptInvite(t, p, inv)
+	deliverJoin(t, p, terms, other)
+	p.tables.tick(int64(terms.Until) + 1)
+
+	form := p.tables.m[terms.SID].form
+
+	// An asker holding nothing is told everything this table holds.
+	out := deliverKind(t, p, terms, schema.KindResync, schema.Resync{})
+	if len(out) != 1 {
+		t.Fatalf("answered with %d messages, want one", len(out))
+	}
+	reply, ok := out[0].body.(schema.ResyncReply)
+	if !ok {
+		t.Fatalf("answered with %T, want a resync reply", out[0].body)
+	}
+	if len(reply.Joins) != len(form.Joins()) {
+		t.Fatalf("offered %d joins, holds %d", len(reply.Joins), len(form.Joins()))
+	}
+	if len(reply.Commits) != len(form.Commits()) {
+		t.Fatalf("offered %d commits, holds %d", len(reply.Commits), len(form.Commits()))
+	}
+
+	// An asker already in step is answered with silence, so a table that is
+	// healthy does not read itself back to every peer that reconnects.
+	ask := schema.Resync{}
+	for _, j := range form.Joins() {
+		ask.Joins = append(ask.Joins, hex.EncodeToString(j.Key))
+	}
+	for _, c := range form.Commits() {
+		ask.Commits = append(ask.Commits, hex.EncodeToString(c.Signer))
+	}
+	if out := deliverKind(t, p, terms, schema.KindResync, ask); len(out) != 0 {
+		t.Fatalf("answered a peer that was already in step with %d messages", len(out))
+	}
+}
+
+// A resync answer is checked, not believed. It arrives from whoever felt like
+// replying, so keys nobody joined with and commits nobody signed have to be
+// refused exactly as they would be if published directly.
+func TestResyncCannotInjectAMembership(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+	other := h.lend(t, "dd")
+	stranger := h.lend(t, "ee")
+
+	p := h.restart(t, t.TempDir(), "tok")
+	acceptInvite(t, p, inv)
+	deliverJoin(t, p, terms, other)
+	p.tables.tick(int64(terms.Until) + 1)
+
+	bound := p.tables.snapshots()[0]
+
+	// A commit over this table's roster, signed by somebody who never joined.
+	c, err := membership.SignCommit(terms, rosterHashOf(t, bound.MatchID), stranger.Session)
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindResyncReply, schema.ResyncReply{
+		Commits: []schema.Commit{schema.CommitFrom(c)},
+	})
+
+	after := p.tables.snapshots()[0]
+	if after.State == membership.Settled.String() {
+		t.Fatal("settled on a commit from a key that never joined this table")
+	}
+	if after.MatchID != bound.MatchID {
+		t.Fatalf("membership moved to %s, was %s", after.MatchID, bound.MatchID)
 	}
 }
 

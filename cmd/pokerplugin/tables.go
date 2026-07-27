@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -347,6 +348,26 @@ func (t *tables) tick(height int64) []outgoing {
 	return out
 }
 
+// resync asks every table this process is at for whatever it missed.
+//
+// This is what a gap in the stream costs: the host drops frames rather than
+// blocking, so one game that stops draining cannot stall the others, and the
+// loss clusters at reconnection. A table that ended is skipped - it has nothing
+// to catch up on, and asking would only invite answers it must refuse.
+func (t *tables) resync() []outgoing {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	var out []outgoing
+	for _, tbl := range t.m {
+		if tbl.form.State() == membership.Aborted {
+			continue
+		}
+		out = append(out, tbl.publishResync()...)
+	}
+	return out
+}
+
 // needSeating reports the tables that have agreed a membership and are waiting
 // on the block their seating is drawn from.
 func (t *tables) needSeating(height int64) map[string]uint32 {
@@ -470,6 +491,24 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 			return nil, err
 		}
 
+	case schema.KindResync:
+		var body schema.Resync
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		// Answering tells us nothing we did not already know, so this
+		// returns rather than falling through to advance.
+		return tbl.answerResync(body), nil
+
+	case schema.KindResyncReply:
+		var body schema.ResyncReply
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		if err := tbl.adoptResync(body); err != nil {
+			return nil, err
+		}
+
 	case schema.KindAction:
 		if tbl.watch == nil {
 			// No membership yet, so no keys to check a signature
@@ -485,6 +524,82 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 	}
 
 	return tbl.advance(beforeState, beforeJoins), nil
+}
+
+// answerResync sends back what the asker said it did not have.
+//
+// Only the difference. A table healing itself should cost one message, not the
+// whole formation again from every member at once - and a peer that is already
+// in step is answered with silence rather than with its own table read back to
+// it.
+func (tbl *table) answerResync(ask schema.Resync) []outgoing {
+	held := func(keys []string) map[string]struct{} {
+		out := make(map[string]struct{}, len(keys))
+		for _, k := range keys {
+			out[strings.ToLower(strings.TrimSpace(k))] = struct{}{}
+		}
+		return out
+	}
+	hasJoin, hasCommit := held(ask.Joins), held(ask.Commits)
+
+	var reply schema.ResyncReply
+	for _, j := range tbl.form.Joins() {
+		if _, ok := hasJoin[hex.EncodeToString(j.Key)]; !ok {
+			reply.Joins = append(reply.Joins, schema.JoinFrom(j))
+		}
+	}
+	for _, c := range tbl.form.Commits() {
+		if _, ok := hasCommit[hex.EncodeToString(c.Signer)]; !ok {
+			reply.Commits = append(reply.Commits, schema.CommitFrom(c))
+		}
+	}
+	if len(reply.Joins) == 0 && len(reply.Commits) == 0 {
+		return nil
+	}
+	return []outgoing{tbl.frame(schema.KindResyncReply, reply, wire.ClassState)}
+}
+
+// adoptResync folds in what somebody sent to catch this peer up.
+//
+// Everything here is signed by the member it concerns and checked on the way
+// in, so this trusts the sender for nothing: a peer answering with keys nobody
+// joined with, or a commit it forged, has them refused exactly as it would if
+// it had published them directly.
+//
+// Log entries in the reply are not applied here. They belong to the action log,
+// which keeps its own chain and checks entries against it.
+func (tbl *table) adoptResync(body schema.ResyncReply) error {
+	for i, wj := range body.Joins {
+		j, err := wj.Into()
+		if err != nil {
+			return fmt.Errorf("resync join %d: %w", i, err)
+		}
+		if err := tbl.form.AddJoin(j); err != nil {
+			return fmt.Errorf("resync join %d: %w", i, err)
+		}
+	}
+	for i, wc := range body.Commits {
+		c, err := wc.Into()
+		if err != nil {
+			return fmt.Errorf("resync commit %d: %w", i, err)
+		}
+		if err := tbl.form.AddCommit(c); err != nil {
+			return fmt.Errorf("resync commit %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// publishResync asks the table for what this peer is missing.
+func (tbl *table) publishResync() []outgoing {
+	ask := schema.Resync{}
+	for _, j := range tbl.form.Joins() {
+		ask.Joins = append(ask.Joins, hex.EncodeToString(j.Key))
+	}
+	for _, c := range tbl.form.Commits() {
+		ask.Commits = append(ask.Commits, hex.EncodeToString(c.Signer))
+	}
+	return []outgoing{tbl.frame(schema.KindResync, ask, wire.ClassState)}
 }
 
 // adoptRoster takes the joins out of somebody's assertion.

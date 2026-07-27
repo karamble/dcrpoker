@@ -157,13 +157,29 @@ type Head struct {
 }
 
 // Resync asks for everything after a sequence number.
+//
+// It also says what the asker holds of the table's formation, because the same
+// reconnection that loses log entries loses joins and commits, and those are
+// not in the log. A peer short of one member's commit is waiting on a message
+// nobody will send a second time, and would wait forever. Naming what it has
+// keeps the answer to the difference rather than to the whole table: both lists
+// are hex compressed session keys.
 type Resync struct {
-	After uint64 `json:"after"`
+	After   uint64   `json:"after"`
+	Joins   []string `json:"joins,omitempty"`
+	Commits []string `json:"commits,omitempty"`
 }
 
 // ResyncReply carries the missing entries, in order.
+//
+// Joins and commits travel whole and signed, so a peer that answers with
+// something it invented has the answer rejected rather than believed. That is
+// the same property that lets a join be relayed by anyone at all: the receiver
+// checks it instead of trusting whoever passed it along.
 type ResyncReply struct {
 	Entries []gamelog.TranscriptEntry `json:"entries"`
+	Joins   []Join                    `json:"joins,omitempty"`
+	Commits []Commit                  `json:"commits,omitempty"`
 }
 
 // Dispute is evidence that one seat signed two different things at one point in

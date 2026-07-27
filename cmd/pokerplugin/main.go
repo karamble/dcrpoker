@@ -129,15 +129,6 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 		return nil, err
 	}
 
-	// The host's stream drops frames rather than blocking, so one game that
-	// stops draining cannot stall the others. Reconnecting is where that
-	// loss clusters, and a player who missed frames is indistinguishable
-	// from one who walked away - so it is said out loud rather than left to
-	// be inferred from a table that stopped making sense.
-	b.OnGap = func() {
-		log.Printf("pokerplugin: reconnected to the host; frames may have been missed")
-	}
-
 	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), id: id, token: token, params: params}
 	// A seat has to cost something, so every join is checked against the
 	// chain before it is admitted. The rule lives in pkg/membership; what
@@ -156,6 +147,22 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// The host's stream drops frames rather than blocking, so one game that
+	// stops draining cannot stall the others. Reconnecting is where that
+	// loss clusters, and a player who missed frames is indistinguishable
+	// from one who walked away - so it is said out loud rather than left to
+	// be inferred from a table that stopped making sense.
+	//
+	// Saying so is not enough on its own. Formation messages are published
+	// once: a peer whose stream was down while somebody committed is short a
+	// signature its table needs to settle, and nothing would ever send it
+	// again. So it also asks, naming what it holds, and the table answers
+	// with the difference.
+	b.OnGap = func() {
+		log.Printf("pokerplugin: reconnected to the host; frames may have been missed")
+		p.publish(p.ctx, p.tables.resync())
 	}
 	return p, nil
 }
