@@ -33,6 +33,7 @@ import (
 	"github.com/decred/slog"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 	"github.com/vctt94/pokerbisonrelay/pokerui/golib"
 )
 
@@ -138,6 +139,13 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 	// What a stake is judged against: the script is derived here, whether it
 	// was paid is the chain's answer.
 	p.tables.chain, p.tables.params = b, params
+	p.tables.signFunding = func(terms membership.Terms, seat uint32, outpoint string) (*membership.Funding, error) {
+		session, err := id.sessionKey(terms.SID)
+		if err != nil {
+			return nil, err
+		}
+		return membership.SignFunding(terms, seat, outpoint, session)
+	}
 	p.router, err = transport.NewRouter(transport.Config{
 		Game:    schema.Game,
 		GameVer: schema.Version,

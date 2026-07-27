@@ -41,6 +41,10 @@ type table struct {
 	// so and the chain agreed. A seat missing from here has not been paid
 	// for as far as this peer can tell, whoever says otherwise.
 	funded map[uint32]string
+
+	// announcedAt is the height this table last said where our stake is, so
+	// it is repeated once a block rather than once a poll.
+	announcedAt int64
 }
 
 // outgoing is something to publish once the registry lock is released.
@@ -70,6 +74,12 @@ type tables struct {
 	// the chain's answer. Both are set once, at startup.
 	chain  *transport.Bridge
 	params stdaddr.AddressParams
+
+	// signFunding signs this peer's own announcement. Injected the way
+	// checkBond is, because this registry holds tables and not keys - and
+	// an announcement has to be repeatable after a restart, when the one
+	// signed at the time is long gone.
+	signFunding func(terms membership.Terms, seat uint32, outpoint string) (*membership.Funding, error)
 }
 
 func newTables(st *store) *tables {
@@ -379,12 +389,55 @@ func (t *tables) tick(height int64) []outgoing {
 			t.persist(tbl)
 		}
 		out = append(out, tbl.askAgain(height)...)
+		out = append(out, t.announceAgain(tbl, height)...)
 		if tbl.fundingLapsed(height) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)
 		}
 	}
 	return out
+}
+
+// announceAgain repeats where our stake is while the table is short of funded.
+//
+// A stake is announced the moment it is paid, and every other peer refuses it
+// until the chain has confirmed it - which it has not, seconds after the
+// payment was broadcast. Said once, that is a message guaranteed to be refused
+// and never repeated: the table would sit unfunded with the money already
+// spent. It is the same fault that left two tables stuck at committed tonight,
+// one layer up, and it wants the same answer.
+//
+// Once a block, and only while somebody is still missing. A peer that already
+// has our stake recorded ignores a repeat, so the cost of saying it again is
+// one small message and the cost of not saying it is a table that never funds.
+func (t *tables) announceAgain(tbl *table, height int64) []outgoing {
+	if height <= 0 || height <= tbl.announcedAt || t.signFunding == nil {
+		return nil
+	}
+	if tbl.form.State() != membership.Settled {
+		return nil
+	}
+	if len(tbl.funded) >= int(tbl.terms.Seats) {
+		// Everyone is in. Nothing left to convince anybody of.
+		return nil
+	}
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		return nil
+	}
+	outpoint := tbl.funded[seat]
+	if outpoint == "" {
+		// We have not paid, so there is nothing of ours to repeat.
+		return nil
+	}
+
+	fn, err := t.signFunding(tbl.terms, seat, outpoint)
+	if err != nil {
+		log.Printf("pokerplugin: table %s: cannot say again where our stake is: %v", tbl.terms.SID, err)
+		return nil
+	}
+	tbl.announcedAt = height
+	return []outgoing{tbl.frame(schema.KindFunded, schema.FundedFrom(fn), wire.ClassState)}
 }
 
 // fundingLapsed gives up on a settled table that was never fully paid for.

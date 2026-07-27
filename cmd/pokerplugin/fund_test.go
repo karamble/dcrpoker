@@ -179,6 +179,61 @@ func TestOnlyTheSeatHolderCanFundIt(t *testing.T) {
 	}
 }
 
+func fundedIn(out []outgoing) []outgoing {
+	var f []outgoing
+	for _, o := range out {
+		if o.kind == schema.KindFunded {
+			f = append(f, o)
+		}
+	}
+	return f
+}
+
+// A stake is announced the moment it is paid, and every other peer refuses it
+// until the chain has confirmed it - which it has not, seconds after the
+// payment was broadcast. Said once, that is a message guaranteed to be refused
+// and never repeated, and the table would sit unfunded with the money gone.
+func TestAPaidSeatKeepsSayingSo(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	tbl := p.tables.m[terms.SID]
+	ours, ok := tbl.form.OurSeat()
+	if !ok {
+		t.Fatal("no seat")
+	}
+	at := int64(membership.BeaconHeight(terms)) + 1
+
+	// Nothing paid, so nothing to say.
+	if got := fundedIn(p.tables.tick(at)); len(got) != 0 {
+		t.Fatalf("announced a stake %d times before paying one", len(got))
+	}
+
+	p.tables.mu.Lock()
+	tbl.funded[ours] = strings.Repeat("5c", 32) + ":0"
+	p.tables.mu.Unlock()
+
+	if got := fundedIn(p.tables.tick(at + 1)); len(got) != 1 {
+		t.Fatalf("a paid seat announced %d times, want once", len(got))
+	}
+	if got := fundedIn(p.tables.tick(at + 1)); len(got) != 0 {
+		t.Fatal("announced twice at one height")
+	}
+	if got := fundedIn(p.tables.tick(at + 2)); len(got) != 1 {
+		t.Fatal("a table still short of funded stopped saying where its stake is")
+	}
+
+	// Once every seat is in there is nobody left to convince.
+	p.tables.mu.Lock()
+	tbl.funded[theirSeat(t, tbl)] = strings.Repeat("6d", 32) + ":0"
+	p.tables.mu.Unlock()
+	if got := fundedIn(p.tables.tick(at + 3)); len(got) != 0 {
+		t.Fatalf("kept announcing %d times after every seat was funded", len(got))
+	}
+}
+
 // A table nobody finished paying for has to end, at a height every peer
 // derives the same way.
 func TestAnUnfundedTableIsGivenUpOn(t *testing.T) {

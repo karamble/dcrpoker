@@ -325,11 +325,6 @@ func (t *tables) recordOwnStakeLocked(tbl *table, seat uint32, outpoint string) 
 }
 
 func (p *plugin) recordOwnStake(sid string, seat uint32, outpoint string) ([]outgoing, error) {
-	session, err := p.id.sessionKey(sid)
-	if err != nil {
-		return nil, err
-	}
-
 	p.tables.mu.Lock()
 	defer p.tables.mu.Unlock()
 
@@ -339,7 +334,7 @@ func (p *plugin) recordOwnStake(sid string, seat uint32, outpoint string) ([]out
 	}
 	p.tables.recordOwnStakeLocked(tbl, seat, outpoint)
 
-	fn, err := membership.SignFunding(tbl.terms, seat, outpoint, session)
+	fn, err := p.tables.signFunding(tbl.terms, seat, outpoint)
 	if err != nil {
 		return nil, err
 	}
