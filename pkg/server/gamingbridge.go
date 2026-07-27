@@ -9,6 +9,7 @@ import (
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -94,7 +95,7 @@ func (s *Server) BindTableGroupChat(ctx context.Context, req *pokerrpc.BindTable
 		return nil, status.Error(codes.InvalidArgument, "gc_id must be 64 hex characters")
 	}
 
-	matchID := refereeMatchID(tableID, req.GetSessionId())
+	matchID := membership.MatchID(tableID, req.GetSessionId())
 	s.BindMatchGroupChat(matchID, gcID)
 
 	publisher, bound := s.publishTarget(matchID)

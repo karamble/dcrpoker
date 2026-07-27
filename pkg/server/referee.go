@@ -29,6 +29,7 @@ import (
 	"github.com/decred/dcrd/wire"
 	"github.com/vctt94/pokerbisonrelay/pkg/chainwatcher"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 	"github.com/vctt94/pokerbisonrelay/pkg/statemachine"
@@ -225,30 +226,6 @@ func (es *refereeEscrowSession) snapshot() escrowSnapshot {
 	}
 }
 
-// matchRoster is the set of session keys the escrow scripts of one match commit
-// to. Every member's settlement branch names every member, so a key arriving
-// late changes the script - and so the deposit address - of everyone who has
-// already funded. Funding therefore cannot open until the last seat has
-// published, and the roster is frozen the moment it does.
-type matchRoster struct {
-	Size    int               // seats that must publish before funding opens
-	Seats   map[uint32][]byte // seat -> compressed session key
-	Escrows map[uint32]string // seat -> escrow id
-	// Members is the canonical roster the scripts were built from. Non-nil
-	// only once the roster closed, which is what makes it frozen: a later
-	// OpenEscrow can no longer change a key or take over a seat.
-	Members [][]byte
-}
-
-func (r *matchRoster) closed() bool { return r != nil && r.Members != nil }
-
-func (r *matchRoster) pending() uint32 {
-	if r == nil || r.Size <= len(r.Seats) {
-		return 0
-	}
-	return uint32(r.Size - len(r.Seats))
-}
-
 // schnorrRefereeState is the in-memory view of Schnorr SNG escrow/presign state.
 type schnorrRefereeState struct {
 	network       string
@@ -257,7 +234,7 @@ type schnorrRefereeState struct {
 
 	mu                 sync.RWMutex
 	escrows            map[string]*refereeEscrowSession                   // escrowID -> session
-	rosters            map[string]*matchRoster                            // matchKey -> roster the escrow scripts commit to
+	rosters            map[string]*membership.Roster                      // matchKey -> roster the escrow scripts commit to
 	matchEscrows       map[string]map[uint32]string                       // matchKey -> seat -> escrowID
 	settlementEscrows  map[string]map[uint32]string                       // matchKey -> frozen seat -> escrowID captured when presigning starts
 	presigns           map[string]map[int32]map[string]*refereePreSignCtx // matchKey -> branch -> inputID -> ctx
@@ -276,7 +253,7 @@ func newSchnorrRefereeState(cfg ServerConfig) *schnorrRefereeState {
 		adaptorSecret:      cfg.AdaptorSecret,
 		feeAtoms:           DefaultSettlementFeeAtoms,
 		escrows:            make(map[string]*refereeEscrowSession),
-		rosters:            make(map[string]*matchRoster),
+		rosters:            make(map[string]*membership.Roster),
 		matchEscrows:       make(map[string]map[uint32]string),
 		settlementEscrows:  make(map[string]map[uint32]string),
 		presigns:           make(map[string]map[int32]map[string]*refereePreSignCtx),
@@ -512,57 +489,52 @@ func deriveAdaptorForBranch(secret string, matchID string, branch int32) (gammaH
 	return deriveAdaptorGamma(matchID, branch, secret)
 }
 
-// refereeMatchID derives the referee's match key. WTA poker tables use the
-// table id alone; a session id is appended only when the caller supplies one.
-func refereeMatchID(tableID, sessionID string) string {
-	tableID = strings.TrimSpace(tableID)
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return tableID
-	}
-	return tableID + "|" + sessionID
-}
-
 // closeRosterLocked derives every member's deposit script now that the last
-// seat has published, and freezes the roster. Each member gets a script of
-// their own: the settlement branch names the whole table, the refund branch
-// names only them.
+// seat has published, and freezes the roster.
+//
+// The derivation itself lives in pkg/membership, because a peer-to-peer table
+// has to reach the same answer with no referee to ask, and two implementations
+// of it could disagree by a byte and send money somewhere nobody can spend it.
+// What stays here is the bookkeeping around it: finding the escrows, and
+// writing the results back.
 //
 // Callers must hold s.referee.mu for writing. Deriving under the lock keeps two
 // concurrent OpenEscrow calls from each believing they closed the roster and
 // racing to write different scripts.
-func (st *schnorrRefereeState) closeRosterLocked(r *matchRoster, params stdaddr.AddressParams) error {
-	keys := make([][]byte, 0, len(r.Seats))
-	for _, k := range r.Seats {
-		keys = append(keys, k)
-	}
-	members, err := escrow.CanonicalMembers(keys)
-	if err != nil {
-		return err
-	}
-
+func (st *schnorrRefereeState) closeRosterLocked(r *membership.Roster, params stdaddr.AddressParams) error {
+	members := make([]membership.Member, 0, len(r.Escrows))
 	for seat, id := range r.Escrows {
 		es := st.escrows[id]
 		if es == nil {
 			return fmt.Errorf("seat %d escrow %s is gone", seat, id)
 		}
-		es.mu.Lock()
-		redeem, err := escrow.RedeemScript(es.CompPubkey, members, es.CSVBlocks)
-		if err == nil {
-			var pkHex, addr string
-			if pkHex, addr, err = pkScriptAndAddrFromRedeem(redeem, params); err == nil {
-				es.RedeemScriptHex = hex.EncodeToString(redeem)
-				es.PkScriptHex = pkHex
-				es.DepositAddr = addr
-			}
-		}
-		es.mu.Unlock()
-		if err != nil {
-			return fmt.Errorf("seat %d: %w", seat, err)
-		}
+		es.mu.RLock()
+		members = append(members, membership.Member{
+			Seat:       seat,
+			CompPubkey: append([]byte(nil), es.CompPubkey...),
+			CSVBlocks:  es.CSVBlocks,
+		})
+		es.mu.RUnlock()
 	}
 
-	r.Members = members
+	canonical, deposits, err := membership.Close(members, params)
+	if err != nil {
+		return err
+	}
+
+	// Nothing was written until every script derived, so a failure above
+	// leaves the roster open and every escrow untouched rather than half
+	// committed to a membership that was never agreed.
+	for _, d := range deposits {
+		es := st.escrows[r.Escrows[d.Seat]]
+		es.mu.Lock()
+		es.RedeemScriptHex = d.RedeemScriptHex
+		es.PkScriptHex = d.PkScriptHex
+		es.DepositAddr = d.DepositAddr
+		es.mu.Unlock()
+	}
+
+	r.Members = canonical
 	return nil
 }
 
@@ -663,16 +635,12 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 			"amount_atoms %d must equal table buy-in %d", req.AmountAtoms, cfg.BuyIn)
 	}
 
-	matchID := refereeMatchID(tableID, req.GetSessionId())
+	matchID := membership.MatchID(tableID, req.GetSessionId())
 
 	s.referee.mu.Lock()
 	roster := s.referee.rosters[matchID]
 	if roster == nil {
-		roster = &matchRoster{
-			Size:    rosterSize,
-			Seats:   make(map[uint32][]byte),
-			Escrows: make(map[uint32]string),
-		}
+		roster = membership.NewRoster(rosterSize)
 		s.referee.rosters[matchID] = roster
 	}
 
@@ -683,7 +651,7 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 		// Someone else held this seat. Their escrow only survives a seat
 		// change while the roster is still open, since after that it is
 		// named in scripts other players may already have funded.
-		if roster.closed() {
+		if roster.Closed() {
 			s.referee.mu.Unlock()
 			return nil, status.Errorf(codes.FailedPrecondition,
 				"seat %d belongs to another escrow and the roster is closed", seat)
@@ -691,7 +659,7 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 		es = nil
 	}
 	if es != nil && !bytes.Equal(es.CompPubkey, comp) {
-		if roster.closed() {
+		if roster.Closed() {
 			s.referee.mu.Unlock()
 			return nil, status.Error(codes.FailedPrecondition,
 				"session key already committed to a closed roster")
@@ -724,7 +692,7 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 	// The last seat to publish closes the roster for everybody at once: every
 	// member's script becomes derivable at the same moment.
 	justClosed := false
-	if !roster.closed() && len(roster.Seats) >= roster.Size {
+	if !roster.Closed() && len(roster.Seats) >= roster.Size {
 		if err := s.referee.closeRosterLocked(roster, s.chainParams); err != nil {
 			s.referee.mu.Unlock()
 			return nil, status.Errorf(codes.Internal, "close roster: %v", err)
@@ -732,7 +700,7 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 		justClosed = true
 	}
 	members := roster.Members
-	pending := roster.pending()
+	pending := roster.Pending()
 	s.referee.mu.Unlock()
 
 	if justClosed {
@@ -779,7 +747,7 @@ func (s *Server) OpenEscrow(ctx context.Context, req *pokerrpc.OpenEscrowRequest
 func (s *Server) checkRosterClosed(matchID string) error {
 	s.referee.mu.RLock()
 	roster := s.referee.rosters[matchID]
-	closed := roster.closed()
+	closed := roster.Closed()
 	s.referee.mu.RUnlock()
 
 	switch {
@@ -890,7 +858,7 @@ func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest
 
 	// Nothing can be bound at a table whose roster is still open, because
 	// until it closes no deposit script exists to have been funded.
-	rosterKey := refereeMatchID(tableID, req.GetSessionId())
+	rosterKey := membership.MatchID(tableID, req.GetSessionId())
 	if err := s.checkRosterClosed(rosterKey); err != nil {
 		return nil, err
 	}
@@ -964,7 +932,7 @@ func (s *Server) BindEscrow(ctx context.Context, req *pokerrpc.BindEscrowRequest
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, "invalid redeem_script_hex")
 		}
-		pkHex, _, err := pkScriptAndAddrFromRedeem(redeem, s.chainParams)
+		pkHex, _, err := membership.PkScriptAndAddr(redeem, s.chainParams)
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "derive pkScript: %v", err)
 		}
@@ -2662,17 +2630,6 @@ func (s *Server) storePresigs(matchID string, branch int32, uid zkidentity.Short
 	return nil
 }
 
-// pkScriptAndAddrFromRedeem builds a P2SH pkScript (hex) and human-readable
-// address from a raw redeem script for the configured network.
-func pkScriptAndAddrFromRedeem(redeem []byte, params stdaddr.AddressParams) (string, string, error) {
-	a, err := stdaddr.NewAddressScriptHash(0, redeem, params)
-	if err != nil {
-		return "", "", err
-	}
-	_, pk := a.PaymentScript()
-	return hex.EncodeToString(pk), a.String(), nil
-}
-
 func newEscrowID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -3253,7 +3210,7 @@ func (s *Server) PostBond(ctx context.Context, req *pokerrpc.PostBondRequest) (*
 	s.referee.mu.RUnlock()
 
 	// The deposit has to actually pay that script, and still be unspent.
-	pkHex, _, err := pkScriptAndAddrFromRedeem(raw, s.chainParams)
+	pkHex, _, err := membership.PkScriptAndAddr(raw, s.chainParams)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "derive bond pkScript: %v", err)
 	}

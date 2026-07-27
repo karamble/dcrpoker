@@ -66,7 +66,7 @@ func (s *Server) chainFor(matchID string) (*gamelog.Chain, error) {
 	s.referee.mu.RLock()
 	roster := s.referee.rosters[matchID]
 	seats := gamelog.Roster{}
-	closed := roster.closed()
+	closed := roster.Closed()
 	if roster != nil {
 		for seat, key := range roster.Seats {
 			seats[seat] = append([]byte(nil), key...)

@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vctt94/pokerbisonrelay/pkg/chainwatcher"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 	"github.com/vctt94/pokerbisonrelay/pkg/server/internal/db"
@@ -146,7 +147,7 @@ func applyRosterToEscrows(t *testing.T, srv *Server, escrows ...*refereeEscrowSe
 	for _, es := range escrows {
 		redeem, err := escrow.RedeemScript(es.CompPubkey, members, 64)
 		require.NoError(t, err)
-		pkHex, addr, err := pkScriptAndAddrFromRedeem(redeem, srv.chainParams)
+		pkHex, addr, err := membership.PkScriptAndAddr(redeem, srv.chainParams)
 		require.NoError(t, err)
 		es.RedeemScriptHex = hex.EncodeToString(redeem)
 		es.PkScriptHex = pkHex
@@ -780,7 +781,7 @@ func TestOpenEscrowScriptMatchesRoster(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, n, "settlement must take a signature from every member")
 
-	_, addr, err := pkScriptAndAddrFromRedeem(want, srv.chainParams)
+	_, addr, err := membership.PkScriptAndAddr(want, srv.chainParams)
 	require.NoError(t, err)
 	require.Equal(t, addr, resp.GetDepositAddr())
 }
