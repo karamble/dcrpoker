@@ -709,6 +709,61 @@ func TestResyncAnswersOnlyWhatTheAskerLacks(t *testing.T) {
 	}
 }
 
+// A table short of a commit keeps asking.
+//
+// The first ask can go out while nobody is listening - both live peers did
+// exactly that, each asking while the other was still starting - and a question
+// asked once into a lossy channel is the fault resync exists to cure.
+func TestATableShortOfACommitKeepsAsking(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+	other := h.lend(t, "dd")
+
+	p := h.restart(t, t.TempDir(), "tok")
+	acceptInvite(t, p, inv)
+	deliverJoin(t, p, terms, other)
+
+	at := int64(terms.Until) + 1
+	p.tables.tick(at)
+
+	if got := p.tables.snapshots()[0].State; got != membership.Committed.String() {
+		t.Fatalf("state is %s, want committed and waiting on a commit", got)
+	}
+
+	// Same height, so nothing new to say.
+	if out := p.tables.tick(at); len(asksIn(out)) != 0 {
+		t.Fatal("asked twice at one height")
+	}
+
+	// A new block, so ask again.
+	if out := p.tables.tick(at + 1); len(asksIn(out)) != 1 {
+		t.Fatal("a table still short of a commit stopped asking")
+	}
+
+	// Settled, so there is nothing left to ask for.
+	c, err := membership.SignCommit(terms, rosterHashOf(t, p.tables.snapshots()[0].MatchID), other.Session)
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindResyncReply, schema.ResyncReply{
+		Commits: []schema.Commit{schema.CommitFrom(c)},
+	})
+	if out := p.tables.tick(at + 2); len(asksIn(out)) != 0 {
+		t.Fatal("a settled table is still asking to be caught up")
+	}
+}
+
+func asksIn(out []outgoing) []outgoing {
+	var asks []outgoing
+	for _, o := range out {
+		if o.kind == schema.KindResync {
+			asks = append(asks, o)
+		}
+	}
+	return asks
+}
+
 // A resync answer is checked, not believed. It arrives from whoever felt like
 // replying, so keys nobody joined with and commits nobody signed have to be
 // refused exactly as they would be if published directly.

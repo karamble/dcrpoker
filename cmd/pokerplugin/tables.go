@@ -31,6 +31,10 @@ type table struct {
 	watch *client.ChainWatch
 
 	bound bool
+
+	// askedAt is the height this table last asked to be caught up at, so a
+	// table short of a commit asks once a block rather than once a poll.
+	askedAt int64
 }
 
 // outgoing is something to publish once the registry lock is released.
@@ -348,13 +352,35 @@ func (t *tables) tick(height int64) []outgoing {
 	var out []outgoing
 	for _, tbl := range t.m {
 		before, beforeJoins := tbl.form.State(), len(tbl.form.Joins())
-		if !tbl.deadlinePassed(height) {
-			continue
+		if tbl.deadlinePassed(height) {
+			out = append(out, tbl.advance(before, beforeJoins)...)
+			t.persist(tbl)
 		}
-		out = append(out, tbl.advance(before, beforeJoins)...)
-		t.persist(tbl)
+		out = append(out, tbl.askAgain(height)...)
 	}
 	return out
+}
+
+// askAgain re-asks for a commit this table is still short of.
+//
+// A resync is published on a gap or on resume, and if nobody happened to be
+// listening at that moment nothing sends it again - which is the same fault it
+// was written to cure, one layer up. It cost two peers an hour apiece: each
+// asked while the other was still starting, and neither asked twice.
+//
+// A table that has closed its window and bound itself is waiting on somebody
+// else's commit and nothing else, so that is the state worth repeating in. Once
+// a block rather than once a poll, because the poll is much faster than the
+// chain and a peer already in step answers with silence anyway.
+func (tbl *table) askAgain(height int64) []outgoing {
+	if height <= 0 || height <= tbl.askedAt {
+		return nil
+	}
+	if !tbl.form.WindowClosed() || tbl.form.State() != membership.Committed {
+		return nil
+	}
+	tbl.askedAt = height
+	return tbl.publishResync()
 }
 
 // resync asks every table this process is at for whatever it missed.
