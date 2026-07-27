@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,13 +13,32 @@ import (
 	"github.com/vctt94/pokerbisonrelay/pokerui/golib"
 )
 
+const testToken = "tok"
+
 func testPlugin(t *testing.T) *plugin {
 	t.Helper()
-	p, err := newPlugin("http://host/gaming", "tok")
+	id, err := loadIdentity(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	p, err := newPlugin(context.Background(), "http://host/gaming", testToken, id)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
 	return p
+}
+
+// authed builds a request carrying the token the host issued, which every
+// route but health requires.
+func authed(method, path, body string) *http.Request {
+	var req *http.Request
+	if body == "" {
+		req = httptest.NewRequest(method, path, nil)
+	} else {
+		req = httptest.NewRequest(method, path, strings.NewReader(body))
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	return req
 }
 
 // The portal reads this to decide whether the game is ready, which is what
@@ -56,8 +76,7 @@ func TestCmdReachesTheCommandSurface(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/cmd", strings.NewReader(string(payload)))
-	testPlugin(t).routes().ServeHTTP(rec, req)
+	testPlugin(t).routes().ServeHTTP(rec, authed(http.MethodPost, "/cmd", string(payload)))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cmd returned %d: %s", rec.Code, rec.Body.String())
@@ -80,8 +99,7 @@ func TestFailingCommandIsAnError(t *testing.T) {
 		"payload": json.RawMessage(`{"escrow_id":"x"}`),
 	})
 	rec := httptest.NewRecorder()
-	testPlugin(t).routes().ServeHTTP(rec,
-		httptest.NewRequest(http.MethodPost, "/cmd", strings.NewReader(string(payload))))
+	testPlugin(t).routes().ServeHTTP(rec, authed(http.MethodPost, "/cmd", string(payload)))
 
 	if rec.Code == http.StatusOK {
 		t.Fatalf("a command against an unknown client should not succeed: %s", rec.Body.String())
@@ -96,7 +114,7 @@ func TestFailingCommandIsAnError(t *testing.T) {
 
 func TestCmdRequiresPost(t *testing.T) {
 	rec := httptest.NewRecorder()
-	testPlugin(t).routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/cmd", nil))
+	testPlugin(t).routes().ServeHTTP(rec, authed(http.MethodGet, "/cmd", ""))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /cmd returned %d", rec.Code)
 	}
@@ -105,10 +123,14 @@ func TestCmdRequiresPost(t *testing.T) {
 // A plugin with no way to reach the table, or no identity to reach it as,
 // should refuse to start rather than run unable to play.
 func TestPluginRequiresBridgeAndToken(t *testing.T) {
-	if _, err := newPlugin("", "tok"); err == nil {
+	id, err := loadIdentity(t.TempDir())
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	if _, err := newPlugin(context.Background(), "", "tok", id); err == nil {
 		t.Fatal("a plugin with no bridge should not start")
 	}
-	if _, err := newPlugin("http://host/gaming", ""); err == nil {
+	if _, err := newPlugin(context.Background(), "http://host/gaming", "", id); err == nil {
 		t.Fatal("a plugin with no token should not start")
 	}
 }

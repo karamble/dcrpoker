@@ -409,6 +409,21 @@ stakes. `csvBlocks` belongs in it too, and is not in the invite grammar today:
 each member builds their own refund branch, so a member whose branch matures in
 one block can pull their stake mid-hand.
 
+**Built 2026-07-27** in `pkg/membership` and `cmd/pokerplugin`, which now holds
+tables, admits frames only for sessions it was told to join, and builds a
+`ChainWatch` once a membership settles.
+
+One consequence of it is worth stating plainly, because it is easy to read the
+rule and assume otherwise. *When* to bind is a policy the formation logic
+deliberately leaves to its caller, and the plugin's current policy is to bind as
+soon as the table looks full. So an oversubscribed table is not guaranteed to
+abort: if two peers complete the whole exchange before a third's join reaches
+them, they have a table and the third is left out; only a peer that sees the
+extra join before binding refuses outright. Which happens depends on what
+arrived when. That is not a seat lottery — no key can be ground to win one —
+but it is indeterminate, and a closed admission window every peer derives the
+same way, from a block height rather than a clock, is what would remove it.
+
 Two dependencies are named rather than assumed. **A join must be bond-backed**,
 or it is free and a stranger can abort any table; and `PostBond`
 (`pkg/server/referee.go`) has no proof of possession today — it takes the owner
