@@ -1,12 +1,62 @@
 package main
 
 import (
+	"context"
+	"encoding/hex"
 	"strings"
 	"testing"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
+
+// A refund is only a refund once the lock has matured, and no script engine can
+// tell: whether the branch is spendable depends on how many blocks sit on top
+// of the output, which is a fact about the chain and not about the transaction.
+// Left unchecked this builds something that verifies perfectly and that the
+// network then refuses.
+func TestAStakeCannotBeReclaimedBeforeItsLockMatures(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	tbl := p.tables.m[terms.SID]
+	ours, ok := tbl.form.OurSeat()
+	if !ok {
+		t.Fatal("no seat")
+	}
+	dep, err := tbl.deposit(ours, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+
+	// The chain reports this output with two confirmations; the table's lock
+	// is far longer.
+	outpoint := strings.Repeat("a7", 32) + ":0"
+	h.mu.Lock()
+	h.bonds[outpoint] = dep.PkScriptHex
+	h.mu.Unlock()
+
+	redeem, err := hex.DecodeString(dep.RedeemScriptHex)
+	if err != nil {
+		t.Fatalf("redeem script: %v", err)
+	}
+	key, err := p.id.sessionKey(terms.SID)
+	if err != nil {
+		t.Fatalf("session key: %v", err)
+	}
+
+	_, err = p.reclaim(context.Background(), outpoint, redeem, key, terms.CSVBlocks,
+		escrow.RefundSigScript, "", 0)
+	if err == nil {
+		t.Fatal("reclaimed a stake whose lock has not matured")
+	}
+	if !strings.Contains(err.Error(), "confirmations") {
+		t.Fatalf("refused for %q, which does not explain that the lock is unmatured", err)
+	}
+}
 
 // seatedTable builds a table that has settled and been seated, which is the
 // earliest point at which any deposit script exists.

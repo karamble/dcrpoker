@@ -292,6 +292,11 @@ func (p *plugin) routes() http.Handler {
 	mux.HandleFunc("/table/fund", p.guard(p.handleFund))
 	mux.HandleFunc("/table/deposit/set", p.guard(p.handleDepositSet))
 
+	// Taking our own coin back out, once its lock has matured. The escape
+	// hatch that works when nothing else does.
+	mux.HandleFunc("/table/refund", p.guard(p.handleTableRefund))
+	mux.HandleFunc("/bond/sweep", p.guard(p.handleBondSweep))
+
 	// The seed nothing can regenerate, and the one way to put it back.
 	mux.HandleFunc("/identity/backup", p.guard(p.handleIdentityBackup))
 	mux.HandleFunc("/identity/restore", p.guard(p.handleIdentityRestore))

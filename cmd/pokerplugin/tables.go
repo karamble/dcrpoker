@@ -508,6 +508,24 @@ func (tbl *table) askAgain(height int64) []outgoing {
 	return nil
 }
 
+// forgetStake drops a seat's stake, once it has been spent somewhere else.
+//
+// It is our own stake and our own spend, so this is bookkeeping rather than a
+// decision - but it has to happen, because a table still citing an output it
+// has already spent would go on announcing a stake that is not there, and every
+// peer would go on refusing it.
+func (t *tables) forgetStake(sid string, seat uint32) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tbl := t.m[sid]
+	if tbl == nil {
+		return
+	}
+	delete(tbl.funded, seat)
+	t.persist(tbl)
+}
+
 // resync asks every table this process is at for whatever it missed.
 //
 // This is what a gap in the stream costs: the host drops frames rather than

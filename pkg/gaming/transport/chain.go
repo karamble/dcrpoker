@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -86,6 +87,60 @@ func (b *Bridge) Outpoint(ctx context.Context, txid string, vout uint32) (Outpoi
 // bond - that is the case Outpoint exists for.
 func (b *Bridge) UnconfirmedOutpoint(ctx context.Context, txid string, vout uint32) (Outpoint, error) {
 	return b.outpoint(ctx, txid, vout, true)
+}
+
+// Broadcast puts a transaction this game signed itself onto the network.
+//
+// The other way coin moves is RequestSpend, where the host builds the
+// transaction and a person approves it with a passphrase this process never
+// sees. That is for paying money in. It cannot be used for taking money back
+// out, because a bond, and a stake behind its refund timelock, are spendable
+// only with a key this game holds - so the game builds and signs, and the host
+// relays.
+//
+// Nobody approves this and the host does not ask, because the coin is already
+// ours to move. What the host does instead is refuse anything of the wrong
+// shape: a transaction taking coin that is not ours, or sending ours anywhere
+// but back to the person who funded it, is not relayed. So a refusal here is
+// about the transaction, not about permission.
+func (b *Bridge) Broadcast(ctx context.Context, rawTxHex string) (string, error) {
+	body, err := json.Marshal(map[string]any{"rawTxHex": rawTxHex})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL+"/chain/broadcast", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build broadcast request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+b.Token)
+
+	resp, err := b.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("broadcast: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusForbidden:
+		return "", fmt.Errorf("host refused to relay: %s", readError(resp))
+	case http.StatusNotFound:
+		return "", fmt.Errorf("host does not recognise this game's token; check it is still installed")
+	default:
+		return "", fmt.Errorf("broadcast: host returned %s: %s", resp.Status, readError(resp))
+	}
+
+	var out struct {
+		TxID string `json:"txid"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("read the host's answer: %w", err)
+	}
+	if out.TxID == "" {
+		return "", fmt.Errorf("the host relayed it but named no transaction")
+	}
+	return out.TxID, nil
 }
 
 func (b *Bridge) outpoint(ctx context.Context, txid string, vout uint32, includeMempool bool) (Outpoint, error) {
