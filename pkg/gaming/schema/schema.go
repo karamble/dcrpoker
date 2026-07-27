@@ -39,12 +39,26 @@ const Game = "poker"
 type Kind string
 
 const (
+	// KindJoin is one player claiming a seat, signed by the key it
+	// announces. The signature is what lets it be relayed: a peer that
+	// missed one learns it from anyone who did and checks it, rather than
+	// taking their word for a key.
+	KindJoin Kind = "join"
+
 	// KindRoster announces the seats a table is playing with and the
-	// session keys their actions will be signed by. It is informational:
-	// the authoritative roster is the one the escrow scripts commit to
-	// on-chain, and a member checks this against that rather than the
-	// other way round.
+	// session keys their actions will be signed by, along with the joins
+	// they were computed from.
+	//
+	// It is revisable, and nobody acts on it. It exists to heal a channel
+	// that loses messages, so a peer holding fewer joins than it should can
+	// catch up. Settling on it would be settling on somebody's current
+	// opinion - that is what KindCommit is for.
 	KindRoster Kind = "roster"
+
+	// KindCommit binds its signer to one membership, for one session,
+	// irrevocably. Two of them from one key at one session are a proof
+	// anybody can check, the way two chain heads at one sequence are.
+	KindCommit Kind = "commit"
 
 	// KindAction is one signed entry of the action log.
 	KindAction Kind = "action"
@@ -75,9 +89,40 @@ type Message struct {
 	Body  json.RawMessage `json:"body"`
 }
 
+// Terms are what an invitation stated, carried so a peer can say "you and I
+// read different invitations" rather than only "our memberships differ".
+type Terms struct {
+	Game       string `json:"game"`
+	GameVer    int    `json:"gv"`
+	SID        string `json:"sid"`
+	BuyInAtoms uint64 `json:"buyin"`
+	Seats      uint32 `json:"seats"`
+	CSVBlocks  uint32 `json:"csv"`
+}
+
+// Join is one player's claim to a seat.
+type Join struct {
+	Key string `json:"key"` // hex compressed session pubkey
+	Sig string `json:"sig"`
+}
+
 // Roster is the table's seats and the keys their actions are signed with.
+//
+// Joins are what make it checkable. Carrying bare keys would let any member
+// inject a key nobody joined with by burying it among real ones; carrying the
+// signed joins means a receiver recomputes the seats itself and refuses the
+// whole message if they disagree.
 type Roster struct {
 	Seats map[uint32]string `json:"seats"` // seat -> hex compressed session pubkey
+	Joins []Join            `json:"joins,omitempty"`
+	Terms *Terms            `json:"terms,omitempty"`
+}
+
+// Commit is one member binding itself to a membership, irrevocably.
+type Commit struct {
+	Roster string `json:"roster"` // hex roster hash
+	Signer string `json:"signer"` // hex compressed session pubkey
+	Sig    string `json:"sig"`
 }
 
 // Action is one signed log entry, in the same hex-rendered shape a transcript

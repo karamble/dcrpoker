@@ -105,11 +105,15 @@ func TestEncodeRequiresAMatch(t *testing.T) {
 // identity, and a field claiming one could only be a way to lie about it.
 func TestNoMessageCarriesAnIdentityField(t *testing.T) {
 	for name, v := range map[string]any{
-		"roster":  Roster{},
-		"action":  Action{},
-		"head":    Head{},
-		"resync":  Resync{},
-		"dispute": Dispute{},
+		"join":         Join{},
+		"roster":       Roster{},
+		"commit":       Commit{},
+		"terms":        Terms{},
+		"action":       Action{},
+		"head":         Head{},
+		"resync":       Resync{},
+		"resync_reply": ResyncReply{},
+		"dispute":      Dispute{},
 	} {
 		blob, err := json.Marshal(v)
 		if err != nil {
