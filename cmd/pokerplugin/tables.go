@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/client"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
@@ -35,6 +36,11 @@ type table struct {
 	// askedAt is the height this table last asked to be caught up at, so a
 	// table short of a commit asks once a block rather than once a poll.
 	askedAt int64
+
+	// funded is the output each seat's stake sits in, once that seat said
+	// so and the chain agreed. A seat missing from here has not been paid
+	// for as far as this peer can tell, whoever says otherwise.
+	funded map[uint32]string
 }
 
 // outgoing is something to publish once the registry lock is released.
@@ -58,6 +64,12 @@ type tables struct {
 	// chain, so it is never called while the lock is held: one slow lookup
 	// must not stall every other table.
 	checkBond func(ctx context.Context, j *membership.Join) error
+
+	// chain and params are what a stake is checked against: the deposit
+	// script a seat must pay is derived locally, and whether it was paid is
+	// the chain's answer. Both are set once, at startup.
+	chain  *transport.Bridge
+	params stdaddr.AddressParams
 }
 
 func newTables(st *store) *tables {
@@ -154,6 +166,12 @@ func (tbl *table) record() *record {
 	if b := tbl.form.Beacon(); len(b) > 0 {
 		rec.Beacon = hex.EncodeToString(b)
 	}
+	if len(tbl.funded) > 0 {
+		rec.Funded = make(map[uint32]string, len(tbl.funded))
+		for seat, outpoint := range tbl.funded {
+			rec.Funded[seat] = outpoint
+		}
+	}
 	if h, ok := tbl.form.RosterHash(); ok && tbl.bound {
 		rec.Roster = hex.EncodeToString(h[:])
 	}
@@ -241,7 +259,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	if err != nil {
 		return nil, err
 	}
-	tbl := &table{terms: terms, gcID: gcID, form: form}
+	tbl := &table{terms: terms, gcID: gcID, form: form, funded: map[uint32]string{}}
 
 	if rec != nil {
 		if err := tbl.resume(rec); err != nil {
@@ -320,6 +338,10 @@ func (tbl *table) resume(rec *record) error {
 		if err := tbl.form.SetBeacon(beacon); err != nil {
 			return fmt.Errorf("recorded beacon: %w", err)
 		}
+	}
+
+	for seat, outpoint := range rec.Funded {
+		tbl.funded[seat] = outpoint
 	}
 
 	// A resumed table takes its own history back up rather than waiting for
@@ -459,6 +481,14 @@ func (t *tables) deliver(ctx context.Context, d transport.Delivery) []outgoing {
 	// Bonds before the lock, because checking one goes to the chain.
 	if err := t.verifyBonds(ctx, terms, d.Msg); err != nil {
 		log.Printf("pokerplugin: table %s: %v", d.SID, err)
+		return nil
+	}
+
+	// A stake is checked against the chain too, and for the same reason it
+	// is handled apart from the state machine rather than inside it: the
+	// lookup must not happen with the registry held.
+	if d.Msg.Kind == schema.KindFunded {
+		t.acceptFunding(ctx, d)
 		return nil
 	}
 

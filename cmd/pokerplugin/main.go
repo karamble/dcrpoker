@@ -135,6 +135,9 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 	// chain before it is admitted. The rule lives in pkg/membership; what
 	// happens here is fetching the facts it needs.
 	p.tables.checkBond = newBonds(b, params).check
+	// What a stake is judged against: the script is derived here, whether it
+	// was paid is the chain's answer.
+	p.tables.chain, p.tables.params = b, params
 	p.router, err = transport.NewRouter(transport.Config{
 		Game:    schema.Game,
 		GameVer: schema.Version,
@@ -275,6 +278,11 @@ func (p *plugin) routes() http.Handler {
 	mux.HandleFunc("/table/join", p.guard(p.handleJoin))
 	mux.HandleFunc("/table/leave", p.guard(p.handleLeave))
 	mux.HandleFunc("/tables", p.guard(p.handleTables))
+
+	// Paying into a settled table, and the way back when a payment was made
+	// but its outcome never reached the caller that asked for it.
+	mux.HandleFunc("/table/fund", p.guard(p.handleFund))
+	mux.HandleFunc("/table/deposit/set", p.guard(p.handleDepositSet))
 
 	// The seed nothing can regenerate, and the one way to put it back.
 	mux.HandleFunc("/identity/backup", p.guard(p.handleIdentityBackup))

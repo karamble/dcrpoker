@@ -60,6 +60,10 @@ const (
 	// anybody can check, the way two chain heads at one sequence are.
 	KindCommit Kind = "commit"
 
+	// KindFunded is one member saying which output holds its stake. The
+	// chain is what makes it true; this only says who to attribute it to.
+	KindFunded Kind = "funded"
+
 	// KindAction is one signed entry of the action log.
 	KindAction Kind = "action"
 
@@ -139,6 +143,14 @@ type Commit struct {
 	Roster string `json:"roster"` // hex roster hash
 	Signer string `json:"signer"` // hex compressed session pubkey
 	Sig    string `json:"sig"`
+}
+
+// Funded is one member pointing at the output that holds its stake.
+type Funded struct {
+	Seat     uint32 `json:"seat"`
+	Outpoint string `json:"outpoint"`
+	Signer   string `json:"signer"` // hex compressed session pubkey
+	Sig      string `json:"sig"`
 }
 
 // Action is one signed log entry, in the same hex-rendered shape a transcript

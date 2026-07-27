@@ -119,6 +119,37 @@ func (c Commit) Into() (*membership.Commit, error) {
 	return out, nil
 }
 
+// FundedFrom renders a funding announcement for the wire.
+func FundedFrom(f *membership.Funding) Funded {
+	if f == nil {
+		return Funded{}
+	}
+	return Funded{
+		Seat:     f.Seat,
+		Outpoint: f.Outpoint,
+		Signer:   hex.EncodeToString(f.Signer),
+		Sig:      hex.EncodeToString(f.Sig),
+	}
+}
+
+// Into reads a funding announcement back.
+func (f Funded) Into() (*membership.Funding, error) {
+	signer, err := hex.DecodeString(f.Signer)
+	if err != nil {
+		return nil, fmt.Errorf("funded signer: %w", err)
+	}
+	sig, err := hex.DecodeString(f.Sig)
+	if err != nil {
+		return nil, fmt.Errorf("funded signature: %w", err)
+	}
+	return &membership.Funding{
+		Seat:     f.Seat,
+		Outpoint: f.Outpoint,
+		Signer:   signer,
+		Sig:      sig,
+	}, nil
+}
+
 // RosterFrom renders the membership a peer holds, with the joins it was
 // computed from, so a peer that missed one can check its way to the same
 // answer instead of believing this one.

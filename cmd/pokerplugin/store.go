@@ -36,6 +36,11 @@ type record struct {
 	Joins   []schema.Join   `json:"joins"`
 	Commits []schema.Commit `json:"commits,omitempty"`
 	Beacon  string          `json:"beacon,omitempty"` // hex of the block the seats were drawn from
+	// Funded is the output each seat's stake sits in, once the chain has
+	// been asked. Keeping it means a restart does not go back to the chain
+	// for every seat, and - for our own seat - does not pay a second time
+	// because it forgot it had already paid.
+	Funded map[uint32]string `json:"funded,omitempty"`
 	// Bound records that this key took an irrevocable position, and Roster
 	// which one. Aborted records that the session ended.
 	Bound   bool   `json:"bound"`
