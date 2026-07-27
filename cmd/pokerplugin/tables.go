@@ -338,6 +338,13 @@ func (t *tables) seat(sid string, beacon []byte) {
 		log.Printf("pokerplugin: table %s: %v", sid, err)
 		return
 	}
+	// The draw is the one step of forming a table that no player has any
+	// say in, so it is said out loud with the block it came from. Two peers
+	// at the same table must draw from the same block; if they ever do not,
+	// they are seating different tables under one match id, and this line
+	// is where that becomes visible instead of showing up later as a
+	// disagreement about whose turn it is.
+	log.Printf("pokerplugin: table %s drew its seats from block %x", sid, beacon)
 	tbl.startWatching()
 }
 
