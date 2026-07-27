@@ -353,6 +353,75 @@ Identity needs no invention: `zkidentity.ShortID` is already the player UID
 throughout `pkg/server/auth.go`. Today the server maps a token to a UID; in the
 p2p version the UID signs directly.
 
+#### Forming a table without a referee
+
+The first thing the server owns is the one that gates all the rest: **who is at
+the table**. The deposit address is the hash of a script naming every seat, so
+until players can agree a roster among themselves, nothing else can leave the
+server.
+
+**Built 2026-07-27, in two parts.**
+
+The roster derivation moved out of `pkg/server/referee.go` into
+`pkg/membership`, which knows nothing about poker and nothing about gRPC. The
+reason is the same one that put the script construction in `pkg/escrow`, applied
+one layer up: a peer-to-peer table has to reach the same answer with no referee
+to ask, and two implementations of that can disagree by a byte and send money
+somewhere nobody can spend it. `membership.Close` also computes and returns
+rather than writing through, which removes a real fault in the version it
+replaced — that one wrote each script into its escrow as it went, so a failure
+part way left a roster still open with some seats already carrying scripts
+derived from a membership that was never agreed.
+
+And `cmd/pokerplugin` can now receive. `Bridge.Events` opens the host's
+websocket, reconnects rather than reporting the end of the stream, and reports
+the gap when it does: the host's stream drops frames rather than blocking, so
+one game that stops draining cannot stall the others, and reconnection is where
+that loss clusters. Saying so is all the transport can honestly do — recovering
+what was missed needs the protocol, which knows what it was expecting.
+
+**The formation rule, settled but not yet built.** Deterministic from the joins,
+with no proposer: every peer computes the roster itself and nobody closes the
+table. Two corrections were needed before that was sound, and both are worth
+recording because the first was the obvious rule and it does not work.
+
+- **Exact fill, not "the lowest N keys".** Healing only grows a peer's join set,
+  but "lowest N of S" is not monotone in S — one low key arriving late ejects
+  the previous highest member. So a peer could settle while another, holding one
+  more join, computed something else. Under exact fill a peer holding a strict
+  subset computes *no* candidate and stays silent, which is what makes being
+  under-informed self-evident rather than indistinguishable from being
+  well-informed. It also deletes the seat lottery, and avoids the fact that
+  `escrow.CanonicalMembers` refuses more than `MaxMembers` keys outright.
+- **Settlement binds on a `commit`, not on a claim.** The healing message
+  (`roster`, carrying the signed joins it was computed from, so a peer that
+  missed one learns it from anyone who did and can check it) is revisable and
+  nobody acts on it. A separate `commit` is irrevocable, one per session ever.
+  Settling on unanimous commits gives the property that matters: two honest
+  peers that both settle either settle the same roster or share no member,
+  because a shared member would have had to commit twice — which is a
+  self-contained proof, the shape `gamelog.EquivocationProof` already handles.
+
+The commitment covers the terms, not just the keys — an invite is ordinary chat
+text, so whoever forwards it can hand one player one buy-in and another a
+different one, and winner-take-all only divides a pot fairly across equal
+stakes. `csvBlocks` belongs in it too, and is not in the invite grammar today:
+each member builds their own refund branch, so a member whose branch matures in
+one block can pull their stake mid-hand.
+
+Two dependencies are named rather than assumed. **A join must be bond-backed**,
+or it is free and a stranger can abort any table; and `PostBond`
+(`pkg/server/referee.go`) has no proof of possession today — it takes the owner
+key from the script and files the bond under the caller's token, so only a
+first-come outpoint check stops one player claiming another's bond, and
+peer-to-peer there is no registry to be first at. **And the button must stop
+being seat 0**: `g.dealer` starts at `0` (`pkg/poker/game.go`) with players in
+ascending seat order, so ordering seats by key hands the first hand's button —
+and, under the rotating dealer, the first equivocation-capable position — to
+whoever grinds the lowest key. `CanonicalMembers` already documents that its
+order holds "regardless of seat assignment"; conflating the two is what creates
+the surface.
+
 #### Ordering without consensus
 
 Poker is turn-based — at any point exactly one seat is legally entitled to act,
