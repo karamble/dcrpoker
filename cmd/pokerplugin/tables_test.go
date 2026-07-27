@@ -754,6 +754,49 @@ func TestATableShortOfACommitKeepsAsking(t *testing.T) {
 	}
 }
 
+// Two peers joining seconds apart each drop the other's join - it names a table
+// they have not accepted yet - so a join published once leaves both of them
+// holding one join until the deadline kills a table both of them wanted.
+func TestATableStillShortOfJoinsSaysItselfAgain(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+
+	p := h.restart(t, t.TempDir(), "tok")
+	acceptInvite(t, p, inv)
+
+	at := int64(terms.Until) - 10
+	out := p.tables.tick(at)
+	if len(joinsIn(out)) != 1 {
+		t.Fatalf("a table short of joins republished its own %d times, want once", len(joinsIn(out)))
+	}
+	if len(asksIn(out)) != 1 {
+		t.Fatal("republished a join without asking for the ones it is missing")
+	}
+	if out := p.tables.tick(at); len(joinsIn(out)) != 0 {
+		t.Fatal("republished twice at one height")
+	}
+	if out := p.tables.tick(at + 1); len(joinsIn(out)) != 1 {
+		t.Fatal("stopped republishing while still short of a table")
+	}
+
+	// Once the table is full there is nothing left to announce.
+	deliverJoin(t, p, terms, h.lend(t, "dd"))
+	if out := p.tables.tick(at + 2); len(joinsIn(out)) != 0 {
+		t.Fatal("kept republishing a join after the table filled")
+	}
+}
+
+func joinsIn(out []outgoing) []outgoing {
+	var j []outgoing
+	for _, o := range out {
+		if o.kind == schema.KindJoin {
+			j = append(j, o)
+		}
+	}
+	return j
+}
+
 func asksIn(out []outgoing) []outgoing {
 	var asks []outgoing
 	for _, o := range out {

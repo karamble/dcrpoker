@@ -480,11 +480,23 @@ func (tbl *table) askAgain(height int64) []outgoing {
 	if height <= 0 || height <= tbl.askedAt {
 		return nil
 	}
-	if !tbl.form.WindowClosed() || tbl.form.State() != membership.Committed {
-		return nil
+	switch {
+	case tbl.form.State() == membership.Joining && !tbl.form.WindowClosed():
+		// A join is dropped by any peer that has not accepted the
+		// invitation yet: it names a table they are not at, and there is
+		// nothing to hold it against. Two peers joining seconds apart
+		// therefore each drop the other's, and if a join is only ever
+		// published once they both sit holding one join until the
+		// deadline ends a table that both of them wanted. Say it again,
+		// and ask for theirs while we are at it.
+		tbl.askedAt = height
+		return append(tbl.publishJoin(), tbl.publishResync()...)
+
+	case tbl.form.State() == membership.Committed && tbl.form.WindowClosed():
+		tbl.askedAt = height
+		return tbl.publishResync()
 	}
-	tbl.askedAt = height
-	return tbl.publishResync()
+	return nil
 }
 
 // resync asks every table this process is at for whatever it missed.
