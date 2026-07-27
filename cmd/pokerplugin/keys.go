@@ -120,8 +120,18 @@ func (id *identity) setBondDeposit(outpoint string) error {
 	id.mu.Lock()
 	defer id.mu.Unlock()
 
+	if err := id.writeLocked(id.seed, outpoint); err != nil {
+		return err
+	}
+	id.bondOutpoint = outpoint
+	return nil
+}
+
+// writeLocked replaces the identity file. Write and rename, so a crash leaves
+// either the old identity or the new one, never half of either.
+func (id *identity) writeLocked(seed []byte, outpoint string) error {
 	out, err := json.Marshal(identityFile{
-		SeedHex:      hex.EncodeToString(id.seed),
+		SeedHex:      hex.EncodeToString(seed),
 		BondOutpoint: outpoint,
 	})
 	if err != nil {
@@ -135,7 +145,49 @@ func (id *identity) setBondDeposit(outpoint string) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("write identity: %w", err)
 	}
-	id.bondOutpoint = outpoint
+	return nil
+}
+
+// backup reports the secret everything this player owns is derived from.
+//
+// The bond key and every session key are HMACs of it. It is not derived from
+// the wallet seed, it cannot be reconstructed, and it lives in one file in one
+// volume - so a volume deleted without a copy of this makes the bond
+// permanently unspendable, because the bond script names that key and no other,
+// ever. Any stake still in escrow goes the same way: the refund branch is the
+// depositor's own session key alone.
+//
+// Exporting it through the host is the right direction. The host is the trusted
+// party in this arrangement; the game is the thing being confined.
+func (id *identity) backup() (seedHex, bondOutpoint string) {
+	id.mu.Lock()
+	defer id.mu.Unlock()
+	return hex.EncodeToString(id.seed), id.bondOutpoint
+}
+
+// restore puts back a seed saved from somewhere else.
+//
+// Only onto a player that has never sat down, which the caller establishes.
+// Swapping the seed under an identity holding a bond would strand that bond
+// where nothing can reach it, and under one with sessions would change the keys
+// those tables were agreed with - leaving records naming a player that no
+// longer exists, whose commits can never be reproduced.
+func (id *identity) restore(seedHex, bondOutpoint string) error {
+	seed, err := hex.DecodeString(strings.TrimSpace(seedHex))
+	if err != nil || len(seed) != 32 {
+		return fmt.Errorf("a seed is 32 bytes of hex")
+	}
+	outpoint := strings.TrimSpace(bondOutpoint)
+
+	id.mu.Lock()
+	defer id.mu.Unlock()
+	if id.bondOutpoint != "" {
+		return fmt.Errorf("this player already holds a bond, and restoring over it would strand that coin")
+	}
+	if err := id.writeLocked(seed, outpoint); err != nil {
+		return err
+	}
+	id.seed, id.bondOutpoint = seed, outpoint
 	return nil
 }
 

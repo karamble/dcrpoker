@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 )
@@ -63,6 +64,28 @@ func (s *store) path(sid string) (string, error) {
 		return "", fmt.Errorf("session id %q is not a name this can store", sid)
 	}
 	return filepath.Join(s.dir, sid+".json"), nil
+}
+
+// used reports whether this player has ever sat at a table.
+//
+// It answers one question: whether the seed underneath is safe to replace. A
+// seed swapped under sessions that already exist would change the keys those
+// tables were agreed with, so the records would name a player that no longer
+// exists and the commits in them could never be reproduced.
+func (s *store) used() (bool, error) {
+	entries, err := os.ReadDir(s.dir)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read sessions: %w", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // load reads a session's record, returning nil when there is none.

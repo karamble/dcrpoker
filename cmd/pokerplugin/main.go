@@ -118,6 +118,7 @@ type plugin struct {
 	bridge *transport.Bridge
 	router *transport.Router
 	tables *tables
+	store  *store
 	id     *identity
 	token  string
 	params stdaddr.AddressParams
@@ -129,7 +130,7 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 		return nil, err
 	}
 
-	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), id: id, token: token, params: params}
+	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), store: st, id: id, token: token, params: params}
 	// A seat has to cost something, so every join is checked against the
 	// chain before it is admitted. The rule lives in pkg/membership; what
 	// happens here is fetching the facts it needs.
@@ -275,6 +276,10 @@ func (p *plugin) routes() http.Handler {
 	mux.HandleFunc("/table/leave", p.guard(p.handleLeave))
 	mux.HandleFunc("/tables", p.guard(p.handleTables))
 
+	// The seed nothing can regenerate, and the one way to put it back.
+	mux.HandleFunc("/identity/backup", p.guard(p.handleIdentityBackup))
+	mux.HandleFunc("/identity/restore", p.guard(p.handleIdentityRestore))
+
 	// The bond, which is what makes a seat cost something. Without one this
 	// player cannot join anything.
 	mux.HandleFunc("/bond", p.guard(p.handleBond))
@@ -363,6 +368,61 @@ func (p *plugin) handleLeave(w http.ResponseWriter, r *http.Request) {
 
 func (p *plugin) handleTables(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"tables": p.tables.snapshots()})
+}
+
+// handleIdentityBackup hands out the seed this player is derived from, so the
+// host can offer it to the person who would otherwise lose it.
+//
+// It is the one secret here that nothing can regenerate. The bond key and every
+// session key are derived from it, so a data volume removed without a copy
+// leaves the bond unspendable forever and any stake in escrow unrefundable.
+func (p *plugin) handleIdentityBackup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	seed, outpoint := p.id.backup()
+	writeJSON(w, map[string]any{"seedHex": seed, "bondOutpoint": outpoint})
+}
+
+// handleIdentityRestore puts a saved seed back, onto a player that has not
+// played.
+//
+// Refusing the rest is the point. This process derives its keys at startup, so
+// by the time anyone can call this an identity already exists - and replacing
+// one that holds a bond or has sat at a table would strand the first and
+// invalidate the second. A restore belongs on an empty volume, and saying so is
+// better than half-applying it.
+func (p *plugin) handleIdentityRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SeedHex      string `json:"seedHex"`
+		BondOutpoint string `json:"bondOutpoint"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	used, err := p.store.used()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if used {
+		writeErr(w, http.StatusConflict,
+			fmt.Errorf("this player has already sat at a table; restore onto an empty data volume"))
+		return
+	}
+	if err := p.id.restore(req.SeedHex, req.BondOutpoint); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	log.Printf("pokerplugin: identity restored from a backup")
+	writeJSON(w, map[string]any{"restored": true, "bondOutpoint": p.id.bondDeposit()})
 }
 
 // gcIDRe is the shape a Bison Relay group chat id takes, checked here so an
