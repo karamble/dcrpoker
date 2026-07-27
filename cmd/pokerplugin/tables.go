@@ -143,6 +143,12 @@ func (tbl *table) record() *record {
 	for _, j := range tbl.form.Joins() {
 		rec.Joins = append(rec.Joins, schema.JoinFrom(j))
 	}
+	for _, c := range tbl.form.Commits() {
+		rec.Commits = append(rec.Commits, schema.CommitFrom(c))
+	}
+	if b := tbl.form.Beacon(); len(b) > 0 {
+		rec.Beacon = hex.EncodeToString(b)
+	}
 	if h, ok := tbl.form.RosterHash(); ok && tbl.bound {
 		rec.Roster = hex.EncodeToString(h[:])
 	}
@@ -262,19 +268,51 @@ func (tbl *table) resume(rec *record) error {
 			return fmt.Errorf("recorded join %d: %w", i, err)
 		}
 	}
-	if !rec.Bound {
-		return nil
+	if rec.Bound {
+		c, err := tbl.form.Bind()
+		if err != nil {
+			return fmt.Errorf("cannot take back up the position this key already committed to: %w", err)
+		}
+		if got := hex.EncodeToString(c.Roster[:]); got != rec.Roster {
+			// Refusing to publish anything is the only safe answer:
+			// this key has already said something else about this
+			// session.
+			return fmt.Errorf("resuming would commit to %s, but this key already committed to %s", got, rec.Roster)
+		}
+		tbl.bound = true
 	}
-	c, err := tbl.form.Bind()
-	if err != nil {
-		return fmt.Errorf("cannot take back up the position this key already committed to: %w", err)
+
+	// Every member's commit, not only ours. Ours is reproducible by binding
+	// again; theirs arrived as messages nobody will send twice, so without
+	// these a table that had already settled comes back a signature short
+	// and waits for one that is never coming. Each is verified against the
+	// terms on the way in, so a file that was edited is refused rather than
+	// believed.
+	for i, wc := range rec.Commits {
+		c, err := wc.Into()
+		if err != nil {
+			return fmt.Errorf("recorded commit %d: %w", i, err)
+		}
+		if err := tbl.form.AddCommit(c); err != nil {
+			return fmt.Errorf("recorded commit %d: %w", i, err)
+		}
 	}
-	if got := hex.EncodeToString(c.Roster[:]); got != rec.Roster {
-		// Refusing to publish anything is the only safe answer: this
-		// key has already said something else about this session.
-		return fmt.Errorf("resuming would commit to %s, but this key already committed to %s", got, rec.Roster)
+
+	if rec.Beacon != "" {
+		beacon, err := hex.DecodeString(rec.Beacon)
+		if err != nil {
+			return fmt.Errorf("recorded beacon: %w", err)
+		}
+		if err := tbl.form.SetBeacon(beacon); err != nil {
+			return fmt.Errorf("recorded beacon: %w", err)
+		}
 	}
-	tbl.bound = true
+
+	// A resumed table takes its own history back up rather than waiting for
+	// something to advance it: joining is the only path here, and it ends by
+	// publishing a join rather than by moving the state machine. Without this
+	// a table that came back settled and seated would still follow nothing.
+	tbl.startWatching()
 	return nil
 }
 
@@ -346,6 +384,11 @@ func (t *tables) seat(sid string, beacon []byte) {
 	// disagreement about whose turn it is.
 	log.Printf("pokerplugin: table %s drew its seats from block %x", sid, beacon)
 	tbl.startWatching()
+	// Write the draw down. It happens once, and a table that came back
+	// unseated would draw again - from whatever block stands at that height
+	// by then, which after a reorganisation is not the block it was dealt
+	// from.
+	t.persist(tbl)
 }
 
 // deliver routes one decoded message to the table it is for.

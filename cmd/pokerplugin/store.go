@@ -23,9 +23,18 @@ import (
 // Keeping the joins as well means a restart can resume rather than merely
 // refuse: rebinding the same membership reproduces the same commit, byte for
 // byte, because signing is deterministic.
+//
+// Our own commit reproduces itself that way, but nobody else's does. Settling
+// needs a commit from every member, and those arrived as messages that will not
+// be sent again - so a peer that kept only its own came back holding one
+// signature short of a table it had already agreed, and waited for it forever.
+// The beacon is here for the same reason: it is drawn once, and a table that
+// has been dealt must not be reseated by a later reading of that height.
 type record struct {
-	Terms schema.Terms  `json:"terms"`
-	Joins []schema.Join `json:"joins"`
+	Terms   schema.Terms    `json:"terms"`
+	Joins   []schema.Join   `json:"joins"`
+	Commits []schema.Commit `json:"commits,omitempty"`
+	Beacon  string          `json:"beacon,omitempty"` // hex of the block the seats were drawn from
 	// Bound records that this key took an irrevocable position, and Roster
 	// which one. Aborted records that the session ended.
 	Bound   bool   `json:"bound"`

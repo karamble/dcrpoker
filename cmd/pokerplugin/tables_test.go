@@ -452,6 +452,35 @@ func deliverJoin(t *testing.T, p *plugin, terms membership.Terms, creds membersh
 	p.tables.deliver(context.Background(), transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
 }
 
+func deliverCommit(t *testing.T, p *plugin, terms membership.Terms, creds membership.Credentials, roster [32]byte) {
+	t.Helper()
+	c, err := membership.SignCommit(terms, roster, creds.Session)
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	blob, err := schema.Encode(schema.KindCommit, terms.SID, schema.CommitFrom(c))
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	msg, err := schema.Decode(blob)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	p.tables.deliver(context.Background(), transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
+}
+
+// rosterHashOf reads back the membership a table bound itself to.
+func rosterHashOf(t *testing.T, matchID string) [32]byte {
+	t.Helper()
+	raw, err := hex.DecodeString(matchID)
+	if err != nil || len(raw) != 32 {
+		t.Fatalf("match id %q is not a roster hash", matchID)
+	}
+	var out [32]byte
+	copy(out[:], raw)
+	return out
+}
+
 func inviteTerms(inv schema.Invite) membership.Terms {
 	return membership.Terms{
 		Game: inv.Game, GameVer: schema.Version, SID: inv.SID,
@@ -520,6 +549,66 @@ func TestARestartCommitsToTheSameMembership(t *testing.T) {
 	}
 	if second.Joined != first.Joined {
 		t.Fatalf("came back holding %d joins, had %d", second.Joined, first.Joined)
+	}
+}
+
+// A table that settled and was seated has to come back that way.
+//
+// Settling needs a commit from every member. Ours reproduces itself, because
+// binding again is deterministic - but theirs arrived as a message nobody will
+// send a second time, so a peer that recorded only its own came back one
+// signature short of a table it had already agreed and waited for something
+// that was never coming. The seating has to survive for the same reason: it is
+// drawn once, from a block chosen so nobody could predict it.
+func TestARestartComesBackSettledAndSeated(t *testing.T) {
+	h := newHub(t)
+	dir := t.TempDir()
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+
+	other := h.lend(t, "dd")
+
+	before := h.restart(t, dir, "tok")
+	acceptInvite(t, before, inv)
+	deliverJoin(t, before, terms, other)
+
+	// Nobody else is here to agree, so it is the deadline that binds us.
+	before.tables.tick(int64(terms.Until) + 1)
+
+	first := before.tables.snapshots()[0]
+	deliverCommit(t, before, terms, other, rosterHashOf(t, first.MatchID))
+
+	beacon := make([]byte, 32)
+	for i := range beacon {
+		beacon[i] = byte(i + 1)
+	}
+	before.tables.seat(terms.SID, beacon)
+
+	first = before.tables.snapshots()[0]
+	if first.State != membership.Settled.String() {
+		t.Fatalf("state is %s, want it settled before the restart", first.State)
+	}
+	if !before.tables.m[terms.SID].form.Seated() {
+		t.Fatal("not seated before the restart")
+	}
+
+	// Same directory, so the same player comes back.
+	after := h.restart(t, dir, "tok")
+	acceptInvite(t, after, inv)
+
+	second := after.tables.snapshots()[0]
+	if second.State != membership.Settled.String() {
+		t.Fatalf("a settled table came back as %s", second.State)
+	}
+	if second.MatchID != first.MatchID {
+		t.Fatalf("came back at membership %s, had settled on %s", second.MatchID, first.MatchID)
+	}
+	resumed := after.tables.m[terms.SID].form
+	if !resumed.Seated() {
+		t.Fatal("came back settled but unseated, so it would draw its seats again")
+	}
+	if got := hex.EncodeToString(resumed.Beacon()); got != hex.EncodeToString(beacon) {
+		t.Fatalf("came back seated from block %s, was seated from %s", got, hex.EncodeToString(beacon))
 	}
 }
 

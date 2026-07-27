@@ -131,6 +131,24 @@ func (f *Formation) Joins() []*Join {
 	return out
 }
 
+// Commits reports every commit held, in canonical signer order.
+//
+// A peer that restarts has to come back holding these. Settling needs a commit
+// from every member, and a commit that only ever lived in memory leaves a table
+// that had already agreed unable to say so - it waits for a message that was
+// sent once and will not be sent again.
+func (f *Formation) Commits() []*Commit {
+	keys := make([][]byte, 0, len(f.commits))
+	for _, c := range f.commits {
+		keys = append(keys, c.Signer)
+	}
+	out := make([]*Commit, 0, len(f.commits))
+	for _, k := range sortKeys(keys) {
+		out = append(out, f.commits[keyID(k)])
+	}
+	return out
+}
+
 // CloseWindow shuts admission, which the caller does when it sees the chain
 // past the deadline the terms name.
 //
@@ -368,6 +386,19 @@ func (f *Formation) BeaconHeight() uint32 { return BeaconHeight(f.terms) }
 
 // Seated reports whether the seating has been drawn.
 func (f *Formation) Seated() bool { return f.beacon != nil && f.canonical != nil }
+
+// Beacon is the block hash the seating was drawn from, or nil before the draw.
+//
+// It is worth keeping rather than re-reading: the height is derivable from the
+// terms, so a restart could fetch the block again, but only while that block is
+// still the one at that height. Storing what was actually drawn from means a
+// reorganisation cannot quietly reseat a table that has already been dealt.
+func (f *Formation) Beacon() []byte {
+	if f.beacon == nil {
+		return nil
+	}
+	return append([]byte(nil), f.beacon...)
+}
 
 // Seats reports which key holds which seat.
 //
