@@ -37,6 +37,14 @@ built by `OpenEscrow`) has two branches:
 Until 2026-07-27 both branches paid exclusively to `X`, which is the defect
 described in the next section; the settlement branch now takes the whole table.
 
+Those two lines are a sketch of the shape, not the script: every check is a
+`*VERIFY` form, so the real construction carries the `OP_TRUE` terminators and
+the `OP_ENDIF` that make it leave a true stack. Anything re-deriving the script
+must read `pkg/escrow`, which is the only definition — a script assembled from
+this description alone would not be spendable, and the whole reason the
+construction is shared is that a one-byte disagreement sends funds somewhere
+nobody can reach.
+
 The client sends the server only the compressed pubkey
 (`OpenEscrowRequest.comp_pubkey`). The private scalar never leaves the client;
 adaptor pre-signatures are computed locally in `computePreSig`
@@ -405,9 +413,12 @@ recording because the first was the obvious rule and it does not work.
 The commitment covers the terms, not just the keys — an invite is ordinary chat
 text, so whoever forwards it can hand one player one buy-in and another a
 different one, and winner-take-all only divides a pot fairly across equal
-stakes. `csvBlocks` belongs in it too, and is not in the invite grammar today:
-each member builds their own refund branch, so a member whose branch matures in
-one block can pull their stake mid-hand.
+stakes. `csvBlocks` belongs in it too, and **is committed as of 2026-07-27**:
+each member builds their own refund branch, so a member whose branch matured in
+one block could otherwise pull their stake mid-hand. `Terms.Hash`
+(`pkg/membership/messages.go`) covers it under the terms domain tag, and the
+invite grammar carries it as `csv=`, so a peer reading a different timelock
+computes a different roster hash and never settles with the others at all.
 
 **Built 2026-07-27** in `pkg/membership` and `cmd/pokerplugin`, which now holds
 tables, admits frames only for sessions it was told to join, and builds a
@@ -435,11 +446,15 @@ telling each peer the others concur with whatever it happens to hold, and so
 drive peers with different join sets to bind different memberships.
 
 Two dependencies are named rather than assumed. **A join must be bond-backed**,
-or it is free and a stranger can abort any table; and `PostBond`
-(`pkg/server/referee.go`) has no proof of possession today — it takes the owner
-key from the script and files the bond under the caller's token, so only a
-first-come outpoint check stops one player claiming another's bond, and
-peer-to-peer there is no registry to be first at. **Seats are drawn from a block, as of 2026-07-27.** They used to follow
+or it is free and a stranger can abort any table; and a bond must be **proved
+held, not merely cited**. Taking the owner key from the script and filing the
+bond under the caller's token, as `PostBond` (`pkg/server/referee.go`) once did,
+leaves only a first-come outpoint check between one player and another player's
+bond — and peer-to-peer there is no registry to be first at. `pkg/escrow/pop.go`
+closes it: the holder signs a digest binding the outpoint to the key that will
+sit at the table, and `VerifyBondPoP` takes the owner key from the script rather
+than from the claimant, so a proof cannot be lifted and reused by whoever sees
+it. `membership.CheckBond` requires one. **Seats are drawn from a block, as of 2026-07-27.** They used to follow
 canonical key order, which meant seat 0 — and with it the first hand's button,
 and under the rotating dealer the first equivocation-capable position — went to
 whoever ground the lowest key. `CanonicalMembers` already documented that its
@@ -460,6 +475,55 @@ to, and a table has a membership before it has seats.
 
 Grinding it would mean grinding a block, which is a different threat model
 buying a poker button.
+
+#### Funding a table with no referee
+
+**Built 2026-07-27** in `pkg/membership` and `cmd/pokerplugin`.
+
+Roster-first survives the referee's removal unchanged, because the reason for it
+was never the referee: a deposit script names every member, so the address a seat
+pays depends on the whole membership and a late arrival would move the address of
+everyone who had already paid. Funding therefore cannot begin until the table has
+settled and been seated, and no address exists to hand out before then.
+
+What does change is that the verification step disappears. Under a referee a
+client was handed `deposit_addr` and had to rebuild the script from the
+`member_pubkeys` it was sent, checking the two agreed, because a referee that
+substituted a key of its own would otherwise be paid (`VerifyEscrowRoster`).
+Here **every peer derives all of the deposits itself** from the membership it
+already agreed — `Formation.Deposits` over `membership.Close` — so nobody is
+handed an address at all. The check is not passed, it is removed, along with the
+party that could have been wrong. What replaces it is the requirement that two
+implementations derive byte-identical scripts, which is the same burden
+`pkg/escrow` already carries.
+
+Three things the refereed design left unstated, and this has to decide:
+
+- **Announcing.** A `funded` frame carries a seat and an outpoint, signed by the
+  session key that holds that seat. The chain is what makes it true — anyone can
+  look the outpoint up and check it pays that seat's script — so the signature is
+  not what is believed. It settles the one question the chain cannot: a member who
+  pays the same script twice leaves two outputs that satisfy it equally, and only
+  they can say which is the stake.
+- **How confirmed is confirmed.** A stake is judged with a confirmed-only lookup
+  and `escrow.BondConfirmations`, reusing the bond's number rather than inventing
+  a second one. An unconfirmed output can still be replaced, and this is the
+  question of whether to play a hand against somebody's money. A peer's *own*
+  payment is found in the mempool instead, because a transaction broadcast
+  seconds ago is in no block; the two lookups are named apart deliberately
+  (`Outpoint` and `UnconfirmedOutpoint`) after using the wrong one cost a bond
+  that could then not be cited.
+- **When funding stops being possible.** `FundingDeadline` is
+  `BeaconHeight + FundingBlocks`, derived from the terms like every other
+  deadline so no peer holds a different one. A table not fully funded by then is
+  abandoned — which keeps the membership rather than clearing it, because a
+  member who did pay needs their own deposit script to take the refund branch,
+  and that script is derived from the membership.
+
+That last point is where the missing abort transaction is felt. Until one exists
+peer to peer, an abandoned table costs everyone who funded it their own CSV wait
+— see the abort section above, which records why the refereed version does not
+translate.
 
 #### Ordering without consensus
 
