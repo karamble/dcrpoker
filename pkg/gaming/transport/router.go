@@ -150,6 +150,10 @@ func (r *Router) Send(ctx context.Context, gcID, sid, matchID string, kind schem
 	return p.Send(ctx, gcID, sid, matchID, kind, body, class)
 }
 
+// SetLog makes the router report what it drops. A router that discards a frame
+// in silence is indistinguishable from one that never received it.
+func (r *Router) SetLog(log slog.Logger) { r.cfg.Log = log }
+
 // Pending reports how many partial messages are held, for metrics and tests.
 func (r *Router) Pending() int { return r.asm.Pending() }
 

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/decred/slog"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pokerui/golib"
@@ -45,6 +46,7 @@ func main() {
 		// host issued, so the exposure is to the host and to whatever
 		// else the sandbox is running.
 		listen  = flag.String("listen", ":8790", "address the host drives this game on")
+		debug   = flag.Bool("debug", false, "log the transport: stream connections, and frames dropped and why")
 		dataDir = flag.String("datadir", "/data/poker", "where this game keeps its identity")
 		network = flag.String("network", "mainnet", "the chain this plays on")
 	)
@@ -76,6 +78,9 @@ func main() {
 	p, err := newPlugin(ctx, *bridge, *token, id, newStore(*dataDir), params)
 	if err != nil {
 		log.Fatalf("pokerplugin: %v", err)
+	}
+	if *debug {
+		p.enableTransportLog()
 	}
 
 	// Open the host's frame stream. This is the only way anything reaches
@@ -153,6 +158,21 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 		return nil, err
 	}
 	return p, nil
+}
+
+// enableTransportLog makes the transport say what it is doing.
+//
+// Without it a frame that is dropped is dropped in silence - an unauthorized
+// sender, a payload that will not decode, a stream that never connected all
+// look identical from outside, which is to say they look like nothing
+// happening at all. That is fine for a game running well and useless the
+// moment one is not.
+func (p *plugin) enableTransportLog() {
+	backend := slog.NewBackend(os.Stdout)
+	logger := backend.Logger("GAME")
+	logger.SetLevel(slog.LevelDebug)
+	p.bridge.Log = logger
+	p.router.SetLog(logger)
 }
 
 // deliver routes one decoded message to the table it belongs to, and sends
