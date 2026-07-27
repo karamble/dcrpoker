@@ -22,31 +22,37 @@ import (
 // other's, so a host that understood the payloads would be a party to the game
 // nobody agreed to trust.
 type Bridge struct {
-	// BaseURL is the host's API root, e.g. https://127.0.0.1:8080/api.
+	// BaseURL is the host's tunnel root, e.g. https://127.0.0.1:8080/gaming.
 	BaseURL string
 
-	// Game is the routing key this game's frames carry.
-	Game string
+	// Token is the bearer token the host issued this game.
+	//
+	// It is an identity, not just a password. The host resolves it to decide
+	// which game is calling, and everything it enforces - which game a frame
+	// may be sent as, and later which account may be spent from and under
+	// what caps - is enforced against that. So this game never states which
+	// game it is; it presents the token and the host decides, which is why
+	// it cannot send another game's traffic even by asking to.
+	Token string
 
-	// HTTP is the client used for requests. It carries whatever credential
-	// the host requires.
+	// HTTP is the client used for requests.
 	HTTP *http.Client
 }
 
 // NewBridge returns a Bridge with a sane default client.
-func NewBridge(baseURL, game string, client *http.Client) (*Bridge, error) {
+func NewBridge(baseURL, token string, client *http.Client) (*Bridge, error) {
 	if strings.TrimSpace(baseURL) == "" {
 		return nil, fmt.Errorf("bridge needs a base url")
 	}
-	if strings.TrimSpace(game) == "" {
-		return nil, fmt.Errorf("bridge needs a game")
+	if strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("bridge needs the token the host issued this game")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return &Bridge{
 		BaseURL: strings.TrimRight(baseURL, "/"),
-		Game:    game,
+		Token:   strings.TrimSpace(token),
 		HTTP:    client,
 	}, nil
 }
@@ -54,7 +60,6 @@ func NewBridge(baseURL, game string, client *http.Client) (*Bridge, error) {
 // SendGC delivers one frame to a table's group chat, satisfying GCSender.
 func (b *Bridge) SendGC(ctx context.Context, gcID, text string) error {
 	body, err := json.Marshal(map[string]string{
-		"game":  b.Game,
 		"gcid":  gcID,
 		"frame": text,
 	})
@@ -62,11 +67,12 @@ func (b *Bridge) SendGC(ctx context.Context, gcID, text string) error {
 		return fmt.Errorf("encode send request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL+"/br/gaming/send", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL+"/send", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build send request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+b.Token)
 
 	resp, err := b.HTTP.Do(req)
 	if err != nil {
@@ -78,10 +84,16 @@ func (b *Bridge) SendGC(ctx context.Context, gcID, text string) error {
 	case resp.StatusCode == http.StatusNoContent:
 		return nil
 	case resp.StatusCode == http.StatusForbidden:
-		// The host refused: this game is not installed, or the frame is
-		// not one of ours. Both are configuration, not transport, so say
-		// so plainly rather than inviting a retry.
+		// The host refused the frame itself: it is not one of ours.
+		// Configuration, not transport, so say so rather than inviting a
+		// retry.
 		return fmt.Errorf("host refused the frame: %s", readError(resp))
+	case resp.StatusCode == http.StatusNotFound:
+		// The host does not recognise the token. A disabled gaming
+		// section answers the same way as an absent one, so this covers
+		// both: the game is not installed, its token was revoked, or
+		// gaming is switched off.
+		return fmt.Errorf("host does not recognise this game's token; check it is still installed")
 	default:
 		return fmt.Errorf("send frame: host returned %s: %s", resp.Status, readError(resp))
 	}

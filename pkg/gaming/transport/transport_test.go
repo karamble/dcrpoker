@@ -253,22 +253,29 @@ func TestNewRouterRefusesIncompleteConfig(t *testing.T) {
 func TestBridgeSendsThroughTheHost(t *testing.T) {
 	var gotBody map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/br/gaming/send" || r.Method != http.MethodPost {
+		if r.URL.Path != "/gaming/send" || r.Method != http.MethodPost {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer tok-123" {
+			t.Errorf("authorization header is %q", got)
 		}
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
-	b, err := NewBridge(srv.URL+"/api", schema.Game, srv.Client())
+	b, err := NewBridge(srv.URL+"/gaming", "tok-123", srv.Client())
 	if err != nil {
 		t.Fatalf("new bridge: %v", err)
 	}
 	if err := b.SendGC(context.Background(), testGCID, "a-frame"); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	if gotBody["game"] != schema.Game || gotBody["gcid"] != testGCID || gotBody["frame"] != "a-frame" {
+	// The game is not stated: the host takes it from the token.
+	if _, stated := gotBody["game"]; stated {
+		t.Error("the request should not name the game; the token identifies it")
+	}
+	if gotBody["gcid"] != testGCID || gotBody["frame"] != "a-frame" {
 		t.Fatalf("host received %+v", gotBody)
 	}
 }
@@ -280,7 +287,7 @@ func TestBridgeReportsHostRefusal(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b, _ := NewBridge(srv.URL+"/api", schema.Game, srv.Client())
+	b, _ := NewBridge(srv.URL+"/gaming", "tok-123", srv.Client())
 	err := b.SendGC(context.Background(), testGCID, "a-frame")
 	if err == nil {
 		t.Fatal("expected a refusal")
