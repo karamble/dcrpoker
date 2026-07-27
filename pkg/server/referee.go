@@ -2691,7 +2691,7 @@ func ensureBoundFunding(es *refereeEscrowSession) (*chainwatcher.EscrowUTXO, err
 			msg = fmt.Sprintf("escrow not ready (%s)", state)
 		}
 	}
-	return nil, fmt.Errorf(msg)
+	return nil, errors.New(msg)
 }
 
 func shortIDFromString(s string) (zkidentity.ShortID, error) {
