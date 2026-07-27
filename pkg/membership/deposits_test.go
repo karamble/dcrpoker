@@ -1,6 +1,10 @@
 package membership
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+)
 
 const testOutpoint = "c3f9927d53dd1fc243095447ad1868a8dceecd90ec870f83987c2eb40f2fae13:1"
 
@@ -60,6 +64,28 @@ func TestAFundingAnnouncementCannotBeEdited(t *testing.T) {
 	other.SID = "beef02"
 	if err := signed.Verify(other); err == nil {
 		t.Fatal("an announcement for one table verified at another")
+	}
+}
+
+// Terms carrying a refund timelock nothing could ever satisfy have to be
+// refused when the invitation is read - not discovered after the stake is paid
+// into a script with no way out.
+func TestTermsRefuseATimelockNothingCouldSpend(t *testing.T) {
+	terms := testTerms(2)
+	terms.CSVBlocks = escrow.MaxCSVBlocks + 1
+	if err := terms.Validate(); err == nil {
+		t.Fatal("accepted a table whose refunds could never be spent")
+	}
+
+	// A join cannot be signed against them either, since signing hashes the
+	// terms and hashing validates them.
+	if _, err := terms.Hash(); err == nil {
+		t.Fatal("hashed terms that describe an unspendable table")
+	}
+
+	terms.CSVBlocks = escrow.MaxCSVBlocks
+	if err := terms.Validate(); err != nil {
+		t.Fatalf("refused the largest lock that can actually be spent: %v", err)
 	}
 }
 

@@ -32,6 +32,17 @@ const (
 	// of [r,s] plus a trailing hash type byte.
 	SigLen = 65
 
+	// MaxCSVBlocks is the largest relative timelock that can actually be
+	// spent.
+	//
+	// A timelocked branch is satisfied by putting the lock in the spending
+	// input's sequence, and consensus compares only the low 16 bits of it
+	// (wire.SequenceLockTimeMask). Anything larger builds a script whose
+	// branch no sequence can ever satisfy - which is not a script that
+	// matures late, it is a script that never matures. Coin paid into one
+	// is gone, so this is checked wherever a lock is turned into a script.
+	MaxCSVBlocks = 0xffff
+
 	// scriptVersion is the only script version these escrows use.
 	scriptVersion = 0
 )
@@ -74,6 +85,10 @@ func RedeemScript(owner []byte, members [][]byte, csvBlocks uint32) ([]byte, err
 	}
 	if csvBlocks == 0 {
 		return nil, fmt.Errorf("csv blocks must be non-zero")
+	}
+	if csvBlocks > MaxCSVBlocks {
+		return nil, fmt.Errorf("csv blocks %d is beyond %d, so the refund branch could never be spent",
+			csvBlocks, MaxCSVBlocks)
 	}
 	sorted, err := CanonicalMembers(members)
 	if err != nil {

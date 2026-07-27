@@ -78,6 +78,10 @@ func BondScript(owner []byte, lockBlocks uint32) ([]byte, error) {
 		return nil, fmt.Errorf("bond lock of %d blocks is under the %d block minimum",
 			lockBlocks, MinBondBlocks)
 	}
+	if lockBlocks > MaxCSVBlocks {
+		return nil, fmt.Errorf("bond lock of %d blocks is beyond %d, so it could never be reclaimed",
+			lockBlocks, MaxCSVBlocks)
+	}
 
 	b := txscript.NewScriptBuilder().
 		AddInt64(int64(lockBlocks)).

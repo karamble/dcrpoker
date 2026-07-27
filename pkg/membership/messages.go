@@ -77,6 +77,15 @@ func (t Terms) Validate() error {
 	if t.CSVBlocks == 0 {
 		return fmt.Errorf("terms state no refund timelock")
 	}
+	if t.CSVBlocks > escrow.MaxCSVBlocks {
+		// A refund spends by putting this number in the input's sequence,
+		// and consensus reads only the low 16 bits of it. A larger lock
+		// builds a script whose refund branch can never be satisfied by
+		// anybody - so the money would go in and never come out. Refuse
+		// the invitation rather than fund a table nobody can leave.
+		return fmt.Errorf("a refund timelock of %d blocks is beyond %d, and could never be spent",
+			t.CSVBlocks, escrow.MaxCSVBlocks)
+	}
 	if t.Until == 0 {
 		// Without a deadline there is no moment at which "no more joins
 		// are coming" becomes a fact, and a table can only ever be
