@@ -26,6 +26,22 @@ const MinBondAtoms uint64 = 10_000_000 // 0.1 DCR
 // it was accepted is not a cost.
 const BondConfirmations uint32 = 2
 
+// StakeConfirmations is what a seat's stake must have before the rest of the
+// table will play against it.
+//
+// Fewer than a bond wants, deliberately. A bond is posted once and lasts a
+// week, so waiting two blocks for one costs nothing anybody notices; a stake is
+// paid at the start of every table, and each block of waiting is five minutes
+// with everybody sitting watching. One confirmation still means the payment is
+// in a block rather than merely in a mempool, which is the difference that
+// matters - it can no longer be replaced by fee, only undone by a
+// reorganisation.
+//
+// This is each peer's own policy rather than something the table agrees. A peer
+// that wanted more would simply admit a stake later than its neighbours, which
+// costs it time and costs the protocol nothing.
+const StakeConfirmations uint32 = 1
+
 // BondScript builds a fidelity bond: a deposit its owner can reclaim only after
 // a relative timelock, and that nobody else can ever spend.
 //

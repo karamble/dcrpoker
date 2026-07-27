@@ -82,9 +82,9 @@ func checkStake(ctx context.Context, chain *transport.Bridge, outpoint, wantPkSc
 		return fmt.Errorf("%s does not pay this seat's deposit script", outpoint)
 	case out.ValueAtoms < int64(buyIn):
 		return fmt.Errorf("%s holds %d atoms, and the buy-in is %d", outpoint, out.ValueAtoms, buyIn)
-	case out.Confirmations < int64(escrow.BondConfirmations):
+	case out.Confirmations < int64(escrow.StakeConfirmations):
 		return fmt.Errorf("%s has %d confirmations, and a stake needs %d",
-			outpoint, out.Confirmations, escrow.BondConfirmations)
+			outpoint, out.Confirmations, escrow.StakeConfirmations)
 	}
 	return nil
 }

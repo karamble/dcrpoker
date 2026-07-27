@@ -29,10 +29,19 @@ import (
 
 // BeaconDepth is how far past the admission deadline the drawing block sits.
 //
-// Past, so the hash did not exist when keys were being chosen. A little past,
-// so a one-block reorganisation does not reseat a table that has already been
-// dealt.
-const BeaconDepth uint32 = 2
+// Past is what matters, and one block is past: admission has closed, so the
+// hash did not exist while anybody was choosing a key, and the draw cannot be
+// aimed at. That property is the whole point and it holds at a depth of one.
+//
+// It was two, to also survive a one-block reorganisation - two peers reading
+// that height either side of a reorganisation draw from different blocks and
+// seat the same match differently, which is a split nothing here detects. At
+// depth one that is possible; at depth two it needs a two-block reorganisation
+// instead. What buys the reduction is time: every block of depth is another
+// five minutes before a table that has already agreed can be dealt, paid on
+// every table by everyone, against a risk that materialises rarely. If seating
+// splits are ever seen in practice, this is the first number to put back.
+const BeaconDepth uint32 = 1
 
 // BeaconHeight is the block a table draws its seats from. Every member derives
 // it from the terms alone, so there is nothing to agree.
