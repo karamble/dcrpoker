@@ -150,7 +150,11 @@ func BuildCSVRefundTx(privHex, utxoTxid string, utxoVout uint32, utxoValue uint6
 	if err != nil {
 		return "", fmt.Errorf("build pkScript: %w", err)
 	}
-	vm, err := txscript.NewEngine(p2sh, tx, 0, 0, 0, nil)
+	// With the sequence rule enabled. Without it OP_CHECKSEQUENCEVERIFY is a
+	// no-op and this check passes a transaction whose sequence does not
+	// satisfy the timelock at all - verifying the signature and nothing that
+	// makes a refund a refund.
+	vm, err := txscript.NewEngine(p2sh, tx, 0, txscript.ScriptVerifyCheckSequenceVerify, 0, nil)
 	if err != nil {
 		return "", fmt.Errorf("engine init: %w", err)
 	}

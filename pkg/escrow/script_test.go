@@ -53,7 +53,9 @@ func privFor(t *testing.T, privs []*secp256k1.PrivateKey, pub []byte) *secp256k1
 func spendTx(t *testing.T, sequence uint32) *wire.MsgTx {
 	t.Helper()
 	tx := wire.NewMsgTx()
-	tx.Version = 3 // Schnorr via OP_CHECKSIGALTVERIFY needs version >= 3.
+	// OP_CHECKSEQUENCEVERIFY refuses anything under version 2
+	// (wire.TxVersionSeqLock); OP_CHECKSIGALTVERIFY has no version gate.
+	tx.Version = 3
 
 	var prev chainhash.Hash
 	copy(prev[:], bytes.Repeat([]byte{0x11}, chainhash.HashSize))
