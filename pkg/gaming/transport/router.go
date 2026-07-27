@@ -146,24 +146,8 @@ func (r *Router) HandleGCMessage(gcID, sender, text string, now time.Time) {
 // messages for players who are offline and an offline player is exactly who a
 // dispute concerns.
 func (r *Router) Send(ctx context.Context, gcID, sid, matchID string, kind schema.Kind, body any, class wire.Class) error {
-	payload, err := schema.Encode(kind, matchID, body)
-	if err != nil {
-		return err
-	}
-	parts, err := wire.Encode(r.cfg.Game, r.cfg.GameVer, sid, payload, class.Deadline(time.Now()), 0)
-	if err != nil {
-		return fmt.Errorf("frame %s: %w", kind, err)
-	}
-	for i, text := range parts {
-		if err := r.cfg.Sender.SendGC(ctx, gcID, text); err != nil {
-			// Partial delivery is not recoverable here: the receiver
-			// will never complete the message and will evict it. Say
-			// which part failed so the caller can retry the whole
-			// message rather than guess.
-			return fmt.Errorf("send %s part %d of %d: %w", kind, i+1, len(parts), err)
-		}
-	}
-	return nil
+	p := &Publisher{Game: r.cfg.Game, GameVer: r.cfg.GameVer, Sender: r.cfg.Sender}
+	return p.Send(ctx, gcID, sid, matchID, kind, body, class)
 }
 
 // Pending reports how many partial messages are held, for metrics and tests.

@@ -19,16 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PokerReferee_OpenEscrow_FullMethodName        = "/poker.PokerReferee/OpenEscrow"
-	PokerReferee_BindEscrow_FullMethodName        = "/poker.PokerReferee/BindEscrow"
-	PokerReferee_PublishSessionKey_FullMethodName = "/poker.PokerReferee/PublishSessionKey"
-	PokerReferee_SettlementStream_FullMethodName  = "/poker.PokerReferee/SettlementStream"
-	PokerReferee_GetFinalizeBundle_FullMethodName = "/poker.PokerReferee/GetFinalizeBundle"
-	PokerReferee_GetEscrowStatus_FullMethodName   = "/poker.PokerReferee/GetEscrowStatus"
-	PokerReferee_SetPayoutAddress_FullMethodName  = "/poker.PokerReferee/SetPayoutAddress"
-	PokerReferee_AbortMatch_FullMethodName        = "/poker.PokerReferee/AbortMatch"
-	PokerReferee_PostBond_FullMethodName          = "/poker.PokerReferee/PostBond"
-	PokerReferee_GetBond_FullMethodName           = "/poker.PokerReferee/GetBond"
+	PokerReferee_OpenEscrow_FullMethodName         = "/poker.PokerReferee/OpenEscrow"
+	PokerReferee_BindEscrow_FullMethodName         = "/poker.PokerReferee/BindEscrow"
+	PokerReferee_PublishSessionKey_FullMethodName  = "/poker.PokerReferee/PublishSessionKey"
+	PokerReferee_SettlementStream_FullMethodName   = "/poker.PokerReferee/SettlementStream"
+	PokerReferee_GetFinalizeBundle_FullMethodName  = "/poker.PokerReferee/GetFinalizeBundle"
+	PokerReferee_GetEscrowStatus_FullMethodName    = "/poker.PokerReferee/GetEscrowStatus"
+	PokerReferee_SetPayoutAddress_FullMethodName   = "/poker.PokerReferee/SetPayoutAddress"
+	PokerReferee_AbortMatch_FullMethodName         = "/poker.PokerReferee/AbortMatch"
+	PokerReferee_BindTableGroupChat_FullMethodName = "/poker.PokerReferee/BindTableGroupChat"
+	PokerReferee_PostBond_FullMethodName           = "/poker.PokerReferee/PostBond"
+	PokerReferee_GetBond_FullMethodName            = "/poker.PokerReferee/GetBond"
 )
 
 // PokerRefereeClient is the client API for PokerReferee service.
@@ -53,6 +54,8 @@ type PokerRefereeClient interface {
 	SetPayoutAddress(ctx context.Context, in *SetPayoutAddressRequest, opts ...grpc.CallOption) (*SetPayoutAddressResponse, error)
 	// Unwinds a funded table that never started, refunding every seat at once.
 	AbortMatch(ctx context.Context, in *AbortMatchRequest, opts ...grpc.CallOption) (*AbortMatchResponse, error)
+	// Binds the group chat a table's players use to relay their signed log.
+	BindTableGroupChat(ctx context.Context, in *BindTableGroupChatRequest, opts ...grpc.CallOption) (*BindTableGroupChatResponse, error)
 	// Registers a fidelity bond, which a player must hold before taking a seat.
 	PostBond(ctx context.Context, in *PostBondRequest, opts ...grpc.CallOption) (*PostBondResponse, error)
 	// Reports the bond the caller currently holds, if any.
@@ -150,6 +153,16 @@ func (c *pokerRefereeClient) AbortMatch(ctx context.Context, in *AbortMatchReque
 	return out, nil
 }
 
+func (c *pokerRefereeClient) BindTableGroupChat(ctx context.Context, in *BindTableGroupChatRequest, opts ...grpc.CallOption) (*BindTableGroupChatResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BindTableGroupChatResponse)
+	err := c.cc.Invoke(ctx, PokerReferee_BindTableGroupChat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *pokerRefereeClient) PostBond(ctx context.Context, in *PostBondRequest, opts ...grpc.CallOption) (*PostBondResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PostBondResponse)
@@ -192,6 +205,8 @@ type PokerRefereeServer interface {
 	SetPayoutAddress(context.Context, *SetPayoutAddressRequest) (*SetPayoutAddressResponse, error)
 	// Unwinds a funded table that never started, refunding every seat at once.
 	AbortMatch(context.Context, *AbortMatchRequest) (*AbortMatchResponse, error)
+	// Binds the group chat a table's players use to relay their signed log.
+	BindTableGroupChat(context.Context, *BindTableGroupChatRequest) (*BindTableGroupChatResponse, error)
 	// Registers a fidelity bond, which a player must hold before taking a seat.
 	PostBond(context.Context, *PostBondRequest) (*PostBondResponse, error)
 	// Reports the bond the caller currently holds, if any.
@@ -229,6 +244,9 @@ func (UnimplementedPokerRefereeServer) SetPayoutAddress(context.Context, *SetPay
 }
 func (UnimplementedPokerRefereeServer) AbortMatch(context.Context, *AbortMatchRequest) (*AbortMatchResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AbortMatch not implemented")
+}
+func (UnimplementedPokerRefereeServer) BindTableGroupChat(context.Context, *BindTableGroupChatRequest) (*BindTableGroupChatResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BindTableGroupChat not implemented")
 }
 func (UnimplementedPokerRefereeServer) PostBond(context.Context, *PostBondRequest) (*PostBondResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PostBond not implemented")
@@ -390,6 +408,24 @@ func _PokerReferee_AbortMatch_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PokerReferee_BindTableGroupChat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BindTableGroupChatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PokerRefereeServer).BindTableGroupChat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PokerReferee_BindTableGroupChat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PokerRefereeServer).BindTableGroupChat(ctx, req.(*BindTableGroupChatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _PokerReferee_PostBond_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PostBondRequest)
 	if err := dec(in); err != nil {
@@ -460,6 +496,10 @@ var PokerReferee_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AbortMatch",
 			Handler:    _PokerReferee_AbortMatch_Handler,
+		},
+		{
+			MethodName: "BindTableGroupChat",
+			Handler:    _PokerReferee_BindTableGroupChat_Handler,
 		},
 		{
 			MethodName: "PostBond",

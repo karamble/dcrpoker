@@ -33,6 +33,10 @@ service PokerReferee {
   // Unwinds a funded table that never started, refunding every seat at once.
   rpc AbortMatch(AbortMatchRequest) returns (AbortMatchResponse) {}
 
+  // Binds the group chat a table's players use to relay their signed log.
+  rpc BindTableGroupChat(BindTableGroupChatRequest)
+      returns (BindTableGroupChatResponse) {}
+
   // Registers a fidelity bond, which a player must hold before taking a seat.
   rpc PostBond(PostBondRequest) returns (PostBondResponse) {}
 
@@ -256,6 +260,23 @@ message FinalizeInput {
   // the owner's slot is the one completed from the presig above.
   repeated CoSignature cosigs = 6;
   bytes owner_pubkey = 7;
+}
+
+// ---------- Table group chat ----------
+
+message BindTableGroupChatRequest {
+  string table_id = 1;
+  string session_id = 2;
+  // gc_id is the 64-hex Bison Relay group chat id the table's players share.
+  // Empty unbinds, which stops the relay.
+  string gc_id = 3;
+  string token = 4; // auth token from Login (may also come from metadata)
+}
+
+message BindTableGroupChatResponse {
+  string match_id = 1;
+  string gc_id = 2;
+  bool relaying = 3;
 }
 
 // ---------- Fidelity bond ----------

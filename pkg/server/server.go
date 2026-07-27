@@ -52,6 +52,13 @@ type ServerConfig struct {
 
 	metricsAddr string
 
+	// Gaming bridge (optional). Set both to relay the table's signed action
+	// log to its group chat through a host that holds the Bison Relay
+	// credentials; leave either empty and the log stays local, which is how
+	// the server runs with no Bison Relay at all.
+	GamingBridgeURL   string
+	GamingBridgeToken string
+
 	// dcrd connectivity (optional)
 	DcrdHost string
 	DcrdCert string
@@ -184,6 +191,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	pokerServer.referee = newSchnorrRefereeState(cfg)
 	pokerServer.actionLogs = newActionLogs()
 	pokerServer.publish = newActionPublish()
+	if err := pokerServer.initGamingBridge(cfg); err != nil {
+		return nil, err
+	}
 
 	// Initialize chainwatcher/dcrd if configured.
 	if err := pokerServer.initChainWatcher(cfg); err != nil {
