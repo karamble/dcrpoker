@@ -1835,6 +1835,10 @@ type PostBondRequest struct {
 	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`                                        // auth token from Login (may also come from metadata)
 	Outpoint      string                 `protobuf:"bytes,2,opt,name=outpoint,proto3" json:"outpoint,omitempty"`                                  // funding outpoint txid:vout of the bond deposit
 	BondScriptHex string                 `protobuf:"bytes,3,opt,name=bond_script_hex,json=bondScriptHex,proto3" json:"bond_script_hex,omitempty"` // the timelocked script the deposit pays
+	// Proof that the caller controls the key the bond pays out to. A bond is
+	// public - coin on chain under a readable script at a nameable outpoint - so
+	// pointing at one proves nothing about who owns it.
+	Pop           []byte `protobuf:"bytes,4,opt,name=pop,proto3" json:"pop,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1888,6 +1892,13 @@ func (x *PostBondRequest) GetBondScriptHex() string {
 		return x.BondScriptHex
 	}
 	return ""
+}
+
+func (x *PostBondRequest) GetPop() []byte {
+	if x != nil {
+		return x.Pop
+	}
+	return nil
 }
 
 type GetBondRequest struct {
@@ -2426,11 +2437,12 @@ const file_pokerreferee_proto_rawDesc = "" +
 	"\x1aBindTableGroupChatResponse\x12\x19\n" +
 	"\bmatch_id\x18\x01 \x01(\tR\amatchId\x12\x13\n" +
 	"\x05gc_id\x18\x02 \x01(\tR\x04gcId\x12\x1a\n" +
-	"\brelaying\x18\x03 \x01(\bR\brelaying\"k\n" +
+	"\brelaying\x18\x03 \x01(\bR\brelaying\"}\n" +
 	"\x0fPostBondRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x1a\n" +
 	"\boutpoint\x18\x02 \x01(\tR\boutpoint\x12&\n" +
-	"\x0fbond_script_hex\x18\x03 \x01(\tR\rbondScriptHex\"&\n" +
+	"\x0fbond_script_hex\x18\x03 \x01(\tR\rbondScriptHex\x12\x10\n" +
+	"\x03pop\x18\x04 \x01(\fR\x03pop\"&\n" +
 	"\x0eGetBondRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\"\x94\x02\n" +
 	"\x10PostBondResponse\x12\x0e\n" +

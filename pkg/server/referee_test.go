@@ -1393,7 +1393,15 @@ func TestPostBondRefusesAnotherPlayersOutpoint(t *testing.T) {
 	}
 	srv.referee.mu.Unlock()
 
-	bondScript, err := escrow.BondScript(testSessionKey(t), escrow.MinBondBlocks)
+	// The second identity holds the bond's key too - that is the whole
+	// attack, one person with two identities behind one locked deposit - so
+	// it can prove possession. What must stop it is the deposit already
+	// being spoken for.
+	owner, err := secp256k1.GeneratePrivateKey()
+	require.NoError(t, err)
+	bondScript, err := escrow.BondScript(owner.PubKey().SerializeCompressed(), escrow.MinBondBlocks)
+	require.NoError(t, err)
+	pop, err := escrow.SignBondPoP("cccc:0", second[:], owner)
 	require.NoError(t, err)
 
 	srv.chainWatcher = &chainwatcher.ChainWatcher{}
@@ -1401,8 +1409,57 @@ func TestPostBondRefusesAnotherPlayersOutpoint(t *testing.T) {
 		Token:         "tokB",
 		Outpoint:      "cccc:0",
 		BondScriptHex: hex.EncodeToString(bondScript),
+		Pop:           pop,
 	})
 	require.ErrorContains(t, err, "already registered to another player")
+}
+
+// A bond is public, so citing an outpoint is not a claim on it. Only the key it
+// pays out to can register it - otherwise the first caller to name somebody
+// else's deposit is the player it counts for.
+func TestPostBondNeedsProofOfTheOwnersKey(t *testing.T) {
+	srv := newTestServerWithState(t)
+
+	var uid zkidentity.ShortID
+	require.NoError(t, uid.FromString("0000000000000000000000000000000000000000000000000000000000000003"))
+	srv.TestSeedSession("tok", uid, "TsRnk22spGQJTpKFcRBc281rmfNFpywh337", uid.String())
+
+	owner, err := secp256k1.GeneratePrivateKey()
+	require.NoError(t, err)
+	bondScript, err := escrow.BondScript(owner.PubKey().SerializeCompressed(), escrow.MinBondBlocks)
+	require.NoError(t, err)
+	srv.chainWatcher = &chainwatcher.ChainWatcher{}
+
+	post := func(pop []byte) error {
+		_, err := srv.PostBond(context.Background(), &pokerrpc.PostBondRequest{
+			Token:         "tok",
+			Outpoint:      "dddd:0",
+			BondScriptHex: hex.EncodeToString(bondScript),
+			Pop:           pop,
+		})
+		return err
+	}
+
+	require.ErrorContains(t, post(nil), "prove you hold this bond's key")
+
+	stranger, err := secp256k1.GeneratePrivateKey()
+	require.NoError(t, err)
+	wrongKey, err := escrow.SignBondPoP("dddd:0", uid[:], stranger)
+	require.NoError(t, err)
+	require.ErrorContains(t, post(wrongKey), "prove you hold this bond's key")
+
+	// A proof made for somebody else must not carry over: it travels in
+	// public, so one that named only the deposit could be lifted.
+	var other zkidentity.ShortID
+	require.NoError(t, other.FromString("0000000000000000000000000000000000000000000000000000000000000004"))
+	lifted, err := escrow.SignBondPoP("dddd:0", other[:], owner)
+	require.NoError(t, err)
+	require.ErrorContains(t, post(lifted), "prove you hold this bond's key")
+
+	// The genuine case is not exercised here: it gets past this check and
+	// on to the chain, which this test has none of.
+	// TestPostBondRefusesAnotherPlayersOutpoint covers it, since a valid
+	// proof is what lets it reach the outpoint check at all.
 }
 
 // PostBond takes a script from the caller, so it has to be the one thing it

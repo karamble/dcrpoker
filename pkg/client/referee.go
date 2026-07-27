@@ -934,14 +934,33 @@ func BondAddress(compPubkey []byte, lockBlocks uint32, network string) (addr str
 }
 
 // PostBond registers a funded bond with the referee.
-func (c *RefereeClient) PostBond(ctx context.Context, outpoint, bondScriptHex string) (*pokerrpc.PostBondResponse, error) {
+//
+// It proves the caller holds the key the bond pays out to. A bond is public, so
+// citing an outpoint is not a claim on it - anyone can read the script and name
+// the deposit. The proof names this player as well as the deposit, so it cannot
+// be lifted and presented by somebody else.
+func (c *RefereeClient) PostBond(ctx context.Context, outpoint, bondScriptHex string, ownerPriv *secp256k1.PrivateKey) (*pokerrpc.PostBondResponse, error) {
 	if c.token != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, "token", c.token)
+	}
+	raw, err := hex.DecodeString(strings.TrimSpace(bondScriptHex))
+	if err != nil {
+		return nil, fmt.Errorf("bond script: %w", err)
+	}
+	if _, err := escrow.ParseBond(raw); err != nil {
+		return nil, fmt.Errorf("bond script: %w", err)
+	}
+
+	uid := c.owner.ID
+	pop, err := escrow.SignBondPoP(outpoint, uid[:], ownerPriv)
+	if err != nil {
+		return nil, err
 	}
 	return c.rc.PostBond(ctx, &pokerrpc.PostBondRequest{
 		Token:         c.token,
 		Outpoint:      outpoint,
 		BondScriptHex: bondScriptHex,
+		Pop:           pop,
 	})
 }
 

@@ -285,6 +285,10 @@ message PostBondRequest {
   string token = 1;      // auth token from Login (may also come from metadata)
   string outpoint = 2;   // funding outpoint txid:vout of the bond deposit
   string bond_script_hex = 3; // the timelocked script the deposit pays
+  // Proof that the caller controls the key the bond pays out to. A bond is
+  // public - coin on chain under a readable script at a nameable outpoint - so
+  // pointing at one proves nothing about who owns it.
+  bytes pop = 4;
 }
 
 message GetBondRequest {

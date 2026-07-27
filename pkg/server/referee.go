@@ -3195,6 +3195,16 @@ func (s *Server) PostBond(ctx context.Context, req *pokerrpc.PostBondRequest) (*
 			"bond locked for %d blocks, need at least %d", terms.LockBlocks, escrow.MinBondBlocks)
 	}
 
+	// A bond is public - coin on chain, under a script anyone can read, at
+	// an outpoint anyone can name - so pointing at one says nothing about
+	// who controls it. Without this, the first caller to cite an outpoint
+	// is the player it counts for, and claiming somebody else's bond is a
+	// race rather than an impossibility.
+	if err := escrow.VerifyBondPoP(raw, outpoint, uid[:], req.GetPop()); err != nil {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"prove you hold this bond's key: %v", err)
+	}
+
 	// One bond per outpoint across all players. Otherwise a single locked
 	// deposit would back any number of identities, which is the one thing
 	// asking for a bond is meant to prevent. Checked before going to chain,
