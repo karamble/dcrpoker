@@ -29,6 +29,7 @@ var (
 	assertTag = []byte("gaming/table/assert/v1")
 	seatTag   = []byte("gaming/table/seats/v1")
 	commitTag = []byte("gaming/table/commit/v1")
+	fundedTag = []byte("gaming/table/funded/v1")
 )
 
 // Terms are what an invitation states and every join commits to.
@@ -410,6 +411,79 @@ func (c *Commit) Verify(t Terms) error {
 		return err
 	}
 	return verifySig(c.Signer, c.Sig, digest)
+}
+
+// Funding is one member saying which output holds its stake.
+//
+// What makes it true is the chain, not this: the deposit script for a seat is
+// derived from a membership everyone already agreed, so anyone can look the
+// outpoint up and check for themselves that it pays that script, for at least
+// the buy-in, with enough confirmations behind it. A member who announces
+// something else is refused by the chain rather than by anyone's judgement.
+//
+// It is signed anyway, for the one question the chain cannot answer. If a
+// member pays the same deposit script twice there are two outputs that satisfy
+// it equally, and only that member can say which one is the stake. Unsigned,
+// anybody at the table could choose on their behalf.
+type Funding struct {
+	Seat     uint32
+	Outpoint string
+	Signer   []byte
+	Sig      []byte
+}
+
+// SignFunding says where this member's stake is.
+func SignFunding(t Terms, seat uint32, outpoint string, priv *secp256k1.PrivateKey) (*Funding, error) {
+	if priv == nil {
+		return nil, fmt.Errorf("no signing key")
+	}
+	f := &Funding{
+		Seat:     seat,
+		Outpoint: strings.TrimSpace(outpoint),
+		Signer:   priv.PubKey().SerializeCompressed(),
+	}
+	digest, err := f.digest(t)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := schnorr.Sign(priv, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign funding: %w", err)
+	}
+	f.Sig = sig.Serialize()
+	return f, nil
+}
+
+func (f *Funding) digest(t Terms) ([32]byte, error) {
+	th, err := t.Hash()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if len(f.Signer) != escrow.PubKeyLen {
+		return [32]byte{}, fmt.Errorf("funding signer is %d bytes, want %d", len(f.Signer), escrow.PubKeyLen)
+	}
+	if strings.TrimSpace(f.Outpoint) == "" {
+		return [32]byte{}, fmt.Errorf("funding names no outpoint")
+	}
+	var b bytes.Buffer
+	b.Write(fundedTag)
+	b.Write(th[:])
+	_ = binary.Write(&b, binary.BigEndian, f.Seat)
+	writeString(&b, f.Outpoint)
+	return blake256.Sum256(b.Bytes()), nil
+}
+
+// Verify checks the announcement's signature against the key it names.
+//
+// It says nothing about whether the outpoint exists, pays enough, or pays the
+// right script at all. Those are the chain's answers and the caller has to go
+// and get them; this establishes only who said it.
+func (f *Funding) Verify(t Terms) error {
+	digest, err := f.digest(t)
+	if err != nil {
+		return err
+	}
+	return verifySig(f.Signer, f.Sig, digest)
 }
 
 // ConflictingCommits is proof that one key bound itself to two rosters at one

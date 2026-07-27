@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 )
 
@@ -417,6 +418,53 @@ func (f *Formation) Seats() (map[uint32][]byte, bool) {
 		return nil, false
 	}
 	return seats, true
+}
+
+// OurSeat reports which seat this peer holds.
+func (f *Formation) OurSeat() (uint32, bool) {
+	seats, ok := f.Seats()
+	if !ok {
+		return 0, false
+	}
+	self := keyID(f.self)
+	for seat, key := range seats {
+		if keyID(key) == self {
+			return seat, true
+		}
+	}
+	return 0, false
+}
+
+// Deposits reports where every seat's stake has to be paid.
+//
+// It needs the seating and not merely the membership, because a deposit belongs
+// to a seat and until the beacon is drawn there are no seats to attribute one
+// to. Everything else is already agreed: the keys, and the timelock each
+// member's own refund branch carries.
+//
+// Every peer derives all of them, including the ones it will never pay. Under a
+// referee a client was handed an address and had to rebuild the script from the
+// roster it was sent, to check the two matched - because a referee that swapped
+// in a key of its own would otherwise collect the table. Here nobody is handed
+// anything, which removes that check by removing the party that could be wrong.
+func (f *Formation) Deposits(params stdaddr.AddressParams) ([]Deposit, error) {
+	seats, ok := f.Seats()
+	if !ok {
+		return nil, fmt.Errorf("this table has no seating yet")
+	}
+	members := make([]Member, 0, len(seats))
+	for seat, key := range seats {
+		members = append(members, Member{
+			Seat:       seat,
+			CompPubkey: key,
+			CSVBlocks:  f.terms.CSVBlocks,
+		})
+	}
+	_, deposits, err := Close(members, params)
+	if err != nil {
+		return nil, err
+	}
+	return deposits, nil
 }
 
 // RosterHash is what a commit binds to. Available from Formed onwards.
