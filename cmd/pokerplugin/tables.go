@@ -118,6 +118,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 		BuyInAtoms: inv.BuyInAtoms,
 		Seats:      inv.Seats,
 		CSVBlocks:  inv.CSVBlocks,
+		Until:      inv.Until,
 	}
 	if err := terms.Validate(); err != nil {
 		return nil, fmt.Errorf("this invitation states no table: %w", err)
@@ -219,6 +220,26 @@ func (t *tables) leave(sid string) bool {
 	}
 	delete(t.m, sid)
 	return true
+}
+
+// tick tells every table where the chain is, which is how a deadline passes.
+//
+// The height comes from the host: the sandbox has no node of its own, and a
+// deadline read from a local clock would be one each machine read differently.
+func (t *tables) tick(height int64) []outgoing {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	var out []outgoing
+	for _, tbl := range t.m {
+		before, beforeJoins := tbl.form.State(), len(tbl.form.Joins())
+		if !tbl.deadlinePassed(height) {
+			continue
+		}
+		out = append(out, tbl.advance(before, beforeJoins)...)
+		t.persist(tbl)
+	}
+	return out
 }
 
 // deliver routes one decoded message to the table it is for.
@@ -329,12 +350,35 @@ func (tbl *table) adoptRoster(body schema.Roster) error {
 		}
 		joins = append(joins, j)
 	}
+
+	assertion, err := body.Assertion()
+	if err != nil {
+		return err
+	}
+	if assertion != nil {
+		// A signed claim about what its sender holds. Everyone saying
+		// the same thing is what lets the table form before its
+		// deadline, so this is the part that has to be checked rather
+		// than believed - AddAssertion does that and keeps nothing if
+		// any of it fails.
+		return tbl.form.AddAssertion(assertion, joins)
+	}
 	for _, j := range joins {
 		if err := tbl.form.AddJoin(j); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// deadlinePassed shuts admission once the chain is past the deadline the terms
+// name. It reports whether that changed anything.
+func (tbl *table) deadlinePassed(height int64) bool {
+	if tbl.form.WindowClosed() || height <= 0 || uint32(height) <= tbl.terms.Until {
+		return false
+	}
+	tbl.form.CloseWindow()
+	return true
 }
 
 // advance reacts to whatever the last message changed.
@@ -362,15 +406,18 @@ func (tbl *table) advance(beforeState membership.State, beforeJoins int) []outgo
 		if learned || beforeState != membership.Formed {
 			out = append(out, tbl.publishRoster()...)
 		}
-		if !tbl.bound {
-			// Binding as soon as the table is full is a policy, and
-			// a provisional one. It is safe while nothing funds,
-			// and the honest fix is a closed admission window every
-			// peer derives the same way - a block height, not a
-			// clock - so that "no more joins are coming" is a fact
-			// rather than a hope. Until then, binding early risks
-			// binding to a membership a late join would have
-			// aborted, and the table simply fails to settle.
+		// Bind when everyone says they hold this same membership, or
+		// when admission shuts, whichever comes first.
+		//
+		// The deadline is what makes "no more joins are coming" a fact,
+		// and on its own it would be enough - but it would also mean
+		// every table takes as long as its window to form, which for a
+		// card game is a lobby nobody watches. Unanimity is the fast
+		// path: it does not prove no straggler exists, only the
+		// deadline does, but it does mean every member has seen exactly
+		// this set. What is left is a race that resolves to no game,
+		// never to two tables.
+		if !tbl.bound && (tbl.form.Agreed() || tbl.form.WindowClosed()) {
 			c, err := tbl.form.Bind(tbl.priv)
 			if err != nil {
 				log.Printf("pokerplugin: table %s: bind: %v", tbl.terms.SID, err)
@@ -432,10 +479,17 @@ func (tbl *table) publishJoin() []outgoing {
 
 func (tbl *table) publishRoster() []outgoing {
 	seats := map[uint32][]byte{}
+	var assertion *membership.Assertion
 	if s, ok := tbl.form.Seats(); ok {
 		seats = s
+		// Only a peer that has a membership can claim one. Short of a
+		// full table there is nothing to assert, and saying so anyway
+		// would be claiming agreement with a set nobody holds.
+		if a, err := tbl.form.Assertion(tbl.priv); err == nil {
+			assertion = a
+		}
 	}
-	body := schema.RosterFrom(tbl.terms, seats, tbl.form.Joins())
+	body := schema.RosterFrom(tbl.terms, seats, tbl.form.Joins(), assertion)
 	return []outgoing{tbl.frame(schema.KindRoster, body, wire.ClassState)}
 }
 

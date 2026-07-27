@@ -25,6 +25,7 @@ var (
 	termsTag  = []byte("gaming/table/terms/v1")
 	joinTag   = []byte("gaming/table/join/v1")
 	rosterTag = []byte("gaming/table/roster/v1")
+	assertTag = []byte("gaming/table/assert/v1")
 	commitTag = []byte("gaming/table/commit/v1")
 )
 
@@ -46,6 +47,13 @@ type Terms struct {
 	// member whose refund matured in one block could pull their stake
 	// mid-hand; everyone has to be able to check everyone else's.
 	CSVBlocks uint32
+	// Until is the block height after which no more joins are admitted.
+	//
+	// It is a height rather than a time because it has to be a fact every
+	// peer can check and nobody can be shown to have read wrong. Clocks
+	// disagree, and a deadline each machine reads differently is one that
+	// decides membership by whose clock ran fast.
+	Until uint32
 }
 
 // Validate reports whether the terms could describe a table at all.
@@ -66,6 +74,12 @@ func (t Terms) Validate() error {
 	if t.CSVBlocks == 0 {
 		return fmt.Errorf("terms state no refund timelock")
 	}
+	if t.Until == 0 {
+		// Without a deadline there is no moment at which "no more joins
+		// are coming" becomes a fact, and a table can only ever be
+		// formed by guessing.
+		return fmt.Errorf("terms state no admission deadline")
+	}
 	return nil
 }
 
@@ -82,6 +96,7 @@ func (t Terms) Hash() ([32]byte, error) {
 	_ = binary.Write(&b, binary.BigEndian, t.BuyInAtoms)
 	_ = binary.Write(&b, binary.BigEndian, t.Seats)
 	_ = binary.Write(&b, binary.BigEndian, t.CSVBlocks)
+	_ = binary.Write(&b, binary.BigEndian, t.Until)
 	return blake256.Sum256(b.Bytes()), nil
 }
 
@@ -142,6 +157,65 @@ func (j *Join) Verify(t Terms) error {
 		return err
 	}
 	return verifySig(j.Key, j.Sig, digest)
+}
+
+// Assertion is a peer saying which membership it currently holds.
+//
+// It is signed, and that is not decoration. Everyone asserting the same thing
+// is what lets a table form before its deadline, so an unsigned one would let
+// anybody manufacture agreement - telling each peer that everyone concurs with
+// whatever that peer happens to hold, and so driving peers with different join
+// sets to bind different memberships.
+//
+// It is still revisable, which is the whole difference from a commit: a peer
+// that learns another join says so and moves on. Nothing irreversible rests on
+// one, so two conflicting assertions are not evidence of anything.
+type Assertion struct {
+	Roster [32]byte
+	Signer []byte
+	Sig    []byte
+}
+
+// SignAssertion says which membership this key currently holds.
+func SignAssertion(t Terms, roster [32]byte, priv *secp256k1.PrivateKey) (*Assertion, error) {
+	if priv == nil {
+		return nil, fmt.Errorf("no signing key")
+	}
+	a := &Assertion{Roster: roster, Signer: priv.PubKey().SerializeCompressed()}
+	digest, err := a.digest(t)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := schnorr.Sign(priv, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign assertion: %w", err)
+	}
+	a.Sig = sig.Serialize()
+	return a, nil
+}
+
+func (a *Assertion) digest(t Terms) ([32]byte, error) {
+	th, err := t.Hash()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if len(a.Signer) != escrow.PubKeyLen {
+		return [32]byte{}, fmt.Errorf("assertion signer is %d bytes, want %d", len(a.Signer), escrow.PubKeyLen)
+	}
+	var b bytes.Buffer
+	b.Write(assertTag)
+	b.Write(th[:])
+	b.Write(a.Roster[:])
+	return blake256.Sum256(b.Bytes()), nil
+}
+
+// Verify checks the assertion's signature against the key it names.
+func (a *Assertion) Verify(t Terms) error {
+	digest, err := a.digest(t)
+	if err != nil {
+		return err
+	}
+	return verifySig(a.Signer, a.Sig, digest)
 }
 
 // Commit binds its signer to one roster, for one session, irrevocably.

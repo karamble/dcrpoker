@@ -93,6 +93,7 @@ func testInvite(seats uint32) schema.Invite {
 		Seats:      seats,
 		SID:        "0123456789abcdef",
 		CSVBlocks:  64,
+		Until:      900000,
 	}
 }
 
@@ -288,7 +289,7 @@ func TestFramesFromAnotherGroupChatAreIgnored(t *testing.T) {
 	}
 	terms := membership.Terms{
 		Game: schema.Game, GameVer: schema.Version, SID: "0123456789abcdef",
-		BuyInAtoms: 10_000_000, Seats: 2, CSVBlocks: 64,
+		BuyInAtoms: 10_000_000, Seats: 2, CSVBlocks: 64, Until: 900000,
 	}
 	j, err := membership.SignJoin(terms, priv)
 	if err != nil {
@@ -379,7 +380,7 @@ func deliverJoin(t *testing.T, p *plugin, terms membership.Terms, priv *secp256k
 func inviteTerms(inv schema.Invite) membership.Terms {
 	return membership.Terms{
 		Game: inv.Game, GameVer: schema.Version, SID: inv.SID,
-		BuyInAtoms: inv.BuyInAtoms, Seats: inv.Seats, CSVBlocks: inv.CSVBlocks,
+		BuyInAtoms: inv.BuyInAtoms, Seats: inv.Seats, CSVBlocks: inv.CSVBlocks, Until: inv.Until,
 	}
 }
 
@@ -417,6 +418,9 @@ func TestARestartCommitsToTheSameMembership(t *testing.T) {
 	before := restart(t, dir, "tok")
 	acceptInvite(t, before, inv)
 	deliverJoin(t, before, terms, other)
+
+	// Nobody else is here to agree, so it is the deadline that settles it.
+	before.tables.tick(int64(terms.Until) + 1)
 
 	first := before.tables.snapshots()[0]
 	if first.State != membership.Committed.String() && first.State != membership.Settled.String() {
@@ -469,7 +473,7 @@ func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
 		joins = append(joins, j)
 	}
 	blob, err := schema.Encode(schema.KindRoster, terms.SID,
-		schema.RosterFrom(terms, map[uint32][]byte{}, joins))
+		schema.RosterFrom(terms, map[uint32][]byte{}, joins, nil))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -491,5 +495,59 @@ func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
 
 	if rec.Code == http.StatusOK {
 		t.Fatalf("a session that ended was rejoined after a restart: %s", rec.Body.String())
+	}
+}
+
+// A table that fills but has nobody to agree with settles when its deadline
+// passes. That is the path that makes forming deterministic; agreement is only
+// the shortcut when everyone happens to be present.
+func TestADeadlineBindsATableThatNobodyElseConfirmed(t *testing.T) {
+	dir := t.TempDir()
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+
+	p := restart(t, dir, "tok")
+	acceptInvite(t, p, inv)
+
+	other, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	deliverJoin(t, p, terms, other)
+
+	if got := p.tables.snapshots()[0].State; got != membership.Formed.String() {
+		t.Fatalf("state is %s, want formed and waiting", got)
+	}
+
+	// Short of the deadline nothing moves.
+	p.tables.tick(int64(terms.Until) - 1)
+	if got := p.tables.snapshots()[0].State; got != membership.Formed.String() {
+		t.Fatalf("state is %s before the deadline, want formed", got)
+	}
+
+	p.tables.tick(int64(terms.Until) + 1)
+	if got := p.tables.snapshots()[0].State; got != membership.Committed.String() {
+		t.Fatalf("state is %s past the deadline, want committed", got)
+	}
+}
+
+// A table still short of its seats when admission shuts cannot form. Waiting
+// longer would only be hoping, and the deadline is what turns that into an
+// answer.
+func TestADeadlineEndsATableThatNeverFilled(t *testing.T) {
+	dir := t.TempDir()
+	inv := testInvite(3)
+
+	p := restart(t, dir, "tok")
+	acceptInvite(t, p, inv)
+
+	p.tables.tick(int64(inviteTerms(inv).Until) + 1)
+
+	s := p.tables.snapshots()[0]
+	if s.State != membership.Aborted.String() {
+		t.Fatalf("state is %s, want aborted", s.State)
+	}
+	if s.Reason == "" {
+		t.Fatal("aborted without saying why")
 	}
 }

@@ -54,6 +54,11 @@ type Invite struct {
 	// else's: a member whose refund matured in a block could pull their
 	// stake mid-hand. Zero states no terms.
 	CSVBlocks uint32
+	// Until is the block height after which no more joins are admitted. It
+	// is a height rather than a time so every peer reads the same deadline;
+	// clocks disagree, and nobody can be shown to have read one wrong. Zero
+	// states no terms.
+	Until uint32
 }
 
 // String renders the invite as the link that goes in a chat message.
@@ -79,6 +84,9 @@ func (i Invite) String() (string, error) {
 	}
 	if i.CSVBlocks > 0 {
 		q.Set("csv", strconv.FormatUint(uint64(i.CSVBlocks), 10))
+	}
+	if i.Until > 0 {
+		q.Set("until", strconv.FormatUint(uint64(i.Until), 10))
 	}
 
 	out := fmt.Sprintf("%s://%s/%s", InviteScheme, game, kind)
@@ -144,6 +152,13 @@ func ParseInvite(link string) (Invite, error) {
 			return Invite{}, fmt.Errorf("invite refund timelock %q is not a number of blocks", v)
 		}
 		inv.CSVBlocks = uint32(n)
+	}
+	if v := u.Query().Get("until"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil || n == 0 {
+			return Invite{}, fmt.Errorf("invite deadline %q is not a block height", v)
+		}
+		inv.Until = uint32(n)
 	}
 	return inv, nil
 }

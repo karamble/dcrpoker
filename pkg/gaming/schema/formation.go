@@ -24,6 +24,7 @@ func TermsFrom(t membership.Terms) Terms {
 		BuyInAtoms: t.BuyInAtoms,
 		Seats:      t.Seats,
 		CSVBlocks:  t.CSVBlocks,
+		Until:      t.Until,
 	}
 }
 
@@ -36,6 +37,7 @@ func (t Terms) Into() membership.Terms {
 		BuyInAtoms: t.BuyInAtoms,
 		Seats:      t.Seats,
 		CSVBlocks:  t.CSVBlocks,
+		Until:      t.Until,
 	}
 }
 
@@ -101,7 +103,7 @@ func (c Commit) Into() (*membership.Commit, error) {
 // RosterFrom renders the membership a peer holds, with the joins it was
 // computed from, so a peer that missed one can check its way to the same
 // answer instead of believing this one.
-func RosterFrom(terms membership.Terms, seats map[uint32][]byte, joins []*membership.Join) Roster {
+func RosterFrom(terms membership.Terms, seats map[uint32][]byte, joins []*membership.Join, assertion *membership.Assertion) Roster {
 	out := Roster{
 		Seats: make(map[uint32]string, len(seats)),
 		Joins: make([]Join, 0, len(joins)),
@@ -114,7 +116,38 @@ func RosterFrom(terms membership.Terms, seats map[uint32][]byte, joins []*member
 	}
 	t := TermsFrom(terms)
 	out.Terms = &t
+	if assertion != nil {
+		out.Roster = hex.EncodeToString(assertion.Roster[:])
+		out.Signer = hex.EncodeToString(assertion.Signer)
+		out.Sig = hex.EncodeToString(assertion.Sig)
+	}
 	return out
+}
+
+// Assertion reads back the signed claim a roster message carries, if it carries
+// one. A message with no claim is just a carrier for joins.
+func (r Roster) Assertion() (*membership.Assertion, error) {
+	if r.Roster == "" && r.Signer == "" && r.Sig == "" {
+		return nil, nil
+	}
+	roster, err := hex.DecodeString(r.Roster)
+	if err != nil {
+		return nil, fmt.Errorf("assertion roster: %w", err)
+	}
+	if len(roster) != 32 {
+		return nil, fmt.Errorf("assertion roster is %d bytes, want 32", len(roster))
+	}
+	signer, err := hex.DecodeString(r.Signer)
+	if err != nil {
+		return nil, fmt.Errorf("assertion signer: %w", err)
+	}
+	sig, err := hex.DecodeString(r.Sig)
+	if err != nil {
+		return nil, fmt.Errorf("assertion signature: %w", err)
+	}
+	out := &membership.Assertion{Signer: signer, Sig: sig}
+	copy(out.Roster[:], roster)
+	return out, nil
 }
 
 // SeatKeys reads a roster's seats back as bytes, which is the shape the action

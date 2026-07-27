@@ -16,6 +16,7 @@ func testTerms(seats uint32) Terms {
 		BuyInAtoms: 10_000_000,
 		Seats:      seats,
 		CSVBlocks:  64,
+		Until:      900000,
 	}
 }
 
@@ -317,6 +318,7 @@ func TestPeersWhoReadDifferentInvitesNeverForm(t *testing.T) {
 		{"seats", func(t Terms) Terms { t.Seats = 3; return t }},
 		{"timelock", func(t Terms) Terms { t.CSVBlocks = 1; return t }},
 		{"session", func(t Terms) Terms { t.SID = "beef"; return t }},
+		{"deadline", func(t Terms) Terms { t.Until = 999999; return t }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, err := NewFormation(base, privs[0])
@@ -503,6 +505,7 @@ func TestTermsMustDescribeATableThatCouldExist(t *testing.T) {
 			return x
 		}()},
 		{"no timelock", func() Terms { x := testTerms(2); x.CSVBlocks = 0; return x }()},
+		{"no deadline", func() Terms { x := testTerms(2); x.Until = 0; return x }()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.terms.Validate(); err == nil {
@@ -522,4 +525,173 @@ func mustHash(t *testing.T, f *Formation) [32]byte {
 		t.Fatal("no roster hash")
 	}
 	return h
+}
+
+// The deadline is what makes "no more joins are coming" a fact. A table short
+// of its seats when admission shuts cannot form, and waiting longer would only
+// be hoping.
+func TestATableShortOfSeatsAtTheDeadlineCannotForm(t *testing.T) {
+	terms := testTerms(3)
+	privs := players(t, 3)
+
+	f, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	_ = f.AddJoin(joinsFor(t, terms, privs[1:2])[0])
+	if f.State() != Joining {
+		t.Fatalf("state is %s, want still joining", f.State())
+	}
+
+	f.CloseWindow()
+	if f.State() != Aborted {
+		t.Fatalf("state is %s, want aborted", f.State())
+	}
+	if f.Reason() == "" {
+		t.Fatal("aborted without saying why")
+	}
+}
+
+// Once admission shuts, a join is not merely late - it is one the peers who saw
+// the deadline pass have already refused. Accepting it would put this peer at a
+// table nobody else is at.
+func TestAJoinAfterTheDeadlineIsNotAdmitted(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 3)
+
+	f, err := NewFormation(terms, privs[1])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	_ = f.AddJoin(joinsFor(t, terms, privs[2:3])[0])
+	if f.State() != Formed {
+		t.Fatalf("state is %s, want formed", f.State())
+	}
+	before, _ := f.RosterHash()
+
+	f.CloseWindow()
+	if f.State() != Formed {
+		t.Fatalf("a full table was disturbed by the deadline: %s", f.State())
+	}
+	if err := f.AddJoin(joinsFor(t, terms, privs[0:1])[0]); err != nil {
+		t.Fatalf("add late join: %v", err)
+	}
+	if f.State() != Formed {
+		t.Fatalf("a join past the deadline changed the state to %s", f.State())
+	}
+	if after, _ := f.RosterHash(); after != before {
+		t.Fatal("a join past the deadline changed the membership")
+	}
+}
+
+// A full table whose members all say they hold the same thing can bind without
+// waiting out its deadline, which is the difference between a lobby that forms
+// in seconds and one nobody watches for ten minutes.
+func TestAFullTableThatAgreesNeedNotWaitForTheDeadline(t *testing.T) {
+	terms := testTerms(3)
+	privs := players(t, 3)
+	all := joinsFor(t, terms, privs)
+
+	mine, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range all {
+		_ = mine.AddJoin(j)
+	}
+	if mine.State() != Formed {
+		t.Fatalf("state is %s, want formed", mine.State())
+	}
+	if mine.Agreed() {
+		t.Fatal("agreement was reported before anybody else said anything")
+	}
+
+	roster, _ := mine.RosterHash()
+	for _, p := range privs[1:] {
+		a, err := SignAssertion(terms, roster, p)
+		if err != nil {
+			t.Fatalf("sign assertion: %v", err)
+		}
+		if err := mine.AddAssertion(a, all); err != nil {
+			t.Fatalf("add assertion: %v", err)
+		}
+	}
+	// Our own counts too, and we have not said it yet.
+	if mine.Agreed() {
+		t.Fatal("agreement was reported without this peer having asserted")
+	}
+	ours, err := mine.Assertion(privs[0])
+	if err != nil {
+		t.Fatalf("assertion: %v", err)
+	}
+	if err := mine.AddAssertion(ours, all); err != nil {
+		t.Fatalf("add own assertion: %v", err)
+	}
+	if !mine.Agreed() {
+		t.Fatal("every member said the same thing and it was not enough")
+	}
+	if mine.WindowClosed() {
+		t.Fatal("agreement should not have needed the deadline")
+	}
+}
+
+// Somebody holding a different membership is not agreement, and must not be
+// counted as it - that is the case the whole gate exists to notice.
+func TestAPeerHoldingSomethingElseIsNotAgreement(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 2)
+	all := joinsFor(t, terms, privs)
+
+	mine, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range all {
+		_ = mine.AddJoin(j)
+	}
+
+	var elsewhere [32]byte
+	elsewhere[0] = 0xaa
+	for _, p := range privs {
+		a, err := SignAssertion(terms, elsewhere, p)
+		if err != nil {
+			t.Fatalf("sign assertion: %v", err)
+		}
+		if err := mine.AddAssertion(a, all); err != nil {
+			t.Fatalf("add assertion: %v", err)
+		}
+	}
+	if mine.Agreed() {
+		t.Fatal("assertions naming another membership were counted as agreement")
+	}
+}
+
+// An unsigned assertion would let anyone manufacture agreement - telling every
+// peer that the others concur with whatever it happens to hold, and so driving
+// peers with different join sets to bind different memberships.
+func TestAnAssertionNobodySignedIsRefused(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 2)
+	all := joinsFor(t, terms, privs)
+
+	mine, err := NewFormation(terms, privs[0])
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+	for _, j := range all {
+		_ = mine.AddJoin(j)
+	}
+	roster, _ := mine.RosterHash()
+
+	forged, err := SignAssertion(terms, roster, privs[1])
+	if err != nil {
+		t.Fatalf("sign assertion: %v", err)
+	}
+	forged.Sig[0] ^= 0xff
+	if err := mine.AddAssertion(forged, all); err == nil {
+		t.Fatal("an assertion with a broken signature was admitted")
+	}
+	if mine.Agreed() {
+		t.Fatal("a forged assertion counted toward agreement")
+	}
 }

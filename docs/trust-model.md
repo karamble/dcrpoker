@@ -413,16 +413,26 @@ one block can pull their stake mid-hand.
 tables, admits frames only for sessions it was told to join, and builds a
 `ChainWatch` once a membership settles.
 
-One consequence of it is worth stating plainly, because it is easy to read the
-rule and assume otherwise. *When* to bind is a policy the formation logic
-deliberately leaves to its caller, and the plugin's current policy is to bind as
-soon as the table looks full. So an oversubscribed table is not guaranteed to
-abort: if two peers complete the whole exchange before a third's join reaches
-them, they have a table and the third is left out; only a peer that sees the
-extra join before binding refuses outright. Which happens depends on what
-arrived when. That is not a seat lottery — no key can be ground to win one —
-but it is indeterminate, and a closed admission window every peer derives the
-same way, from a block height rather than a clock, is what would remove it.
+**The admission window closed that**, and it is worth recording why it takes
+the shape it does. The invitation names a block height, which goes inside the
+signed join and the roster hash; past it no join is admitted. A height rather
+than a time because it has to be a fact every peer can check and nobody can be
+shown to have read wrong — a membership that turned on whose clock ran fast
+would be decided by the wrong thing entirely.
+
+The deadline alone would be enough, and would also mean every table takes as
+long as its window to form. For a card game that is a lobby nobody watches. So
+a peer binds when **every member has said it holds the same membership, or the
+deadline passes, whichever comes first**. Unanimity does not prove no straggler
+exists — only the deadline does — but it does mean every member has seen exactly
+this set, and what is left is a race that resolves to no game rather than to two
+tables.
+
+That is why a roster assertion is signed. It is still revisable, and nothing
+irreversible rests on one, but agreement between them is what lets a table bind
+early; an unsigned assertion would let anybody manufacture that agreement,
+telling each peer the others concur with whatever it happens to hold, and so
+drive peers with different join sets to bind different memberships.
 
 Two dependencies are named rather than assumed. **A join must be bond-backed**,
 or it is free and a stranger can abort any table; and `PostBond`

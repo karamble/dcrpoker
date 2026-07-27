@@ -98,6 +98,7 @@ type Terms struct {
 	BuyInAtoms uint64 `json:"buyin"`
 	Seats      uint32 `json:"seats"`
 	CSVBlocks  uint32 `json:"csv"`
+	Until      uint32 `json:"until"`
 }
 
 // Join is one player's claim to a seat.
@@ -116,6 +117,14 @@ type Roster struct {
 	Seats map[uint32]string `json:"seats"` // seat -> hex compressed session pubkey
 	Joins []Join            `json:"joins,omitempty"`
 	Terms *Terms            `json:"terms,omitempty"`
+	// Roster, Signer and Sig make the claim attributable. Everyone
+	// asserting the same membership is what lets a table form before its
+	// deadline, so an unsigned assertion would let anybody manufacture
+	// agreement and drive peers holding different join sets to bind
+	// different memberships.
+	Roster string `json:"roster,omitempty"`
+	Signer string `json:"signer,omitempty"`
+	Sig    string `json:"sig,omitempty"`
 }
 
 // Commit is one member binding itself to a membership, irrevocably.

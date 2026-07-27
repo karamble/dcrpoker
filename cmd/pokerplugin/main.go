@@ -78,6 +78,7 @@ func main() {
 		log.Fatalf("pokerplugin: %v", err)
 	}
 	go transport.Receive(ctx, frames, p.router)
+	go p.watchChain(ctx)
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -148,6 +149,42 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 // holds a lock, and a slow send under it would stall every other table.
 func (p *plugin) deliver(d transport.Delivery) {
 	p.publish(p.ctx, p.tables.deliver(d))
+}
+
+// chainPoll is how often the host is asked where the chain is. Blocks are about
+// five minutes apart, so this is frequent enough that a deadline passes
+// promptly and rare enough to be nothing.
+const chainPoll = 30 * time.Second
+
+// watchChain keeps every table told where the chain is.
+//
+// A deadline is a block height because it has to be a fact every peer can check
+// and nobody can be shown to have read wrong; clocks disagree, and a table
+// whose membership turned on whose clock ran fast would be decided by the
+// wrong thing entirely.
+func (p *plugin) watchChain(ctx context.Context) {
+	ticker := time.NewTicker(chainPoll)
+	defer ticker.Stop()
+
+	for {
+		tip, err := p.bridge.ChainTip(ctx)
+		if err != nil {
+			// Nothing to do but wait. A host with no node yet is
+			// ordinary at startup, and a table with a deadline
+			// nobody can read simply has not reached it.
+			if ctx.Err() == nil {
+				log.Printf("pokerplugin: cannot read the chain: %v", err)
+			}
+		} else {
+			p.publish(ctx, p.tables.tick(tip.Height))
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (p *plugin) routes() http.Handler {

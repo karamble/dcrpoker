@@ -69,8 +69,10 @@ type Formation struct {
 	terms Terms
 	self  []byte // our own compressed session key
 
-	joins   map[string]*Join   // key hex -> join
-	commits map[string]*Commit // signer hex -> the one commit they made
+	joins   map[string]*Join    // key hex -> join
+	commits map[string]*Commit  // signer hex -> the one commit they made
+	asserts map[string][32]byte // signer hex -> the membership they last claimed
+	closed  bool                // the admission window has shut
 
 	state     State
 	reason    string
@@ -94,6 +96,7 @@ func NewFormation(t Terms, priv *secp256k1.PrivateKey) (*Formation, error) {
 		self:    ours.Key,
 		joins:   make(map[string]*Join),
 		commits: make(map[string]*Commit),
+		asserts: make(map[string][32]byte),
 	}
 	if err := f.AddJoin(ours); err != nil {
 		return nil, err
@@ -124,6 +127,87 @@ func (f *Formation) Joins() []*Join {
 	return out
 }
 
+// CloseWindow shuts admission, which the caller does when it sees the chain
+// past the deadline the terms name.
+//
+// This is what makes "no more joins are coming" a fact rather than a hope. A
+// table still short of its seats at that point cannot form, and one that has
+// exactly its seats can bind knowing nothing will displace it.
+//
+// The height is not read here. Formation stays a pure function of what it has
+// been told, so the one thing that has to consult a clock or a chain is the
+// caller - and it can be tested by saying so directly.
+func (f *Formation) CloseWindow() {
+	if f.closed || f.state == Aborted || f.state == Settled {
+		return
+	}
+	f.closed = true
+	if f.state == Joining {
+		// Short of a full table when admission shut. Nothing else can
+		// arrive, so there is nothing left to wait for.
+		f.abort(fmt.Sprintf("only %d of %d seats were taken before the deadline",
+			len(f.joins), f.terms.Seats))
+	}
+}
+
+// WindowClosed reports whether admission has shut.
+func (f *Formation) WindowClosed() bool { return f.closed }
+
+// Agreed reports whether every member of this peer's membership has said it
+// holds the same one.
+//
+// It is what lets a full table form without waiting out its deadline. Everybody
+// having asserted the same membership is not proof that no straggler exists -
+// only the deadline is that - but it does mean every member has seen exactly
+// this set, which is enough to bind on when the alternative is a lobby nobody
+// is watching for ten minutes.
+func (f *Formation) Agreed() bool {
+	if f.canonical == nil {
+		return false
+	}
+	for _, k := range f.canonical {
+		if got, ok := f.asserts[keyID(k)]; !ok || got != f.roster {
+			return false
+		}
+	}
+	return true
+}
+
+// AddAssertion records what another peer says it holds, and adopts the joins it
+// showed to back the claim.
+//
+// The joins are what make the claim checkable, and they are checked before any
+// is kept: rejection has to be wholesale, or a member could get a key nobody
+// joined with admitted by burying it among real ones.
+func (f *Formation) AddAssertion(a *Assertion, joins []*Join) error {
+	if f.state == Aborted || f.state == Settled {
+		return nil
+	}
+	if a == nil {
+		return fmt.Errorf("no assertion")
+	}
+	if err := a.Verify(f.terms); err != nil {
+		return fmt.Errorf("assertion: %w", err)
+	}
+	for i, j := range joins {
+		if j == nil {
+			return fmt.Errorf("assertion join %d: missing", i)
+		}
+		if err := j.Verify(f.terms); err != nil {
+			return fmt.Errorf("assertion join %d: %w", i, err)
+		}
+	}
+
+	f.asserts[keyID(a.Signer)] = a.Roster
+	for _, j := range joins {
+		if err := f.AddJoin(j); err != nil {
+			return err
+		}
+	}
+	f.recompute()
+	return nil
+}
+
 // AddJoin admits one join, whether it arrived from its author or was relayed
 // inside somebody's roster assertion.
 //
@@ -151,6 +235,11 @@ func (f *Formation) AddJoin(j *Join) error {
 	if f.state == Committed {
 		// Bound already. A late arrival cannot change what this peer
 		// signed, and must not: that is the whole point of committing.
+		return nil
+	}
+	if f.closed {
+		// Admission shut. Accepting now would be accepting a join the
+		// peers who saw the deadline pass have already refused.
 		return nil
 	}
 
@@ -224,6 +313,26 @@ func (f *Formation) Bind(priv *secp256k1.PrivateKey) (*Commit, error) {
 	f.state = Committed
 	f.recompute()
 	return c, nil
+}
+
+// Assertion is this peer's own claim about what it holds, to publish.
+//
+// Making one records it, because this peer's own view counts toward agreement
+// exactly as anyone else's does - and a caller that had to remember to file its
+// own would eventually not.
+func (f *Formation) Assertion(priv *secp256k1.PrivateKey) (*Assertion, error) {
+	if f.canonical == nil {
+		return nil, fmt.Errorf("no membership to assert yet")
+	}
+	a, err := SignAssertion(f.terms, f.roster, priv)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(a.Signer, f.self) {
+		return nil, fmt.Errorf("asserting key is not the one that joined")
+	}
+	f.asserts[keyID(a.Signer)] = a.Roster
+	return a, nil
 }
 
 // Members reports the membership in canonical key order, which is the order

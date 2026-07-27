@@ -15,6 +15,7 @@ func testTerms() membership.Terms {
 		BuyInAtoms: 10_000_000,
 		Seats:      2,
 		CSVBlocks:  64,
+		Until:      900000,
 	}
 }
 
@@ -113,7 +114,7 @@ func TestARosterCarriesJoinsThatStillVerify(t *testing.T) {
 	}
 
 	seats := map[uint32][]byte{0: joins[0].Key, 1: joins[1].Key}
-	blob, err := Encode(KindRoster, "match1", RosterFrom(terms, seats, joins))
+	blob, err := Encode(KindRoster, "match1", RosterFrom(terms, seats, joins, nil))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
