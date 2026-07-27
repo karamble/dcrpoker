@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/decred/slog"
 )
 
 // Bridge sends frames through a host that holds the Bison Relay credentials.
@@ -37,6 +39,25 @@ type Bridge struct {
 
 	// HTTP is the client used for requests.
 	HTTP *http.Client
+
+	// OnGap, if set, is called when the event stream reconnects.
+	//
+	// The host's stream is lossy on purpose - it buffers a little per game
+	// and drops rather than blocking, so one game that stops draining
+	// cannot stall the others - and a reconnection is where losses cluster.
+	// Saying so is all the transport can honestly do; recovering what was
+	// missed needs the protocol, which knows what it was expecting.
+	OnGap func()
+
+	// Log, if set, records connection trouble. Nothing here is fatal, so
+	// without it a game reconnecting in a loop does so silently.
+	Log slog.Logger
+}
+
+func (b *Bridge) debugf(format string, args ...interface{}) {
+	if b.Log != nil {
+		b.Log.Debugf(format, args...)
+	}
 }
 
 // NewBridge returns a Bridge with a sane default client.

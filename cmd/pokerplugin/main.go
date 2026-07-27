@@ -52,6 +52,15 @@ func main() {
 		log.Fatalf("pokerplugin: %v", err)
 	}
 
+	// Open the host's frame stream. This is the only way anything reaches
+	// this process from another player: the sandbox has no route anywhere
+	// but the host, so a game that cannot open this can never play.
+	frames, err := p.bridge.Events(ctx)
+	if err != nil {
+		log.Fatalf("pokerplugin: %v", err)
+	}
+	go transport.Receive(ctx, frames, p.router)
+
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           p.routes(),
@@ -81,6 +90,15 @@ func newPlugin(bridgeURL, token string) (*plugin, error) {
 	b, err := transport.NewBridge(bridgeURL, token, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	// The host's stream drops frames rather than blocking, so one game that
+	// stops draining cannot stall the others. Reconnecting is where that
+	// loss clusters, and a player who missed frames is indistinguishable
+	// from one who walked away - so it is said out loud rather than left to
+	// be inferred from a table that stopped making sense.
+	b.OnGap = func() {
+		log.Printf("pokerplugin: reconnected to the host; frames may have been missed")
 	}
 
 	p := &plugin{bridge: b}
