@@ -4,8 +4,26 @@ import (
 	"testing"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
+
+// testCreds gives a key a bond, so it can join. Whether the deposit is really
+// on chain is membership.CheckBond's question, not this package's.
+func testCreds(t *testing.T, priv *secp256k1.PrivateKey) membership.Credentials {
+	t.Helper()
+	bond, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate bond key: %v", err)
+	}
+	script, err := escrow.BondScript(bond.PubKey().SerializeCompressed(), escrow.MinBondBlocks)
+	if err != nil {
+		t.Fatalf("bond script: %v", err)
+	}
+	return membership.Credentials{
+		Session: priv, Bond: bond, BondOutpoint: "beef:0", BondScript: script,
+	}
+}
 
 func testTerms() membership.Terms {
 	return membership.Terms{
@@ -28,7 +46,7 @@ func TestAJoinSurvivesTheWireAndStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	original, err := membership.SignJoin(terms, priv)
+	original, err := membership.SignJoin(terms, testCreds(t, priv))
 	if err != nil {
 		t.Fatalf("sign join: %v", err)
 	}
@@ -106,7 +124,7 @@ func TestARosterCarriesJoinsThatStillVerify(t *testing.T) {
 		if err != nil {
 			t.Fatalf("generate key: %v", err)
 		}
-		j, err := membership.SignJoin(terms, priv)
+		j, err := membership.SignJoin(terms, testCreds(t, priv))
 		if err != nil {
 			t.Fatalf("sign join: %v", err)
 		}

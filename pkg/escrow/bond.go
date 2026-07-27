@@ -12,6 +12,20 @@ import (
 // nothing. At Decred's ~5 minute blocks this is about a week.
 const MinBondBlocks uint32 = 2016
 
+// MinBondAtoms is the smallest bond that counts. It is deliberately well under
+// a typical buy-in: a bond is a standing cost of holding an identity, not a
+// per-table stake.
+//
+// It lives here beside the script because both a referee and a peer have to
+// reach the same verdict about the same deposit, and a threshold each of them
+// kept its own copy of is one they would eventually disagree on.
+const MinBondAtoms uint64 = 10_000_000 // 0.1 DCR
+
+// BondConfirmations is what a bond must have before it counts. A deposit that
+// is not yet buried can still be replaced, and a bond that can be undone after
+// it was accepted is not a cost.
+const BondConfirmations uint32 = 2
+
 // BondScript builds a fidelity bond: a deposit its owner can reclaim only after
 // a relative timelock, and that nobody else can ever spend.
 //

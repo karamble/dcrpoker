@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pokerui/golib"
@@ -44,6 +45,7 @@ func main() {
 		// else the sandbox is running.
 		listen  = flag.String("listen", ":8790", "address the host drives this game on")
 		dataDir = flag.String("datadir", "/data/poker", "where this game keeps its identity")
+		network = flag.String("network", "mainnet", "the chain this plays on")
 	)
 	flag.Parse()
 
@@ -65,7 +67,12 @@ func main() {
 		log.Fatalf("pokerplugin: %v", err)
 	}
 
-	p, err := newPlugin(ctx, *bridge, *token, id, newStore(*dataDir))
+	params, err := paramsForNetwork(*network)
+	if err != nil {
+		log.Fatalf("pokerplugin: %v", err)
+	}
+
+	p, err := newPlugin(ctx, *bridge, *token, id, newStore(*dataDir), params)
 	if err != nil {
 		log.Fatalf("pokerplugin: %v", err)
 	}
@@ -107,9 +114,10 @@ type plugin struct {
 	tables *tables
 	id     *identity
 	token  string
+	params stdaddr.AddressParams
 }
 
-func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *store) (*plugin, error) {
+func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *store, params stdaddr.AddressParams) (*plugin, error) {
 	b, err := transport.NewBridge(bridgeURL, token, nil)
 	if err != nil {
 		return nil, err
@@ -124,7 +132,11 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 		log.Printf("pokerplugin: reconnected to the host; frames may have been missed")
 	}
 
-	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), id: id, token: token}
+	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), id: id, token: token, params: params}
+	// A seat has to cost something, so every join is checked against the
+	// chain before it is admitted. The rule lives in pkg/membership; what
+	// happens here is fetching the facts it needs.
+	p.tables.checkBond = newBonds(b, params).check
 	p.router, err = transport.NewRouter(transport.Config{
 		Game:    schema.Game,
 		GameVer: schema.Version,
@@ -148,7 +160,7 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 // Publishing happens here rather than inside the registry because the registry
 // holds a lock, and a slow send under it would stall every other table.
 func (p *plugin) deliver(d transport.Delivery) {
-	p.publish(p.ctx, p.tables.deliver(d))
+	p.publish(p.ctx, p.tables.deliver(p.ctx, d))
 }
 
 // chainPoll is how often the host is asked where the chain is. Blocks are about
@@ -212,6 +224,11 @@ func (p *plugin) routes() http.Handler {
 	mux.HandleFunc("/table/join", p.guard(p.handleJoin))
 	mux.HandleFunc("/table/leave", p.guard(p.handleLeave))
 	mux.HandleFunc("/tables", p.guard(p.handleTables))
+
+	// The bond, which is what makes a seat cost something. Without one this
+	// player cannot join anything.
+	mux.HandleFunc("/bond", p.guard(p.handleBond))
+	mux.HandleFunc("/bond/fund", p.guard(p.handleBondFund))
 	return mux
 }
 

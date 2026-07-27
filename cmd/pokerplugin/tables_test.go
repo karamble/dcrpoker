@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
@@ -25,13 +28,86 @@ const testGC = "aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66
 type hub struct {
 	mu    sync.Mutex
 	peers map[string]*plugin // token -> peer
+	// bonds is the chain, as far as these tests need one: which outpoint
+	// pays which script. A join whose bond is not in here is a join with no
+	// deposit behind it, which is exactly what must be refused.
+	bonds map[string]string
 	srv   *httptest.Server
 }
 
+// bond gives a key a deposit and tells the chain about it.
+func (h *hub) bond(t *testing.T, id *identity, nonce string) {
+	t.Helper()
+	script, err := id.bondScript()
+	if err != nil {
+		t.Fatalf("bond script: %v", err)
+	}
+	_, pkScript, err := escrow.BondAddress(script, testParams)
+	if err != nil {
+		t.Fatalf("bond address: %v", err)
+	}
+	outpoint := fmt.Sprintf("%s:0", strings.Repeat(nonce, 64/len(nonce)))
+	if err := id.setBondDeposit(outpoint); err != nil {
+		t.Fatalf("record bond: %v", err)
+	}
+	h.mu.Lock()
+	h.bonds[outpoint] = hex.EncodeToString(pkScript)
+	h.mu.Unlock()
+}
+
+// lend registers a bond for a key that is not one of the hub's peers, so a test
+// can hand a table a join from a stranger who has genuinely posted one.
+func (h *hub) lend(t *testing.T, nonce string) membership.Credentials {
+	t.Helper()
+	session, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return h.lendTo(t, session, nonce)
+}
+
+func (h *hub) lendTo(t *testing.T, session *secp256k1.PrivateKey, nonce string) membership.Credentials {
+	t.Helper()
+	bond, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate bond key: %v", err)
+	}
+	script, err := escrow.BondScript(bond.PubKey().SerializeCompressed(), escrow.MinBondBlocks)
+	if err != nil {
+		t.Fatalf("bond script: %v", err)
+	}
+	_, pkScript, err := escrow.BondAddress(script, testParams)
+	if err != nil {
+		t.Fatalf("bond address: %v", err)
+	}
+	outpoint := fmt.Sprintf("%s:0", strings.Repeat(nonce, 64/len(nonce)))
+	h.mu.Lock()
+	h.bonds[outpoint] = hex.EncodeToString(pkScript)
+	h.mu.Unlock()
+	return membership.Credentials{
+		Session: session, Bond: bond, BondOutpoint: outpoint, BondScript: script,
+	}
+}
+
+var testParams = chaincfg.SimNetParams()
+
 func newHub(t *testing.T) *hub {
 	t.Helper()
-	h := &hub{peers: make(map[string]*plugin)}
+	h := &hub{peers: make(map[string]*plugin), bonds: make(map[string]string)}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/gaming/chain/outpoint" {
+			q := r.URL.Query()
+			h.mu.Lock()
+			pkScript := h.bonds[q.Get("txid")+":"+q.Get("vout")]
+			h.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(transport.Outpoint{
+				Found:         pkScript != "",
+				ValueAtoms:    int64(escrow.MinBondAtoms),
+				PkScriptHex:   pkScript,
+				Confirmations: int64(escrow.BondConfirmations),
+			})
+			return
+		}
 		if r.URL.Path != "/gaming/send" {
 			http.NotFound(w, r)
 			return
@@ -75,7 +151,9 @@ func (h *hub) join(t *testing.T, name string) *plugin {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	p, err := newPlugin(context.Background(), h.srv.URL+"/gaming", name, id, newStore(dir))
+	// A seat costs a bond, so a peer with none can join nothing.
+	h.bond(t, id, fmt.Sprintf("%02x", len(h.peers)+1))
+	p, err := newPlugin(context.Background(), h.srv.URL+"/gaming", name, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -283,15 +361,12 @@ func TestFramesFromAnotherGroupChatAreIgnored(t *testing.T) {
 	before := p.tables.snapshots()[0].Joined
 	other := strings.Repeat("ff", 32)
 
-	priv, err := p.id.sessionKey("beef")
-	if err != nil {
-		t.Fatalf("session key: %v", err)
-	}
+	creds := h.lend(t, "cc")
 	terms := membership.Terms{
 		Game: schema.Game, GameVer: schema.Version, SID: "0123456789abcdef",
 		BuyInAtoms: 10_000_000, Seats: 2, CSVBlocks: 64, Until: 900000,
 	}
-	j, err := membership.SignJoin(terms, priv)
+	j, err := membership.SignJoin(terms, creds)
 	if err != nil {
 		t.Fatalf("sign join: %v", err)
 	}
@@ -304,7 +379,7 @@ func TestFramesFromAnotherGroupChatAreIgnored(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	out := p.tables.deliver(transport.Delivery{
+	out := p.tables.deliver(context.Background(), transport.Delivery{
 		GCID: other, Sender: "somebody", SID: terms.SID, Msg: msg,
 	})
 	if out != nil {
@@ -360,9 +435,9 @@ func TestJoiningRefusesInvitationsToNothing(t *testing.T) {
 }
 
 // deliverJoin hands a table somebody else's join, as the router would.
-func deliverJoin(t *testing.T, p *plugin, terms membership.Terms, priv *secp256k1.PrivateKey) {
+func deliverJoin(t *testing.T, p *plugin, terms membership.Terms, creds membership.Credentials) {
 	t.Helper()
-	j, err := membership.SignJoin(terms, priv)
+	j, err := membership.SignJoin(terms, creds)
 	if err != nil {
 		t.Fatalf("sign join: %v", err)
 	}
@@ -374,7 +449,7 @@ func deliverJoin(t *testing.T, p *plugin, terms membership.Terms, priv *secp256k
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	p.tables.deliver(transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
+	p.tables.deliver(context.Background(), transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
 }
 
 func inviteTerms(inv schema.Invite) membership.Terms {
@@ -387,13 +462,16 @@ func inviteTerms(inv schema.Invite) membership.Terms {
 // restart builds a second process over the same data directory, which is what
 // makes it the same player: the seed is there, so the session keys it derives
 // are the ones it held before.
-func restart(t *testing.T, dir, token string) *plugin {
+func (h *hub) restart(t *testing.T, dir, token string) *plugin {
 	t.Helper()
 	id, err := loadIdentity(dir)
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	p, err := newPlugin(context.Background(), "http://host/gaming", token, id, newStore(dir))
+	if id.bondDeposit() == "" {
+		h.bond(t, id, "aa")
+	}
+	p, err := newPlugin(context.Background(), h.srv.URL+"/gaming", token, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -406,16 +484,14 @@ func restart(t *testing.T, dir, token string) *plugin {
 // is exactly the proof of equivocation the protocol runs on. An honest player
 // would have framed themselves by rebooting.
 func TestARestartCommitsToTheSameMembership(t *testing.T) {
+	h := newHub(t)
 	dir := t.TempDir()
 	inv := testInvite(2)
 	terms := inviteTerms(inv)
 
-	other, err := secp256k1.GeneratePrivateKey()
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	other := h.lend(t, "dd")
 
-	before := restart(t, dir, "tok")
+	before := h.restart(t, dir, "tok")
 	acceptInvite(t, before, inv)
 	deliverJoin(t, before, terms, other)
 
@@ -431,7 +507,7 @@ func TestARestartCommitsToTheSameMembership(t *testing.T) {
 	}
 
 	// Same directory, so the same player comes back.
-	after := restart(t, dir, "tok")
+	after := h.restart(t, dir, "tok")
 	acceptInvite(t, after, inv)
 
 	second := after.tables.snapshots()[0]
@@ -451,22 +527,19 @@ func TestARestartCommitsToTheSameMembership(t *testing.T) {
 // arriving after everyone else gave up would otherwise put this process back
 // into a membership nobody is bound to.
 func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
+	h := newHub(t)
 	dir := t.TempDir()
 	inv := testInvite(2)
 	terms := inviteTerms(inv)
 
-	p := restart(t, dir, "tok")
+	p := h.restart(t, dir, "tok")
 	acceptInvite(t, p, inv)
 
 	// Two more answer a two seat table, arriving together in somebody's
 	// assertion, so the table is over-full before anyone binds.
 	joins := make([]*membership.Join, 0, 2)
-	for range 2 {
-		priv, err := secp256k1.GeneratePrivateKey()
-		if err != nil {
-			t.Fatalf("generate key: %v", err)
-		}
-		j, err := membership.SignJoin(terms, priv)
+	for i := range 2 {
+		j, err := membership.SignJoin(terms, h.lend(t, fmt.Sprintf("e%d", i)))
 		if err != nil {
 			t.Fatalf("sign join: %v", err)
 		}
@@ -481,7 +554,7 @@ func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	p.tables.deliver(transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
+	p.tables.deliver(context.Background(), transport.Delivery{GCID: testGC, Sender: "them", SID: terms.SID, Msg: msg})
 	if got := p.tables.snapshots()[0].State; got != membership.Aborted.String() {
 		t.Fatalf("state is %s, want aborted", got)
 	}
@@ -491,7 +564,7 @@ func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
 	req.Header.Set("Authorization", "Bearer tok")
-	restart(t, dir, "tok").routes().ServeHTTP(rec, req)
+	h.restart(t, dir, "tok").routes().ServeHTTP(rec, req)
 
 	if rec.Code == http.StatusOK {
 		t.Fatalf("a session that ended was rejoined after a restart: %s", rec.Body.String())
@@ -502,18 +575,15 @@ func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
 // passes. That is the path that makes forming deterministic; agreement is only
 // the shortcut when everyone happens to be present.
 func TestADeadlineBindsATableThatNobodyElseConfirmed(t *testing.T) {
+	h := newHub(t)
 	dir := t.TempDir()
 	inv := testInvite(2)
 	terms := inviteTerms(inv)
 
-	p := restart(t, dir, "tok")
+	p := h.restart(t, dir, "tok")
 	acceptInvite(t, p, inv)
 
-	other, err := secp256k1.GeneratePrivateKey()
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	deliverJoin(t, p, terms, other)
+	deliverJoin(t, p, terms, h.lend(t, "ff"))
 
 	if got := p.tables.snapshots()[0].State; got != membership.Formed.String() {
 		t.Fatalf("state is %s, want formed and waiting", got)
@@ -535,10 +605,11 @@ func TestADeadlineBindsATableThatNobodyElseConfirmed(t *testing.T) {
 // longer would only be hoping, and the deadline is what turns that into an
 // answer.
 func TestADeadlineEndsATableThatNeverFilled(t *testing.T) {
+	h := newHub(t)
 	dir := t.TempDir()
 	inv := testInvite(3)
 
-	p := restart(t, dir, "tok")
+	p := h.restart(t, dir, "tok")
 	acceptInvite(t, p, inv)
 
 	p.tables.tick(int64(inviteTerms(inv).Until) + 1)
@@ -549,5 +620,76 @@ func TestADeadlineEndsATableThatNeverFilled(t *testing.T) {
 	}
 	if s.Reason == "" {
 		t.Fatal("aborted without saying why")
+	}
+}
+
+// The point of the whole exercise. A join whose deposit is not locked coin on
+// chain is a free seat, and a free seat is a stranger filling a table or
+// spoiling it as often as they like.
+func TestAJoinWhoseBondIsNotOnChainIsRefused(t *testing.T) {
+	h := newHub(t)
+	dir := t.TempDir()
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+
+	p := h.restart(t, dir, "tok")
+	acceptInvite(t, p, inv)
+	before := p.tables.snapshots()[0].Joined
+
+	// A bond the chain has never heard of: the script and the proof of
+	// possession are genuine, so this passes everything that can be checked
+	// without asking, and fails on the one thing that matters.
+	session, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	bond, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate bond key: %v", err)
+	}
+	script, err := escrow.BondScript(bond.PubKey().SerializeCompressed(), escrow.MinBondBlocks)
+	if err != nil {
+		t.Fatalf("bond script: %v", err)
+	}
+	deliverJoin(t, p, terms, membership.Credentials{
+		Session:      session,
+		Bond:         bond,
+		BondOutpoint: strings.Repeat("9", 64) + ":0",
+		BondScript:   script,
+	})
+
+	if got := p.tables.snapshots()[0].Joined; got != before {
+		t.Fatalf("a join with no deposit behind it was admitted (%d joins, was %d)", got, before)
+	}
+	if p.tables.snapshots()[0].State != membership.Joining.String() {
+		t.Fatalf("state is %s, want still joining", p.tables.snapshots()[0].State)
+	}
+}
+
+// A table cannot be joined at all without a bond of this player's own. Nothing
+// else here is worth anything if the process can seat itself for free.
+func TestThisPlayerCannotJoinWithoutItsOwnBond(t *testing.T) {
+	dir := t.TempDir()
+	id, err := loadIdentity(dir)
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	p, err := newPlugin(context.Background(), "http://host/gaming", "tok", id, newStore(dir), testParams)
+	if err != nil {
+		t.Fatalf("new plugin: %v", err)
+	}
+
+	link, _ := testInvite(2).String()
+	body, _ := json.Marshal(map[string]string{"invite": link, "gcid": testGC})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer tok")
+	p.routes().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a table was joined with no bond: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "bond") {
+		t.Fatalf("the refusal should say what is missing: %s", rec.Body.String())
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 )
 
@@ -111,16 +112,83 @@ func (t Terms) Hash() ([32]byte, error) {
 // identity, and a relayed join arrives from a third party, so a uid inside it
 // would be an unverifiable claim.
 type Join struct {
-	Key []byte // compressed session pubkey
-	Sig []byte
+	Key  []byte // compressed session pubkey
+	Bond Bond
+	Sig  []byte
 }
 
-// SignJoin makes this key's claim to a seat at the table these terms describe.
-func SignJoin(t Terms, priv *secp256k1.PrivateKey) (*Join, error) {
-	if priv == nil {
-		return nil, fmt.Errorf("no signing key")
+// Bond is the deposit that makes a seat cost something.
+//
+// Without one a join is free, and free joins make every rule above them
+// decorative: a stranger can fill a table's seats, or answer it once too often
+// so nobody can form it, at no price and as many times as they like. zkidentity
+// keys are free to generate, so the cost has to be locked coin rather than
+// anything about who is asking.
+//
+// The script travels rather than just the outpoint, because it is what says the
+// coin is locked at all - and PoP is what says this player controls it. A
+// deposit anyone can name proves nothing on its own.
+type Bond struct {
+	Outpoint string
+	Script   []byte
+	// PoP is a signature by the bond's owner key over this join's session
+	// key. It binds the two, so a bond cited in public cannot be lifted
+	// into somebody else's join.
+	PoP []byte
+}
+
+// Credentials are what a player sits down with: the key it plays under, and the
+// bond that makes the seat cost something.
+//
+// They travel together because neither is any use alone. A session key with no
+// bond is a free seat, and a bond nobody can tie to a session key is somebody
+// else's deposit being cited.
+type Credentials struct {
+	// Session is the key this player's actions and commitments are signed
+	// with, and the key the escrow scripts name.
+	Session *secp256k1.PrivateKey
+	// Bond is the key the deposit pays out to. It signs nothing but the
+	// proof of possession.
+	Bond         *secp256k1.PrivateKey
+	BondOutpoint string
+	BondScript   []byte
+}
+
+// Valid reports whether these could join anything.
+func (c Credentials) Valid() error {
+	switch {
+	case c.Session == nil:
+		return fmt.Errorf("no session key")
+	case c.Bond == nil:
+		return fmt.Errorf("no bond key")
+	case strings.TrimSpace(c.BondOutpoint) == "":
+		return fmt.Errorf("no bond deposit")
+	case len(c.BondScript) == 0:
+		return fmt.Errorf("no bond script")
 	}
-	j := &Join{Key: priv.PubKey().SerializeCompressed()}
+	return nil
+}
+
+// SignJoin makes this player's claim to a seat at the table these terms
+// describe.
+//
+// The proof of possession names the session key, so what is published cannot be
+// lifted and presented by anybody else.
+func SignJoin(t Terms, c Credentials) (*Join, error) {
+	if err := c.Valid(); err != nil {
+		return nil, err
+	}
+	priv, bondOutpoint, bondScript := c.Session, c.BondOutpoint, c.BondScript
+	key := priv.PubKey().SerializeCompressed()
+	pop, err := escrow.SignBondPoP(bondOutpoint, key, c.Bond)
+	if err != nil {
+		return nil, err
+	}
+
+	j := &Join{
+		Key:  key,
+		Bond: Bond{Outpoint: bondOutpoint, Script: bondScript, PoP: pop},
+	}
 	digest, err := j.digest(t)
 	if err != nil {
 		return nil, err
@@ -145,6 +213,11 @@ func (j *Join) digest(t Terms) ([32]byte, error) {
 	b.Write(joinTag)
 	b.Write(th[:])
 	b.Write(j.Key)
+	// The bond is signed over as well, so a relayed join cannot have its
+	// deposit swapped for another on the way.
+	writeString(&b, j.Bond.Outpoint)
+	_ = binary.Write(&b, binary.BigEndian, uint32(len(j.Bond.Script)))
+	b.Write(j.Bond.Script)
 	return blake256.Sum256(b.Bytes()), nil
 }
 
@@ -156,7 +229,71 @@ func (j *Join) Verify(t Terms) error {
 	if err != nil {
 		return err
 	}
-	return verifySig(j.Key, j.Sig, digest)
+	if err := verifySig(j.Key, j.Sig, digest); err != nil {
+		return err
+	}
+
+	// The bond, as far as it can be checked without a chain. Whether the
+	// deposit exists is somebody else's question - see CheckBond - but
+	// whether it is a bond at all, on terms worth anything, and whether
+	// this player controls it, are all answerable here.
+	terms, err := escrow.ParseBond(j.Bond.Script)
+	if err != nil {
+		return fmt.Errorf("bond script: %w", err)
+	}
+	if terms.LockBlocks < escrow.MinBondBlocks {
+		return fmt.Errorf("bond is locked for %d blocks, under the %d minimum",
+			terms.LockBlocks, escrow.MinBondBlocks)
+	}
+	if err := escrow.VerifyBondPoP(j.Bond.Script, j.Bond.Outpoint, j.Key, j.Bond.PoP); err != nil {
+		return fmt.Errorf("bond: %w", err)
+	}
+	return nil
+}
+
+// BondFacts is what a chain says about a bond's deposit. A peer gets these from
+// its own node - or, in a sandbox, from the host's - and hands them here.
+type BondFacts struct {
+	Found         bool
+	ValueAtoms    int64
+	PkScriptHex   string
+	Confirmations int64
+}
+
+// CheckBond decides whether a join's bond is real, given what the chain says.
+//
+// It is separate from Verify because it needs facts nobody can sign for. Keeping
+// the rule here rather than in whatever fetched them means every peer applies
+// the same one, and that it can be checked without a chain at all.
+func CheckBond(j *Join, facts BondFacts, params stdaddr.AddressParams) error {
+	if j == nil {
+		return fmt.Errorf("no join")
+	}
+	if !facts.Found {
+		// Never existed, already spent, or not yet confirmed. For a
+		// deposit that is supposed to be locked coin everyone can see,
+		// those are the same answer.
+		return fmt.Errorf("bond deposit %s is not unspent coin on chain", j.Bond.Outpoint)
+	}
+
+	_, pkScript, err := escrow.BondAddress(j.Bond.Script, params)
+	if err != nil {
+		return fmt.Errorf("bond address: %w", err)
+	}
+	if !strings.EqualFold(facts.PkScriptHex, hex.EncodeToString(pkScript)) {
+		// The deposit pays something else. Citing an outpoint that
+		// happens to hold coin is not the same as having locked any.
+		return fmt.Errorf("bond deposit %s does not pay the bond script", j.Bond.Outpoint)
+	}
+	if facts.ValueAtoms < int64(escrow.MinBondAtoms) {
+		return fmt.Errorf("bond holds %d atoms, under the %d minimum",
+			facts.ValueAtoms, escrow.MinBondAtoms)
+	}
+	if facts.Confirmations < int64(escrow.BondConfirmations) {
+		return fmt.Errorf("bond has %d confirmations, needs %d",
+			facts.Confirmations, escrow.BondConfirmations)
+	}
+	return nil
 }
 
 // Assertion is a peer saying which membership it currently holds.

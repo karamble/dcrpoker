@@ -101,10 +101,17 @@ type Terms struct {
 	Until      uint32 `json:"until"`
 }
 
-// Join is one player's claim to a seat.
+// Join is one player's claim to a seat, and the bond that makes it cost
+// something.
 type Join struct {
 	Key string `json:"key"` // hex compressed session pubkey
 	Sig string `json:"sig"`
+	// The bond's script travels rather than only its outpoint, because the
+	// script is what says the coin is locked at all. Pop ties it to Key, so
+	// a deposit cited in public cannot be lifted into another join.
+	BondOutpoint string `json:"bondOutpoint"`
+	BondScript   string `json:"bondScript"`
+	BondPoP      string `json:"bondPop"`
 }
 
 // Roster is the table's seats and the keys their actions are signed with.

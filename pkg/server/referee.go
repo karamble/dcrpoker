@@ -3137,13 +3137,14 @@ func (s *Server) buildAbortTx(matchID string) (*wire.MsgTx, error) {
 // it. See escrow.BondScript for why forfeiture is not available at this point
 // in the lifecycle.
 const (
-	// MinBondAtoms is the smallest bond that counts. It is deliberately well
-	// under a typical buy-in: the bond is a standing cost of holding an
-	// identity, not a per-table stake.
-	MinBondAtoms uint64 = 10_000_000 // 0.1 DCR
+	// MinBondAtoms is the smallest bond that counts. The number lives in
+	// pkg/escrow, because a peer has to reach the same verdict about the
+	// same deposit and a threshold kept in two places is one they would
+	// eventually disagree on.
+	MinBondAtoms = escrow.MinBondAtoms
 
 	// bondRequiredConfirmations is what a bond must have before it counts.
-	bondRequiredConfirmations = uint32(2)
+	bondRequiredConfirmations = escrow.BondConfirmations
 )
 
 // playerBond is a bond the referee has verified on chain.

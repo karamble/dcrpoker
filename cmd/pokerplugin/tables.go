@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/vctt94/pokerbisonrelay/pkg/client"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
@@ -23,7 +22,6 @@ type table struct {
 	// where frames go and where they are accepted from; it never decides
 	// who is believed about the table, which is the membership's job.
 	gcID string
-	priv *secp256k1.PrivateKey
 	form *membership.Formation
 
 	// watch is this player's own copy of the table's history, built once
@@ -50,10 +48,79 @@ type tables struct {
 	mu    sync.Mutex
 	m     map[string]*table
 	store *store
+
+	// checkBond decides whether a join's deposit is real. It goes to the
+	// chain, so it is never called while the lock is held: one slow lookup
+	// must not stall every other table.
+	checkBond func(ctx context.Context, j *membership.Join) error
 }
 
 func newTables(st *store) *tables {
 	return &tables{m: make(map[string]*table), store: st}
+}
+
+// termsFor reports a table's terms, if this is a session and a conversation
+// frames are admitted from.
+func (t *tables) termsFor(sid, gcID string) (membership.Terms, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tbl := t.m[sid]
+	if tbl == nil || tbl.gcID != gcID {
+		return membership.Terms{}, false
+	}
+	return tbl.terms, true
+}
+
+// verifyBonds checks every join a message carries, before any of it is admitted.
+//
+// This is what makes a seat cost something. Without it a join is free, and a
+// stranger can fill a table's seats or answer it once too often so nobody can
+// form it, as many times as they like - which would make every rule above it
+// decorative.
+//
+// It runs outside the registry lock because it goes to the chain, and it
+// refuses the whole message if any join fails: rejection has to be wholesale,
+// or a bondless key could ride in beside real ones.
+func (t *tables) verifyBonds(ctx context.Context, terms membership.Terms, msg *schema.Message) error {
+	if msg == nil || t.checkBond == nil {
+		return nil
+	}
+
+	var joins []schema.Join
+	switch msg.Kind {
+	case schema.KindJoin:
+		var body schema.Join
+		if err := msg.Into(&body); err != nil {
+			return err
+		}
+		joins = []schema.Join{body}
+	case schema.KindRoster:
+		var body schema.Roster
+		if err := msg.Into(&body); err != nil {
+			return err
+		}
+		joins = body.Joins
+	default:
+		return nil
+	}
+
+	for i, wj := range joins {
+		j, err := wj.Into()
+		if err != nil {
+			return fmt.Errorf("join %d: %w", i, err)
+		}
+		// The signature and the proof of possession first: they cost
+		// nothing and settle most of it, and there is no reason to ask
+		// the chain about a join that does not check out on its face.
+		if err := j.Verify(terms); err != nil {
+			return fmt.Errorf("join %d: %w", i, err)
+		}
+		if err := t.checkBond(ctx, j); err != nil {
+			return fmt.Errorf("join %d: %w", i, err)
+		}
+	}
+	return nil
 }
 
 // persist writes a table's irrevocable position to disk.
@@ -124,7 +191,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 		return nil, fmt.Errorf("this invitation states no table: %w", err)
 	}
 
-	priv, err := id.sessionKey(terms.SID)
+	creds, err := id.credentials(terms.SID)
 	if err != nil {
 		return nil, err
 	}
@@ -159,11 +226,11 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 		}
 	}
 
-	form, err := membership.NewFormation(terms, priv)
+	form, err := membership.NewFormation(terms, creds)
 	if err != nil {
 		return nil, err
 	}
-	tbl := &table{terms: terms, gcID: gcID, priv: priv, form: form}
+	tbl := &table{terms: terms, gcID: gcID, form: form}
 
 	if rec != nil {
 		if err := tbl.resume(rec); err != nil {
@@ -198,7 +265,7 @@ func (tbl *table) resume(rec *record) error {
 	if !rec.Bound {
 		return nil
 	}
-	c, err := tbl.form.Bind(tbl.priv)
+	c, err := tbl.form.Bind()
 	if err != nil {
 		return fmt.Errorf("cannot take back up the position this key already committed to: %w", err)
 	}
@@ -243,18 +310,26 @@ func (t *tables) tick(height int64) []outgoing {
 }
 
 // deliver routes one decoded message to the table it is for.
-func (t *tables) deliver(d transport.Delivery) []outgoing {
+func (t *tables) deliver(ctx context.Context, d transport.Delivery) []outgoing {
+	// The session has to be one we joined, and the conversation the one the
+	// invitation arrived in: frames for our table turning up somewhere else
+	// are not our table's, whoever sent them.
+	terms, ok := t.termsFor(d.SID, d.GCID)
+	if !ok {
+		return nil
+	}
+	// Bonds before the lock, because checking one goes to the chain.
+	if err := t.verifyBonds(ctx, terms, d.Msg); err != nil {
+		log.Printf("pokerplugin: table %s: %v", d.SID, err)
+		return nil
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	tbl := t.m[d.SID]
-	if tbl == nil {
-		return nil
-	}
-	if d.GCID != tbl.gcID {
-		// The session is ours; this group chat is not. Frames for one
-		// table arriving in another conversation are not this table's,
-		// whoever sent them.
+	if tbl == nil || tbl.gcID != d.GCID {
+		// It went away while the chain was being asked.
 		return nil
 	}
 
@@ -418,7 +493,7 @@ func (tbl *table) advance(beforeState membership.State, beforeJoins int) []outgo
 		// this set. What is left is a race that resolves to no game,
 		// never to two tables.
 		if !tbl.bound && (tbl.form.Agreed() || tbl.form.WindowClosed()) {
-			c, err := tbl.form.Bind(tbl.priv)
+			c, err := tbl.form.Bind()
 			if err != nil {
 				log.Printf("pokerplugin: table %s: bind: %v", tbl.terms.SID, err)
 				break
@@ -485,7 +560,7 @@ func (tbl *table) publishRoster() []outgoing {
 		// Only a peer that has a membership can claim one. Short of a
 		// full table there is nothing to assert, and saying so anyway
 		// would be claiming agreement with a set nobody holds.
-		if a, err := tbl.form.Assertion(tbl.priv); err == nil {
+		if a, err := tbl.form.Assertion(); err == nil {
 			assertion = a
 		}
 	}

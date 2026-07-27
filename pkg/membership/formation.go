@@ -1,11 +1,9 @@
 package membership
 
 import (
-	"bytes"
 	"encoding/hex"
 	"fmt"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 )
 
@@ -67,6 +65,7 @@ func (s State) String() string {
 // self-evident rather than indistinguishable from being well-informed.
 type Formation struct {
 	terms Terms
+	creds Credentials
 	self  []byte // our own compressed session key
 
 	joins   map[string]*Join    // key hex -> join
@@ -83,16 +82,17 @@ type Formation struct {
 
 // NewFormation starts forming the table these terms describe, joining it with
 // the given session key.
-func NewFormation(t Terms, priv *secp256k1.PrivateKey) (*Formation, error) {
+func NewFormation(t Terms, c Credentials) (*Formation, error) {
 	if err := t.Validate(); err != nil {
 		return nil, err
 	}
-	ours, err := SignJoin(t, priv)
+	ours, err := SignJoin(t, c)
 	if err != nil {
 		return nil, err
 	}
 	f := &Formation{
 		terms:   t,
+		creds:   c,
 		self:    ours.Key,
 		joins:   make(map[string]*Join),
 		commits: make(map[string]*Commit),
@@ -293,7 +293,7 @@ func (f *Formation) AddCommit(c *Commit) error {
 // risks binding to a membership a late join would have aborted, and binding
 // late risks the table never forming at all. What this type guarantees is that
 // once bound, nothing moves it.
-func (f *Formation) Bind(priv *secp256k1.PrivateKey) (*Commit, error) {
+func (f *Formation) Bind() (*Commit, error) {
 	switch f.state {
 	case Committed, Settled:
 		return f.commits[keyID(f.self)], nil
@@ -302,12 +302,9 @@ func (f *Formation) Bind(priv *secp256k1.PrivateKey) (*Commit, error) {
 		return nil, fmt.Errorf("cannot bind while %s", f.state)
 	}
 
-	c, err := SignCommit(f.terms, f.roster, priv)
+	c, err := SignCommit(f.terms, f.roster, f.creds.Session)
 	if err != nil {
 		return nil, err
-	}
-	if !bytes.Equal(c.Signer, f.self) {
-		return nil, fmt.Errorf("binding key is not the one that joined")
 	}
 	f.commits[keyID(c.Signer)] = c
 	f.state = Committed
@@ -320,16 +317,13 @@ func (f *Formation) Bind(priv *secp256k1.PrivateKey) (*Commit, error) {
 // Making one records it, because this peer's own view counts toward agreement
 // exactly as anyone else's does - and a caller that had to remember to file its
 // own would eventually not.
-func (f *Formation) Assertion(priv *secp256k1.PrivateKey) (*Assertion, error) {
+func (f *Formation) Assertion() (*Assertion, error) {
 	if f.canonical == nil {
 		return nil, fmt.Errorf("no membership to assert yet")
 	}
-	a, err := SignAssertion(f.terms, f.roster, priv)
+	a, err := SignAssertion(f.terms, f.roster, f.creds.Session)
 	if err != nil {
 		return nil, err
-	}
-	if !bytes.Equal(a.Signer, f.self) {
-		return nil, fmt.Errorf("asserting key is not the one that joined")
 	}
 	f.asserts[keyID(a.Signer)] = a.Roster
 	return a, nil

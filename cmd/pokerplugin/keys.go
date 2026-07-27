@@ -8,9 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
 
 // identity is the only thing this process keeps between runs.
@@ -20,11 +23,19 @@ import (
 // own, generated here and never sent anywhere. What it produces are session
 // keys: the keys a table's escrow scripts name and its actions are signed by.
 type identity struct {
+	mu   sync.Mutex
+	dir  string
 	seed []byte
+	// bondOutpoint is the deposit backing every seat this player takes. It
+	// is one per identity rather than one per table: a bond is the standing
+	// cost of being somebody, and paying it again per table would price
+	// playing rather than price existing.
+	bondOutpoint string
 }
 
 type identityFile struct {
-	SeedHex string `json:"seed_hex"`
+	SeedHex      string `json:"seed_hex"`
+	BondOutpoint string `json:"bond_outpoint,omitempty"`
 }
 
 // loadIdentity reads the seed under dir, creating one the first time.
@@ -42,7 +53,7 @@ func loadIdentity(dir string) (*identity, error) {
 		if err != nil || len(seed) != 32 {
 			return nil, fmt.Errorf("identity seed is not 32 bytes of hex")
 		}
-		return &identity{seed: seed}, nil
+		return &identity{dir: dir, seed: seed, bondOutpoint: f.BondOutpoint}, nil
 	case !os.IsNotExist(err):
 		return nil, fmt.Errorf("read identity: %w", err)
 	}
@@ -69,7 +80,90 @@ func loadIdentity(dir string) (*identity, error) {
 	if err := os.Rename(tmp, path); err != nil {
 		return nil, fmt.Errorf("write identity: %w", err)
 	}
-	return &identity{seed: seed}, nil
+	return &identity{dir: dir, seed: seed}, nil
+}
+
+// bondKeyTag domain-separates the bond key from session keys. They are derived
+// from one seed and must never be the same key: the bond is what a seat costs,
+// and a session key is published to everyone at the table.
+var bondKeyTag = []byte("poker/bond/v1")
+
+// bondKey is the key this player's bond pays out to.
+func (id *identity) bondKey() (*secp256k1.PrivateKey, error) {
+	mac := hmac.New(blake256.New, id.seed)
+	mac.Write(bondKeyTag)
+	sum := mac.Sum(nil)
+	if len(sum) != 32 {
+		return nil, fmt.Errorf("derived %d bytes, want 32", len(sum))
+	}
+	return secp256k1.PrivKeyFromBytes(sum), nil
+}
+
+// bondScript is the timelocked script this player's bond must pay.
+func (id *identity) bondScript() ([]byte, error) {
+	priv, err := id.bondKey()
+	if err != nil {
+		return nil, err
+	}
+	return escrow.BondScript(priv.PubKey().SerializeCompressed(), escrow.MinBondBlocks)
+}
+
+// bondDeposit reports the outpoint backing this identity, if it has one.
+func (id *identity) bondDeposit() string {
+	id.mu.Lock()
+	defer id.mu.Unlock()
+	return id.bondOutpoint
+}
+
+// setBondDeposit records which deposit backs this identity.
+func (id *identity) setBondDeposit(outpoint string) error {
+	id.mu.Lock()
+	defer id.mu.Unlock()
+
+	out, err := json.Marshal(identityFile{
+		SeedHex:      hex.EncodeToString(id.seed),
+		BondOutpoint: outpoint,
+	})
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(id.dir, "identity.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return fmt.Errorf("write identity: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("write identity: %w", err)
+	}
+	id.bondOutpoint = outpoint
+	return nil
+}
+
+// credentials are what this player sits down with.
+func (id *identity) credentials(sid string) (membership.Credentials, error) {
+	session, err := id.sessionKey(sid)
+	if err != nil {
+		return membership.Credentials{}, err
+	}
+	bondPriv, err := id.bondKey()
+	if err != nil {
+		return membership.Credentials{}, err
+	}
+	script, err := id.bondScript()
+	if err != nil {
+		return membership.Credentials{}, err
+	}
+	outpoint := id.bondDeposit()
+	if outpoint == "" {
+		return membership.Credentials{}, fmt.Errorf(
+			"this player has no bond; fund one before taking a seat")
+	}
+	return membership.Credentials{
+		Session:      session,
+		Bond:         bondPriv,
+		BondOutpoint: outpoint,
+		BondScript:   script,
+	}, nil
 }
 
 // sessionKeyTag domain-separates session keys from anything else this seed

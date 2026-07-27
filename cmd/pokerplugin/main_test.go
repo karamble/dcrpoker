@@ -22,7 +22,7 @@ func testPlugin(t *testing.T) *plugin {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	p, err := newPlugin(context.Background(), "http://host/gaming", testToken, id, newStore(dir))
+	p, err := newPlugin(context.Background(), "http://host/gaming", testToken, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -129,10 +129,10 @@ func TestPluginRequiresBridgeAndToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	if _, err := newPlugin(context.Background(), "", "tok", id, newStore(dir)); err == nil {
+	if _, err := newPlugin(context.Background(), "", "tok", id, newStore(dir), testParams); err == nil {
 		t.Fatal("a plugin with no bridge should not start")
 	}
-	if _, err := newPlugin(context.Background(), "http://host/gaming", "", id, newStore(dir)); err == nil {
+	if _, err := newPlugin(context.Background(), "http://host/gaming", "", id, newStore(dir), testParams); err == nil {
 		t.Fatal("a plugin with no token should not start")
 	}
 }

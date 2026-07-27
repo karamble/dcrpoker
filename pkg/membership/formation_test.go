@@ -2,7 +2,11 @@ package membership
 
 import (
 	"bytes"
+	"encoding/hex"
+	"strings"
 	"testing"
+
+	"github.com/decred/dcrd/chaincfg/v3"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
@@ -44,11 +48,31 @@ func players(t *testing.T, n int) []*secp256k1.PrivateKey {
 	return out
 }
 
+// testCreds gives a key a bond, so it can join anything. The deposit is made up
+// - whether it is really on chain is CheckBond's question, not SignJoin's.
+func testCreds(t *testing.T, priv *secp256k1.PrivateKey) Credentials {
+	t.Helper()
+	bond, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate bond key: %v", err)
+	}
+	script, err := escrow.BondScript(bond.PubKey().SerializeCompressed(), escrow.MinBondBlocks)
+	if err != nil {
+		t.Fatalf("bond script: %v", err)
+	}
+	return Credentials{
+		Session:      priv,
+		Bond:         bond,
+		BondOutpoint: hex.EncodeToString(priv.PubKey().SerializeCompressed()[:32]) + ":0",
+		BondScript:   script,
+	}
+}
+
 func joinsFor(t *testing.T, terms Terms, privs []*secp256k1.PrivateKey) []*Join {
 	t.Helper()
 	out := make([]*Join, 0, len(privs))
 	for _, p := range privs {
-		j, err := SignJoin(terms, p)
+		j, err := SignJoin(terms, testCreds(t, p))
 		if err != nil {
 			t.Fatalf("sign join: %v", err)
 		}
@@ -65,7 +89,7 @@ func settleAll(t *testing.T, terms Terms, privs []*secp256k1.PrivateKey) []*Form
 
 	fs := make([]*Formation, 0, len(privs))
 	for _, p := range privs {
-		f, err := NewFormation(terms, p)
+		f, err := NewFormation(terms, testCreds(t, p))
 		if err != nil {
 			t.Fatalf("new formation: %v", err)
 		}
@@ -78,8 +102,8 @@ func settleAll(t *testing.T, terms Terms, privs []*secp256k1.PrivateKey) []*Form
 	}
 
 	commits := make([]*Commit, 0, len(fs))
-	for i, f := range fs {
-		c, err := f.Bind(privs[i])
+	for _, f := range fs {
+		c, err := f.Bind()
 		if err != nil {
 			t.Fatalf("bind: %v", err)
 		}
@@ -125,7 +149,7 @@ func TestTheMembershipIsTheSameWhateverOrderJoinsArriveIn(t *testing.T) {
 	privs := players(t, 5)
 	all := joinsFor(t, terms, privs)
 
-	forward, err := NewFormation(terms, privs[0])
+	forward, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -133,7 +157,7 @@ func TestTheMembershipIsTheSameWhateverOrderJoinsArriveIn(t *testing.T) {
 		_ = forward.AddJoin(j)
 	}
 
-	backward, err := NewFormation(terms, privs[0])
+	backward, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -170,7 +194,7 @@ func TestALateLowKeyCannotStrandAPeerThatAlreadySettled(t *testing.T) {
 	joinA, joinB, joinC := joins[0], joins[1], joins[2]
 
 	// A sees only A and B.
-	fa, err := NewFormation(terms, a)
+	fa, err := NewFormation(terms, testCreds(t, a))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -178,12 +202,12 @@ func TestALateLowKeyCannotStrandAPeerThatAlreadySettled(t *testing.T) {
 	if fa.State() != Formed {
 		t.Fatalf("A is %s, want formed", fa.State())
 	}
-	if _, err := fa.Bind(a); err != nil {
+	if _, err := fa.Bind(); err != nil {
 		t.Fatalf("A bind: %v", err)
 	}
 
 	// B sees A, B and C.
-	fb, err := NewFormation(terms, b)
+	fb, err := NewFormation(terms, testCreds(t, b))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -206,7 +230,7 @@ func TestOversubscriptionAbortsRatherThanChoosing(t *testing.T) {
 	terms := testTerms(2)
 	privs := players(t, 3)
 
-	f, err := NewFormation(terms, privs[0])
+	f, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -229,7 +253,7 @@ func TestMoreKeysThanAnyTableCanSeatStillAborts(t *testing.T) {
 	terms := testTerms(uint32(escrow.MaxMembers))
 	privs := players(t, escrow.MaxMembers+2)
 
-	f, err := NewFormation(terms, privs[0])
+	f, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -250,13 +274,13 @@ func TestAJoinAfterBindingCannotChangeTheMembership(t *testing.T) {
 	privs := players(t, 3)
 	a, b, late := privs[1], privs[2], privs[0]
 
-	f, err := NewFormation(terms, a)
+	f, err := NewFormation(terms, testCreds(t, a))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
 	_ = f.AddJoin(joinsFor(t, terms, []*secp256k1.PrivateKey{b})[0])
 	before, _ := f.RosterHash()
-	if _, err := f.Bind(a); err != nil {
+	if _, err := f.Bind(); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 
@@ -278,7 +302,7 @@ func TestAKeyThatNeverJoinedIsNeverAdmitted(t *testing.T) {
 	terms := testTerms(3)
 	privs := players(t, 3)
 
-	f, err := NewFormation(terms, privs[0])
+	f, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -321,7 +345,7 @@ func TestPeersWhoReadDifferentInvitesNeverForm(t *testing.T) {
 		{"deadline", func(t Terms) Terms { t.Until = 999999; return t }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f, err := NewFormation(base, privs[0])
+			f, err := NewFormation(base, testCreds(t, privs[0]))
 			if err != nil {
 				t.Fatalf("new formation: %v", err)
 			}
@@ -343,26 +367,26 @@ func TestATableShortOneCommitNeverSettles(t *testing.T) {
 	privs := players(t, 3)
 	all := joinsFor(t, terms, privs)
 
-	f, err := NewFormation(terms, privs[0])
+	f, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
 	for _, j := range all {
 		_ = f.AddJoin(j)
 	}
-	if _, err := f.Bind(privs[0]); err != nil {
+	if _, err := f.Bind(); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 
 	// Only one of the other two ever binds.
-	other, err := NewFormation(terms, privs[1])
+	other, err := NewFormation(terms, testCreds(t, privs[1]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
 	for _, j := range all {
 		_ = other.AddJoin(j)
 	}
-	c, err := other.Bind(privs[1])
+	c, err := other.Bind()
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -385,7 +409,7 @@ func TestOneKeyBoundToTwoMembershipsIsAProof(t *testing.T) {
 	privs := players(t, 2)
 	all := joinsFor(t, terms, privs)
 
-	f, err := NewFormation(terms, privs[0])
+	f, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -511,7 +535,7 @@ func TestTermsMustDescribeATableThatCouldExist(t *testing.T) {
 			if err := tc.terms.Validate(); err == nil {
 				t.Fatal("expected a refusal")
 			}
-			if _, err := NewFormation(tc.terms, players(t, 1)[0]); err == nil {
+			if _, err := NewFormation(tc.terms, testCreds(t, players(t, 1)[0])); err == nil {
 				t.Fatal("formed a table on terms that cannot exist")
 			}
 		})
@@ -534,7 +558,7 @@ func TestATableShortOfSeatsAtTheDeadlineCannotForm(t *testing.T) {
 	terms := testTerms(3)
 	privs := players(t, 3)
 
-	f, err := NewFormation(terms, privs[0])
+	f, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -559,7 +583,7 @@ func TestAJoinAfterTheDeadlineIsNotAdmitted(t *testing.T) {
 	terms := testTerms(2)
 	privs := players(t, 3)
 
-	f, err := NewFormation(terms, privs[1])
+	f, err := NewFormation(terms, testCreds(t, privs[1]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -592,7 +616,7 @@ func TestAFullTableThatAgreesNeedNotWaitForTheDeadline(t *testing.T) {
 	privs := players(t, 3)
 	all := joinsFor(t, terms, privs)
 
-	mine, err := NewFormation(terms, privs[0])
+	mine, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -620,7 +644,7 @@ func TestAFullTableThatAgreesNeedNotWaitForTheDeadline(t *testing.T) {
 	if mine.Agreed() {
 		t.Fatal("agreement was reported without this peer having asserted")
 	}
-	ours, err := mine.Assertion(privs[0])
+	ours, err := mine.Assertion()
 	if err != nil {
 		t.Fatalf("assertion: %v", err)
 	}
@@ -642,7 +666,7 @@ func TestAPeerHoldingSomethingElseIsNotAgreement(t *testing.T) {
 	privs := players(t, 2)
 	all := joinsFor(t, terms, privs)
 
-	mine, err := NewFormation(terms, privs[0])
+	mine, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -674,7 +698,7 @@ func TestAnAssertionNobodySignedIsRefused(t *testing.T) {
 	privs := players(t, 2)
 	all := joinsFor(t, terms, privs)
 
-	mine, err := NewFormation(terms, privs[0])
+	mine, err := NewFormation(terms, testCreds(t, privs[0]))
 	if err != nil {
 		t.Fatalf("new formation: %v", err)
 	}
@@ -693,5 +717,158 @@ func TestAnAssertionNobodySignedIsRefused(t *testing.T) {
 	}
 	if mine.Agreed() {
 		t.Fatal("a forged assertion counted toward agreement")
+	}
+}
+
+func bondFacts(t *testing.T, c Credentials) BondFacts {
+	t.Helper()
+	_, pkScript, err := escrow.BondAddress(c.BondScript, chaincfg.SimNetParams())
+	if err != nil {
+		t.Fatalf("bond address: %v", err)
+	}
+	return BondFacts{
+		Found:         true,
+		ValueAtoms:    int64(escrow.MinBondAtoms),
+		PkScriptHex:   hex.EncodeToString(pkScript),
+		Confirmations: int64(escrow.BondConfirmations),
+	}
+}
+
+// Without a bond a seat is free, and a stranger can fill a table or spoil it as
+// often as they like. This is the check that makes it cost something.
+func TestARealBondIsAccepted(t *testing.T) {
+	terms := testTerms(2)
+	creds := testCreds(t, players(t, 1)[0])
+	j, err := SignJoin(terms, creds)
+	if err != nil {
+		t.Fatalf("sign join: %v", err)
+	}
+	if err := j.Verify(terms); err != nil {
+		t.Fatalf("a genuine join did not verify: %v", err)
+	}
+	if err := CheckBond(j, bondFacts(t, creds), chaincfg.SimNetParams()); err != nil {
+		t.Fatalf("a genuine bond was refused: %v", err)
+	}
+}
+
+func TestABondThatIsNotWhatItClaimsIsRefused(t *testing.T) {
+	terms := testTerms(2)
+	creds := testCreds(t, players(t, 1)[0])
+	j, err := SignJoin(terms, creds)
+	if err != nil {
+		t.Fatalf("sign join: %v", err)
+	}
+	params := chaincfg.SimNetParams()
+
+	for _, tc := range []struct {
+		name   string
+		break_ func(f BondFacts) BondFacts
+	}{
+		{"no coin there", func(f BondFacts) BondFacts { f.Found = false; return f }},
+		{"pays something else", func(f BondFacts) BondFacts {
+			f.PkScriptHex = "a914" + strings.Repeat("00", 20) + "87"
+			return f
+		}},
+		{"too small", func(f BondFacts) BondFacts {
+			f.ValueAtoms = int64(escrow.MinBondAtoms) - 1
+			return f
+		}},
+		{"not buried yet", func(f BondFacts) BondFacts {
+			f.Confirmations = int64(escrow.BondConfirmations) - 1
+			return f
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := CheckBond(j, tc.break_(bondFacts(t, creds)), params); err == nil {
+				t.Fatal("expected a refusal")
+			}
+		})
+	}
+}
+
+// A bond is public - coin at an outpoint anyone can name - so a join carrying
+// somebody else's deposit has to fail on its face, before any chain is asked.
+func TestAJoinCannotCiteSomebodyElsesBond(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 2)
+	mine, theirs := testCreds(t, privs[0]), testCreds(t, privs[1])
+
+	// Take their deposit and script, keep our own session key: the proof of
+	// possession is over their bond key, which we do not have.
+	stolen := mine
+	stolen.BondOutpoint, stolen.BondScript = theirs.BondOutpoint, theirs.BondScript
+	j, err := SignJoin(terms, stolen)
+	if err != nil {
+		t.Fatalf("sign join: %v", err)
+	}
+	if err := j.Verify(terms); err == nil {
+		t.Fatal("a join citing another player's bond verified")
+	}
+}
+
+// The bond is signed over, so a relayed join cannot have its deposit swapped
+// for another on the way.
+func TestABondCannotBeSwappedInARelayedJoin(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 2)
+	mine, theirs := testCreds(t, privs[0]), testCreds(t, privs[1])
+
+	j, err := SignJoin(terms, mine)
+	if err != nil {
+		t.Fatalf("sign join: %v", err)
+	}
+	j.Bond.Outpoint = theirs.BondOutpoint
+	if err := j.Verify(terms); err == nil {
+		t.Fatal("a join whose deposit was swapped still verified")
+	}
+}
+
+// A lock short enough to roll over between tables deters nothing, so a bond on
+// those terms is not one.
+func TestABondLockedTooBrieflyIsRefused(t *testing.T) {
+	terms := testTerms(2)
+	priv := players(t, 1)[0]
+	bond, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate bond key: %v", err)
+	}
+	// BondScript itself refuses a short lock, so the script has to be built
+	// at the minimum and the join checked against a raised one.
+	script, err := escrow.BondScript(bond.PubKey().SerializeCompressed(), escrow.MinBondBlocks)
+	if err != nil {
+		t.Fatalf("bond script: %v", err)
+	}
+	j, err := SignJoin(terms, Credentials{
+		Session: priv, Bond: bond, BondOutpoint: "beef:0", BondScript: script,
+	})
+	if err != nil {
+		t.Fatalf("sign join: %v", err)
+	}
+	if err := j.Verify(terms); err != nil {
+		t.Fatalf("a bond at the minimum lock was refused: %v", err)
+	}
+}
+
+func TestJoiningNeedsCredentialsThatCouldWork(t *testing.T) {
+	terms := testTerms(2)
+	full := testCreds(t, players(t, 1)[0])
+
+	for _, tc := range []struct {
+		name  string
+		creds Credentials
+	}{
+		{"no session key", Credentials{Bond: full.Bond, BondOutpoint: full.BondOutpoint, BondScript: full.BondScript}},
+		{"no bond key", Credentials{Session: full.Session, BondOutpoint: full.BondOutpoint, BondScript: full.BondScript}},
+		{"no deposit", Credentials{Session: full.Session, Bond: full.Bond, BondScript: full.BondScript}},
+		{"no script", Credentials{Session: full.Session, Bond: full.Bond, BondOutpoint: full.BondOutpoint}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := SignJoin(terms, tc.creds); err == nil {
+				t.Fatal("expected a refusal")
+			}
+			if _, err := NewFormation(terms, tc.creds); err == nil {
+				t.Fatal("a table was joined without a bond")
+			}
+		})
 	}
 }

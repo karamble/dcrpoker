@@ -47,8 +47,11 @@ func JoinFrom(j *membership.Join) Join {
 		return Join{}
 	}
 	return Join{
-		Key: hex.EncodeToString(j.Key),
-		Sig: hex.EncodeToString(j.Sig),
+		Key:          hex.EncodeToString(j.Key),
+		Sig:          hex.EncodeToString(j.Sig),
+		BondOutpoint: j.Bond.Outpoint,
+		BondScript:   hex.EncodeToString(j.Bond.Script),
+		BondPoP:      hex.EncodeToString(j.Bond.PoP),
 	}
 }
 
@@ -63,7 +66,23 @@ func (j Join) Into() (*membership.Join, error) {
 	if err != nil {
 		return nil, fmt.Errorf("join signature: %w", err)
 	}
-	return &membership.Join{Key: key, Sig: sig}, nil
+	script, err := hex.DecodeString(j.BondScript)
+	if err != nil {
+		return nil, fmt.Errorf("join bond script: %w", err)
+	}
+	pop, err := hex.DecodeString(j.BondPoP)
+	if err != nil {
+		return nil, fmt.Errorf("join bond proof: %w", err)
+	}
+	return &membership.Join{
+		Key: key,
+		Sig: sig,
+		Bond: membership.Bond{
+			Outpoint: j.BondOutpoint,
+			Script:   script,
+			PoP:      pop,
+		},
+	}, nil
 }
 
 // CommitFrom renders a commit for the wire.
