@@ -15,7 +15,7 @@ func TestSignActionProducesAVerifiableEntry(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 	pc := &PokerClient{}
-	if err := pc.SetActionSigner(3, hex.EncodeToString(priv.Serialize())); err != nil {
+	if err := pc.SetActionSigner(3, "m1", hex.EncodeToString(priv.Serialize())); err != nil {
 		t.Fatalf("set signer: %v", err)
 	}
 
@@ -80,7 +80,7 @@ func TestSignActionIsSilentWithNothingToChainTo(t *testing.T) {
 		t.Fatalf("no signer should mean no signature, got %v %v", signed, err)
 	}
 
-	if err := pc.SetActionSigner(0, hex.EncodeToString(priv.Serialize())); err != nil {
+	if err := pc.SetActionSigner(0, "m1", hex.EncodeToString(priv.Serialize())); err != nil {
 		t.Fatalf("set signer: %v", err)
 	}
 	if signed, err := pc.signAction(gamelog.ActionFold, 0); err != nil || signed != nil {
@@ -103,7 +103,7 @@ func TestSignActionIsSilentWithNothingToChainTo(t *testing.T) {
 func TestSetActionSignerRejectsBadKeys(t *testing.T) {
 	pc := &PokerClient{}
 	for _, k := range []string{"", "zz", "  "} {
-		if err := pc.SetActionSigner(0, k); err == nil {
+		if err := pc.SetActionSigner(0, "m1", k); err == nil {
 			t.Fatalf("expected %q to be refused as a signing key", k)
 		}
 	}

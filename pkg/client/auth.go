@@ -542,6 +542,49 @@ func (pc *PokerClient) deriveSessionPriv(index uint64) (*secp256k1.PrivateKey, e
 	return secp256k1.PrivKeyFromBytes(keyBytes), nil
 }
 
+// DeriveLogKey derives this client's log-signing key for one match.
+//
+// Deliberately not the session key, and not derived from the same string. The
+// session key is named in the escrow script and owns the stake; the log key
+// signs actions with a nonce fixed by position, so that equivocating publishes
+// it (see pkg/forfeit). Those two properties must never meet on one key - a
+// player who equivocated would otherwise be handing out the key to their own
+// escrow, to anybody watching, instead of forfeiting a bond to the player they
+// lied to.
+//
+// Derived from the seed rather than drawn at random so that a client which
+// restarts mid-table signs with the same key it started with. A log key that
+// changed on restart would make every earlier entry unverifiable against the
+// roster, which is indistinguishable from having cheated.
+//
+// One key per match, because it is expected to become public the moment its
+// owner misbehaves.
+func (pc *PokerClient) DeriveLogKey(match string) (*secp256k1.PrivateKey, error) {
+	if strings.TrimSpace(match) == "" {
+		return nil, fmt.Errorf("a log key needs a match")
+	}
+	seedHex, err := pc.GetOrCreateSeedKey()
+	if err != nil {
+		return nil, err
+	}
+	seed, err := hex.DecodeString(seedHex)
+	if err != nil || len(seed) != 32 {
+		return nil, fmt.Errorf("invalid seed")
+	}
+
+	h := hmac.New(blake256.New, seed)
+	h.Write([]byte("poker/log-key/v1"))
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], uint64(len(match)))
+	h.Write(buf[:])
+	h.Write([]byte(match))
+	keyBytes := h.Sum(nil)
+	if len(keyBytes) != 32 {
+		return nil, fmt.Errorf("bad key length")
+	}
+	return secp256k1.PrivKeyFromBytes(keyBytes), nil
+}
+
 // GenerateSessionKey derives a deterministic session key using the client's
 // seed and advances the local counter. Returns hex-encoded priv/pub and index.
 func (pc *PokerClient) GenerateSessionKey() (privHex, pubHex string, index uint64, err error) {

@@ -226,46 +226,48 @@ func (c *RefereeClient) BindEscrow(ctx context.Context, tableID, sessionID, matc
 	if err != nil {
 		return nil, err
 	}
-	c.armActionSigning(resp)
+	c.armActionSigning(matchID, resp)
 	return resp, nil
 }
 
 // armActionSigning teaches the client to sign its actions for the seat it has
 // just bound an escrow to.
 //
-// This is the moment both halves exist: the referee has just told us which
-// seat we hold, and the escrow we opened records which session key index it
-// was derived from. Signing with that same key is what ties the record of who
-// acted to the record of whose money is at stake.
+// This is the moment both halves exist: the referee has just told us which seat
+// we hold, and we know which match we are holding it at.
+//
+// The key is derived from the match rather than taken from the escrow, and that
+// is a change from what this used to do. It signed with the escrow's own
+// session key, so that the record of who acted and the record of whose money
+// was at stake could not come apart - but the log key is now one that publishes
+// itself when its owner equivocates, and a key that did that while also owning
+// the stake would hand out the escrow instead of forfeiting a bond. The two
+// records are tied by signature now (forfeit.Bind) rather than by being one key.
 //
 // Failure is logged rather than returned. The bind itself succeeded, and the
 // consequence surfaces immediately and loudly on the next action - a table
 // that keeps a log refuses an unsigned one - which is far better than failing
 // a bind that actually worked.
-func (c *RefereeClient) armActionSigning(resp *pokerrpc.BindEscrowResponse) {
+func (c *RefereeClient) armActionSigning(matchID string, resp *pokerrpc.BindEscrowResponse) {
 	if c.owner == nil || resp.GetEscrowId() == "" {
 		return
 	}
-	info, err := c.owner.GetEscrowById(resp.GetEscrowId())
+	if matchID == "" {
+		c.logf("cannot arm action signing: escrow %s bound with no match id", resp.GetEscrowId())
+		return
+	}
+	priv, err := c.owner.DeriveLogKey(matchID)
 	if err != nil {
-		c.logf("cannot arm action signing: no cached escrow %s: %v", resp.GetEscrowId(), err)
+		c.logf("cannot arm action signing: derive log key for %s: %v", matchID, err)
 		return
 	}
-	idx, ok := info["key_index"].(float64)
-	if !ok {
-		c.logf("cannot arm action signing: escrow %s records no session key index", resp.GetEscrowId())
-		return
-	}
-	privHex, _, err := c.owner.DeriveSessionKeyAt(uint64(idx))
-	if err != nil {
-		c.logf("cannot arm action signing: derive session key %d: %v", uint64(idx), err)
-		return
-	}
-	if err := c.owner.SetActionSigner(resp.GetSeatIndex(), privHex); err != nil {
+	if err := c.owner.SetActionSigner(resp.GetSeatIndex(), matchID,
+		hex.EncodeToString(priv.Serialize())); err != nil {
 		c.logf("cannot arm action signing: %v", err)
 		return
 	}
-	c.logf("signing actions for seat %d with session key %d", resp.GetSeatIndex(), uint64(idx))
+	c.logf("signing actions for seat %d with the log key for match %s",
+		resp.GetSeatIndex(), matchID)
 }
 
 func (c *RefereeClient) logf(format string, args ...interface{}) {

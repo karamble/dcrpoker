@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 )
@@ -17,21 +17,21 @@ const watchMatch = "table1|sess1"
 type watchTable struct {
 	t      *testing.T
 	chain  *gamelog.Chain
-	privs  []*secp256k1.PrivateKey
+	privs  []*forfeit.LogKey
 	roster map[uint32][]byte
 }
 
 func newWatchTable(t *testing.T, seats int) *watchTable {
 	t.Helper()
-	privs := make([]*secp256k1.PrivateKey, seats)
+	privs := make([]*forfeit.LogKey, seats)
 	roster := make(map[uint32][]byte, seats)
 	for i := range privs {
-		priv, err := secp256k1.GeneratePrivateKey()
+		priv, err := forfeit.NewLogKey(watchMatch)
 		if err != nil {
 			t.Fatalf("generate key: %v", err)
 		}
 		privs[i] = priv
-		roster[uint32(i)] = priv.PubKey().SerializeCompressed()
+		roster[uint32(i)] = priv.Public().SerializeCompressed()
 	}
 	chain, err := gamelog.NewChain(watchMatch, gamelog.Roster(roster))
 	if err != nil {
@@ -195,7 +195,7 @@ func TestChainWatchRefusesAStranger(t *testing.T) {
 	table := newWatchTable(t, 2)
 	w, _ := NewChainWatch(watchMatch, table.roster)
 
-	stranger, err := secp256k1.GeneratePrivateKey()
+	stranger, err := forfeit.NewLogKey(watchMatch)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}

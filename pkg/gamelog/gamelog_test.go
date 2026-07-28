@@ -6,28 +6,28 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 )
 
 const testMatch = "table1|sess1"
 
-func testSeats(t *testing.T, n int) ([]*secp256k1.PrivateKey, Roster) {
+func testSeats(t *testing.T, n int) ([]*forfeit.LogKey, Roster) {
 	t.Helper()
-	privs := make([]*secp256k1.PrivateKey, n)
+	privs := make([]*forfeit.LogKey, n)
 	roster := make(Roster, n)
 	for i := range privs {
-		priv, err := secp256k1.GeneratePrivateKey()
+		priv, err := forfeit.NewLogKey(testMatch)
 		if err != nil {
 			t.Fatalf("generate key: %v", err)
 		}
 		privs[i] = priv
-		roster[uint32(i)] = priv.PubKey().SerializeCompressed()
+		roster[uint32(i)] = priv.Public().SerializeCompressed()
 	}
 	return privs, roster
 }
 
 // signed builds and signs an entry at the chain's head for a seat.
-func signed(t *testing.T, c *Chain, privs []*secp256k1.PrivateKey, seat uint32, action Action, amount int64) *Entry {
+func signed(t *testing.T, c *Chain, privs []*forfeit.LogKey, seat uint32, action Action, amount int64) *Entry {
 	t.Helper()
 	e := c.Next(seat, 1, StreetPreFlop, action, amount)
 	if err := e.Sign(privs[seat]); err != nil {
@@ -80,7 +80,7 @@ func TestChainAcceptsAValidSequence(t *testing.T) {
 // Each of these is a way the history could be rewritten if it were not checked.
 func TestChainRejectsBrokenEntries(t *testing.T) {
 	privs, roster := testSeats(t, 3)
-	stranger, err := secp256k1.GeneratePrivateKey()
+	stranger, err := forfeit.NewLogKey(testMatch)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}

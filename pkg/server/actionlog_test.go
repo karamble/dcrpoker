@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/stretchr/testify/require"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/poker"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
@@ -15,22 +15,22 @@ import (
 
 // loggedTable seeds a two-seat table whose roster has closed, so it keeps a
 // signed action log, and returns the seats' signing keys.
-func loggedTable(t *testing.T, srv *Server, tableID string) (*poker.Table, []*secp256k1.PrivateKey) {
+func loggedTable(t *testing.T, srv *Server, tableID string) (*poker.Table, []*forfeit.LogKey) {
 	t.Helper()
 	const amount = uint64(1_000_000)
 	table := seedRosterTable(t, srv, tableID, 2, amount)
 
-	privs := make([]*secp256k1.PrivateKey, 2)
+	privs := make([]*forfeit.LogKey, 2)
 	uids := []string{
 		"0000000000000000000000000000000000000000000000000000000000000001",
 		"0000000000000000000000000000000000000000000000000000000000000002",
 	}
 	for i, uid := range uids {
-		priv, err := secp256k1.GeneratePrivateKey()
+		priv, err := forfeit.NewLogKey("logkeys")
 		require.NoError(t, err)
 		privs[i] = priv
 		openRosterEscrow(t, srv, table, uid, "tok"+uid[63:], uint32(i), amount,
-			priv.PubKey().SerializeCompressed())
+			priv.Public().SerializeCompressed())
 	}
 	return table, privs
 }
@@ -47,7 +47,7 @@ func playerID(t *testing.T, table *poker.Table, seat uint32) string {
 	return ""
 }
 
-func signAt(t *testing.T, srv *Server, table *poker.Table, priv *secp256k1.PrivateKey, seat uint32, action gamelog.Action, amount int64) *pokerrpc.SignedAction {
+func signAt(t *testing.T, srv *Server, table *poker.Table, priv *forfeit.LogKey, seat uint32, action gamelog.Action, amount int64) *pokerrpc.SignedAction {
 	t.Helper()
 	chain, err := srv.chainFor(table.GetConfig().ID)
 	require.NoError(t, err)
@@ -198,7 +198,7 @@ func TestTableWithoutRosterKeepsNoLog(t *testing.T) {
 
 	// A signature is refused rather than waved through, since accepting one
 	// would imply it had been checked.
-	priv, err := secp256k1.GeneratePrivateKey()
+	priv, err := forfeit.NewLogKey("logkeys")
 	require.NoError(t, err)
 	e := &gamelog.Entry{Version: gamelog.Version, Seq: 1, Seat: 0, Action: gamelog.ActionCheck}
 	require.NoError(t, e.Sign(priv))
@@ -213,11 +213,11 @@ func TestNoLogUntilRosterCloses(t *testing.T) {
 	srv := newTestServerWithState(t)
 	table := seedRosterTable(t, srv, "half-open", 2, amount)
 
-	priv, err := secp256k1.GeneratePrivateKey()
+	priv, err := forfeit.NewLogKey("logkeys")
 	require.NoError(t, err)
 	openRosterEscrow(t, srv, table,
 		"0000000000000000000000000000000000000000000000000000000000000001", "tokA", 0, amount,
-		priv.PubKey().SerializeCompressed())
+		priv.Public().SerializeCompressed())
 
 	chain, err := srv.chainFor("half-open")
 	require.NoError(t, err)

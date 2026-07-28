@@ -7,7 +7,9 @@ import (
 
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 )
 
 // Roster maps a seat to the session key that seat signs with. It is the same
@@ -171,6 +173,36 @@ func (p EquivocationProof) Verify() error {
 	return nil
 }
 
+// RecoverKey turns the proof into the cheat's log key.
+//
+// This is what the proof was always missing. Until now an EquivocationProof
+// established, beyond argument and without a quorum, that a seat had lied - and
+// then nothing happened, because the escrow's branches are not conditioned on
+// fraud and Decred script cannot read a proof. A player could equivocate, stop
+// signing, and lose the transaction fees.
+//
+// The key that comes out here opens one branch of that seat's bond, for each
+// player they lied to and for nobody else. See pkg/forfeit and
+// escrow.ForfeitableBondScript.
+func (p EquivocationProof) RecoverKey() (*secp256k1.PrivateKey, error) {
+	if err := p.Verify(); err != nil {
+		return nil, err
+	}
+	ha, err := p.A.Hash()
+	if err != nil {
+		return nil, err
+	}
+	hb, err := p.B.Hash()
+	if err != nil {
+		return nil, err
+	}
+	pub, err := secp256k1.ParsePubKey(p.A.Signer)
+	if err != nil {
+		return nil, fmt.Errorf("signer key: %w", err)
+	}
+	return forfeit.Recover(pub, ha[:], p.A.Sig, hb[:], p.B.Sig)
+}
+
 // HeadAttestation is a seat's signature over what it believes the chain head to
 // be at some sequence number.
 //
@@ -198,11 +230,19 @@ func (h *HeadAttestation) signingBytes() []byte {
 }
 
 // AttestHead signs the chain's current head for a seat.
-func (c *Chain) AttestHead(seat uint32, priv *secp256k1.PrivateKey) (*HeadAttestation, error) {
-	if priv == nil {
+//
+// Signed under its own domain, so that attesting to a head at sequence 5 and
+// recording an entry at sequence 5 - both perfectly honest, both routine - do
+// not share a nonce and hand over the seat's key for playing correctly. Two
+// *different* heads at one sequence number still do, which is the point.
+func (c *Chain) AttestHead(seat uint32, key *forfeit.LogKey) (*HeadAttestation, error) {
+	if key == nil {
 		return nil, fmt.Errorf("no signing key")
 	}
-	pub := priv.PubKey().SerializeCompressed()
+	if key.Match() != c.matchID {
+		return nil, fmt.Errorf("that log key belongs to match %s, not %s", key.Match(), c.matchID)
+	}
+	pub := key.Public().SerializeCompressed()
 	want, ok := c.roster[seat]
 	if !ok {
 		return nil, fmt.Errorf("seat %d is not at this table", seat)
@@ -213,11 +253,11 @@ func (c *Chain) AttestHead(seat uint32, priv *secp256k1.PrivateKey) (*HeadAttest
 
 	att := &HeadAttestation{Seq: c.seq, Hash: c.head, Seat: seat, Signer: pub}
 	digest := blake256.Sum256(att.signingBytes())
-	sig, err := schnorr.Sign(priv, digest[:])
+	sig, err := key.Sign(forfeit.DomainHead, att.Seq, digest[:])
 	if err != nil {
 		return nil, fmt.Errorf("sign head: %w", err)
 	}
-	att.Sig = sig.Serialize()
+	att.Sig = sig
 	return att, nil
 }
 
@@ -269,4 +309,22 @@ func ConflictingHeads(a, b *HeadAttestation) error {
 		return fmt.Errorf("second attestation: %w", err)
 	}
 	return nil
+}
+
+// RecoverKeyFromHeads turns a fork into the same key a conflicting entry would.
+//
+// Both routes to equivocation end in the same place, which is the point of
+// giving them one domain each rather than one between them: a seat that forks
+// history is punished exactly as a seat that lies about an action.
+func RecoverKeyFromHeads(a, b *HeadAttestation) (*secp256k1.PrivateKey, error) {
+	if err := ConflictingHeads(a, b); err != nil {
+		return nil, err
+	}
+	da := blake256.Sum256(a.signingBytes())
+	db := blake256.Sum256(b.signingBytes())
+	pub, err := secp256k1.ParsePubKey(a.Signer)
+	if err != nil {
+		return nil, fmt.Errorf("signer key: %w", err)
+	}
+	return forfeit.Recover(pub, da[:], a.Sig, db[:], b.Sig)
 }

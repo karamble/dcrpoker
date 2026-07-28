@@ -6,31 +6,50 @@ import (
 	"strings"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 )
 
 // actionSigner is what this client signs its actions with at one table.
 //
-// The key is the session key the table's escrow is bound to, not a separate
-// identity. That is the point: a signature on an action then comes from the
-// same key that owns the stake, so the record of who acted and the record of
-// whose money is at risk cannot come apart.
+// The key is a per-match log key and emphatically *not* the session key the
+// escrow is bound to. It used to be the session key, on the reasoning that the
+// record of who acted and the record of whose money is at risk should not come
+// apart - which is right, and is now done by binding the two with a signature
+// instead of by using one key for both (forfeit.Bind).
+//
+// They had to be separated because of what the log key now is. Its signatures
+// take their nonce from the position in the log rather than from the message,
+// so signing two different things at one position publishes it: that is how
+// equivocation is punished without anybody adjudicating anything. A key that
+// both owns the stake and is published on misbehaviour would mean a cheat hands
+// out the key to their own escrow, to whoever is watching, rather than
+// forfeiting a bond to the player they lied to. The penalty has to be bounded
+// and it has to be directed.
 type actionSigner struct {
-	seat uint32
-	priv *secp256k1.PrivateKey
+	seat  uint32
+	key   *forfeit.LogKey
+	match string
 }
 
-// SetActionSigner tells the client which seat it holds and which session key to
-// sign its actions with. privHex is the same key used for the table's escrow -
-// see GenerateSessionKey and DeriveSessionKeyAt.
-func (pc *PokerClient) SetActionSigner(seat uint32, privHex string) error {
+// SetActionSigner tells the client which seat it holds and which log key to
+// sign its actions with.
+//
+// privHex must be the match's log key - see DeriveLogKey - and not a session
+// key. There is no way to check that here, which is why DeriveLogKey exists and
+// why nothing else should be passed.
+func (pc *PokerClient) SetActionSigner(seat uint32, match, privHex string) error {
 	raw, err := hex.DecodeString(strings.TrimSpace(privHex))
-	if err != nil || len(raw) == 0 {
-		return fmt.Errorf("bad session key")
+	if err != nil || len(raw) != 32 {
+		return fmt.Errorf("bad log key")
+	}
+	key, err := forfeit.LogKeyFrom(secp256k1.PrivKeyFromBytes(raw), strings.TrimSpace(match))
+	if err != nil {
+		return err
 	}
 	pc.Lock()
-	pc.signer = &actionSigner{seat: seat, priv: secp256k1.PrivKeyFromBytes(raw)}
+	pc.signer = &actionSigner{seat: seat, key: key, match: strings.TrimSpace(match)}
 	pc.Unlock()
 	return nil
 }
@@ -76,7 +95,7 @@ func (pc *PokerClient) signAction(action gamelog.Action, amount int64) (*pokerrp
 	}
 	copy(e.PrevHash[:], last.GetLogHead())
 
-	if err := e.Sign(signer.priv); err != nil {
+	if err := e.Sign(signer.key); err != nil {
 		return nil, fmt.Errorf("sign %s: %w", action, err)
 	}
 	return actionToProto(e), nil

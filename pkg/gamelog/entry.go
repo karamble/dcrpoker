@@ -28,7 +28,9 @@ import (
 
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 )
 
 // Version is the entry format version. It is covered by the signature, so a
@@ -163,21 +165,32 @@ func (e *Entry) Hash() ([32]byte, error) {
 	return blake256.Sum256(msg), nil
 }
 
-// Sign fills in Signer and Sig for the given session key.
-func (e *Entry) Sign(priv *secp256k1.PrivateKey) error {
-	if priv == nil {
+// Sign fills in Signer and Sig for the given log key.
+//
+// The key is a forfeit.LogKey rather than a bare private key, and that is the
+// whole difference between a log that can prove cheating and one that can
+// punish it. The nonce comes from the position in the log rather than from the
+// message, so signing one entry per sequence number reveals nothing and signing
+// two publishes the key - see pkg/forfeit. Equivocating is no longer something
+// somebody has to notice, report and be believed about; it hands the key to the
+// player who was lied to.
+//
+// A plain schnorr.Sign here would still produce entries that verify, still
+// produce EquivocationProofs, and still leave the cheat with nothing to lose.
+func (e *Entry) Sign(key *forfeit.LogKey) error {
+	if key == nil {
 		return fmt.Errorf("no signing key")
 	}
-	e.Signer = priv.PubKey().SerializeCompressed()
+	e.Signer = key.Public().SerializeCompressed()
 	h, err := e.Hash()
 	if err != nil {
 		return err
 	}
-	sig, err := schnorr.Sign(priv, h[:])
+	sig, err := key.Sign(forfeit.DomainEntry, e.Seq, h[:])
 	if err != nil {
 		return fmt.Errorf("sign entry: %w", err)
 	}
-	e.Sig = sig.Serialize()
+	e.Sig = sig
 	return nil
 }
 

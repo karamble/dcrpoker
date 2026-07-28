@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 )
 
@@ -12,12 +12,12 @@ const testMatch = "table1|sess1"
 
 // A message has to survive the trip and mean the same thing on arrival.
 func TestActionRoundTrips(t *testing.T) {
-	priv, err := secp256k1.GeneratePrivateKey()
+	priv, err := forfeit.NewLogKey(testMatch)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
 	roster := gamelog.Roster{
-		0: priv.PubKey().SerializeCompressed(),
+		0: priv.Public().SerializeCompressed(),
 		1: mustKey(t),
 	}
 	c, err := gamelog.NewChain(testMatch, roster)
@@ -133,9 +133,9 @@ func TestNoMessageCarriesAnIdentityField(t *testing.T) {
 
 func mustKey(t *testing.T) []byte {
 	t.Helper()
-	priv, err := secp256k1.GeneratePrivateKey()
+	priv, err := forfeit.NewLogKey(testMatch)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	return priv.PubKey().SerializeCompressed()
+	return priv.Public().SerializeCompressed()
 }
