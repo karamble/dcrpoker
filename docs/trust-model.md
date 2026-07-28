@@ -4,6 +4,33 @@ Where the current design is trust-minimized, where it is not, and what it would
 take to close the gap. Line references point at the code that implements (or
 should implement) each claim.
 
+### Status, 2026-07-28
+
+**The serverless design below is built.** A hand of poker now plays from invite
+to settlement with no server: `pkg/deck` (verifiable shuffle and reveal),
+`pkg/replay` (a hand as a pure reducer over its own log), `pkg/driver` (a peer
+playing one, then many), `pkg/forfeit` and `pkg/escrow` (bonds, claims,
+answers, settlement), wired through `cmd/pokerplugin`.
+
+So this document is now two things at once, and it is worth knowing which part
+you are reading. The sections on the **server path** describe code that still
+exists, is unchanged, and is being deleted. The sections on the **serverless
+design** describe decisions that were subsequently implemented — mostly as
+written, and in four places *not* as written. Those are marked **Superseded**
+and are the most useful paragraphs here, because each records a design that did
+not survive contact with the problem:
+
+- threshold decryption of board cards (rejected: it sells the deck's one
+  property to buy liveness)
+- the two-minute dispute window (superseded by block-granularity)
+- "only attributable faults may affect funds" (satisfied without attributing
+  abandonment at all)
+- drop-out being harmless on its own (it is not; it needed a bond and an exit)
+
+Where the code and this document disagree, **the code is authoritative.** The
+reasoning behind each decision is in the commit messages and package comments,
+which are long deliberately.
+
 ### Architecture recap
 
 There is one server, `cmd/pokerd`, and every client reaches it over gRPC. It
@@ -20,7 +47,10 @@ connection. `pokerd` additionally needs a dcrd RPC connection for
 `pkg/chainwatcher`; clients never talk to the chain through the server, and
 broadcast their own CSV refunds independently (`pkg/client/refund.go`).
 
-There is no peer-to-peer path between players.
+There *was* no peer-to-peer path between players. There is one now, and it does
+not use any of the above: `cmd/pokerplugin` runs inside dcrpulse, reaches the
+chain and Bison Relay through the host rather than through `pokerd`, and speaks
+to other players over a group chat. Nothing in this recap is on its path.
 
 ### What is trustless today
 
@@ -56,7 +86,8 @@ section.
 
 ### What is trusted today
 
-Everything above the escrow layer.
+Everything above the escrow layer — **on the server path**. The peer-to-peer
+path trusts none of it; see the status note above.
 
 - **Shuffling and dealing.** `Deck.Shuffle` (`pkg/poker/deck.go:159`) is an
   ordinary server-side RNG shuffle. There is no mental-poker or commit-reveal
@@ -68,6 +99,14 @@ Everything above the escrow layer.
   `poker.proto` is on payout-address binding (`pkg/rpc/poker.proto:491`).
   `checkpoints.go` writes server-internal DB snapshots with no player
   attestation.
+
+One thing to know before touching the server path: **`pkg/server/actionlog.go`
+is knowingly incompatible with current clients.** It builds its chain from the
+escrow's session keys, and clients now sign log entries with a separate
+per-match log key, so every entry a real client sends is refused. It is left
+that way with a comment — fixing it needs a regenerated protobuf for a
+component this work deletes. Its own tests pass because they use log keys in
+both roles, which is exactly what hid the incompatibility.
 
 ### The escrow does not bind the depositor
 
@@ -255,6 +294,15 @@ the referee rather than being handed to players, so no player can assemble it.
 A serverless table has no such asymmetry to lean on and will need the abort
 gated some other way — that is open work for the p2p phase.
 
+**Answered, by not needing the gate.** The peer-to-peer path settles at the last
+**checkpoint** every seat signed, and a checkpoint only exists at a hand
+boundary. There is nothing to gate because there is nothing to broadcast
+mid-hand: a hand in progress was never agreed by anybody, so a table that stops
+settles at its last boundary and voids what was under way. The abort is simply
+the case where that boundary is hand zero, and the same transaction is produced
+whoever assembles it — which is also why nobody has to establish who stopped
+the table.
+
 ### Known gaps in the escrow layer
 
 Two further issues meant the cryptography that exists was not load-bearing
@@ -296,6 +344,12 @@ it let the server silently steer which outcomes were settleable.
 
 ### Roadmap toward trustless decentralization
 
+**All three tiers are built on the peer-to-peer path**, though not by the route
+sketched here — Tier 1's replayable engine and Tier 2's mental poker landed
+together, because a deck nobody can read is what makes a log worth replaying.
+The tiers are kept because the ordering argument was right and the costs it
+predicted turned out to be measurable.
+
 Ordered by value per unit of effort.
 
 **Tier 1 — make the hand auditable.**
@@ -326,6 +380,16 @@ Ordered by value per unit of effort.
   mid-hand strands the deck. The CSV refund branch is already the correct
   backstop for that failure.
 
+  **Built** as ElGamal with Neff verifiable shuffles on kyber's primitives
+  (`pkg/deck`). The costs are now measured rather than estimated: a masked deck
+  is 3328 bytes, a shuffle proof 20064, a decryption share 128; proving a
+  shuffle takes ~135ms and verifying one ~204ms. A hand costs 49KB at two seats
+  and 153KB at six, but **each player sends about 25KB regardless of seat
+  count** — one deck and one proof — so the wire envelope needed nothing new.
+  Verification is what scales with the table, at roughly a second per hand at
+  six seats. The commit-reveal step above was skipped: it is strictly weaker
+  than what was built and would have been thrown away.
+
 **Tier 3 — remove the server as a party.**
 
 - Demote `pokerd` to relay and matchmaker. With a deterministic state machine
@@ -340,6 +404,17 @@ Ordered by value per unit of effort.
   updates with revocation, settling on-chain only at teardown or dispute. Much
   larger than everything above it and worth deferring until the lower layers are
   solid.
+
+  **Built, and smaller than feared**, because the adaptor branches turned out to
+  be unnecessary. Every seat signs a **checkpoint** — the stacks at a hand
+  boundary — and settlement pays those out directly (`escrow.BuildSettlement`):
+  one input per seat behind its own script, one output per seat, every member's
+  signature on every input. Split pots and multiple winners are just numbers in
+  a checkpoint, so nothing blows up combinatorially. What made this work was
+  giving up on settling a *hand*: a hand in progress was never agreed by
+  anybody, so a table that stops settles at its last boundary and voids what was
+  under way. Revocation is still absent — a stale checkpoint is not yet
+  punishable — which is the remaining piece of the channel-style design.
 
 ### Serverless design (accepted 2026-07-26)
 
@@ -555,6 +630,27 @@ These must never be mixed.
 Only attributable faults may affect funds. Reputation may weigh subjective
 signals, but never authoritatively.
 
+**Superseded in the way it was satisfied.** The constraint held; the conclusion
+drawn from it — that abandonment therefore cannot be punished — did not.
+
+Equivocation became attributable in the strongest possible sense: log entries
+are signed with a nonce derived from the *position in the log* rather than from
+the message, so signing twice at one position publishes the signing key
+arithmetically (`pkg/forfeit`). Nobody reports the cheat and nobody is believed;
+the cheat hands its key to whoever it lied to. A bond branch pays to the sum of
+that key and one opponent's, so neither party can spend it alone and the
+punishment is directed rather than available to any passing observer.
+
+Abandonment was closed **without attributing it at all**, which is the part this
+section did not anticipate. A claim names an obligation the log says a seat owes
+— "the entry at sequence 9" — which every peer derives identically, and the
+accused answers by spending the same output on chain. What decides it is a race,
+not a judgement: nobody adjudicates, silence convicts nobody who is present, and
+a seat that owes nothing cannot be claimed against at all. That last property is
+load-bearing. Without it a player who *stalls* could wait for their opponent to
+give up and then claim the bond of the person who stopped playing because of
+them — and heads-up there is no third party to refuse.
+
 #### Drop-out is designed to be harmless
 
 Settlement already collects presigs for every branch before the hand, so a
@@ -566,6 +662,29 @@ treated as folded and their hole cards are never opened, so nothing needs
 recovering; only board-card decryption keys are threshold-shared (t-of-n) at
 hand start. Hole-card keys are deliberately never shared — a coalition able to
 reconstruct a live hole card is a worse failure than a stalled table.
+
+**Superseded, twice over.**
+
+**Threshold decryption was rejected outright.** Nothing is t-of-n; every card
+needs every player's share. The board is not special: `t = n-1` lets any n−1
+players read the last one's hole cards, and heads-up `t = 1` means your
+opponent simply reads your hand. It buys liveness by selling the one property
+the deck exists to provide, and the liveness it buys has a cheaper answer.
+
+**And drop-out is not harmless.** The claim above is true of *settlement* and
+false of everything else. A leaver freezes the deck for everyone still playing,
+because the board needs their share too — so at three or more seats a hand
+cannot finish. Heads-up it genuinely is harmless, since a leaver leaves exactly
+one contestant and no card ever needs opening, which is a strong argument for
+heads-up first.
+
+What closed it was economic, not cryptographic. A **table bond** posted after
+roster close, forfeitable to the seats that stayed; a **clean exit** so that
+leaving is an ordinary thing a player may do — free between hands, a fold in
+the middle of one, which is what stops leaving being a way to un-bet a hand
+that is going badly; and an **answer** the accused holds in advance, because
+the branch that answers a claim needs every member's signature including the
+accusers', who will not give it once they have started.
 
 #### Bonds instead of reputation
 
@@ -580,6 +699,15 @@ spendable by the others after a relative timelock unless the leaver posts a
 signed continuation inside a dispute window of roughly two minutes — about
 twice the time to boot a computer and launch Bison Relay, sized to human and
 machine recovery rather than to block intervals.
+
+**Superseded: the window is block-granular, and had to be.** Two minutes cannot
+be enforced by anything both parties can check — a clock is one machine's
+opinion, and money moving on it is money moving on that opinion. The window is
+three blocks, about a quarter of an hour, which is what the chain can actually
+witness. A peer waits twice that again before it will even propose a claim, so
+the whole thing says "you are not coming back" rather than "you are slow".
+Tempo is not enforced at all: it is a UI concern, and a table's answer to
+somebody merely slow is to leave, which now costs at most one folded hand.
 
 **That cannot be posted at registration.** A forfeitable bond has to name the
 people it would be forfeited to, and at registration there is no roster to name
@@ -607,6 +735,27 @@ It does not compensate anyone for a no-show's CSV wait. That still needs the
 forfeitable bond, which can only be posted once the roster is closed — alongside
 the stake, not at registration — and the dispute-window design above is what it
 should be built to. Two instruments, not one.
+
+**The second instrument was built on 2026-07-28**, exactly where this predicted
+it had to go: `escrow.TableBondScript`, derived from the settled seating and
+posted alongside the stake. A table deals only when every seat has both on the
+chain. Three branches, and the shape of them is the design: **alive** needs
+every member and carries no timelock; **claim** needs every member except the
+owner, after the window; **backstop** is the owner alone after a long lock. An
+answer beats a claim because it carries no delay.
+
+Every bond names the whole table, and each peer rebuilds its neighbours' from
+the roster it already agreed rather than believing what they announce — a bond
+naming the wrong membership holds real coin, confirms, and is indistinguishable
+from a real one by amount or confirmations.
+
+One thing worth recording because it was nearly shipped wrong: the alive branch
+needs the accusers' signatures, so an answer assembled *at the time* cannot
+exist. It has to be agreed in advance and kept by its owner, and it pays the
+bond back into an identical bond so that holding it early is worth nothing. A
+chain of eight is pre-agreed at once, which Decred permits because a
+transaction's identity is its prefix and signatures live in the witness — so
+every outpoint in the chain is known before anything is signed.
 
 #### Wire protocol: the `--gaming[` envelope
 
@@ -725,7 +874,37 @@ contributes only the hidden-information machinery — mental poker, board-card
 threshold decryption, leaver-treated-as-folded. Poker is the hardest case in the
 family, so later games are largely drop-ins.
 
+### What is actually still open, 2026-07-28
+
+Ordered by what would bite first.
+
+- **Nothing has met a real network.** Every peer-to-peer property here is proven
+  between objects in one process. The first live table tests brclientd with a
+  31KB shuffle frame, a mid-hand reconnect, and — most likely first — a KX reset
+  opening a claim against a peer who did nothing wrong. That is not a bug: a
+  reset and an abandonment are deliberately indistinguishable, which is why the
+  accused holds an answer. **Exercise the answer path before the claim path.**
+- **Two e2e tests fail intermittently under parallel `go test ./...`**, at
+  roughly 5–10%, clean in isolation and under `-p 1`. Cause unknown after ~50
+  targeted and ~10 full runs. Verification has been using `-p 1`, so the
+  parallel path is effectively unverified — do not read a green run as green.
+- **Stale checkpoints are not punishable.** A peer holds every checkpoint it
+  ever signed and nothing stops it settling on an old one. Decrementing
+  timelocks or Lightning-style revocation both close it; neither is built.
+- **Short-handed continuation.** A table dissolves when somebody leaves, because
+  the escrow, the bond and the roster all name the full membership — continuing
+  without a seat means re-forming all three, which is a new table with carried
+  stacks rather than this one with a gap.
+- **The server path is knowingly broken** against current clients, and is being
+  deleted rather than fixed. See the note under "What is trusted today".
+
 ### Out of scope
 
 Trustless card handling does not address collusion between players, which is the
 dominant real-world attack on online poker and is not a cryptographic problem.
+
+Nor does any of it address tempo. A player who answers at the last possible
+moment on every decision breaks no rule and is ruinous to play against; the
+answer is to leave, which costs at most one folded hand. There is no
+construction that enforces a twenty-second timer and remains a fact both
+players can check, so none is attempted.
