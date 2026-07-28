@@ -311,3 +311,84 @@ func CheckClaimDraft(tx *wire.MsgTx, d ClaimDraft) error {
 	}
 	return nil
 }
+
+// RefreshDraft is a bond being respent into an identical bond.
+//
+// The answer to a claim, and the reason it has to be pre-signed. The branch that
+// answers needs every member's signature - including the seats doing the
+// claiming, who will not give it once they have started. So it is agreed while
+// everybody is still cooperating, and the owner keeps it against the day
+// somebody says they have gone.
+//
+// It pays back into the same script, which is what makes it safe to hand over in
+// advance: broadcasting it early gains the owner nothing, because their coin
+// lands straight back under the identical lock. All it does is spend the output
+// a claim is against, and a claim whose input is gone is dead.
+type RefreshDraft struct {
+	Bond       []byte
+	Prevout    wire.OutPoint
+	ValueAtoms int64
+	FeeAtoms   int64
+	Params     stdaddr.AddressParams
+}
+
+// BuildRefresh builds the unsigned transaction that answers a claim.
+//
+// Deterministic, like every other multi-signed draft here: every member has to
+// build the same bytes or the signatures gathered in advance will not fit the
+// transaction they were gathered for.
+func BuildRefresh(d RefreshDraft) (*wire.MsgTx, error) {
+	if _, err := ParseTableBond(d.Bond); err != nil {
+		return nil, err
+	}
+	_, pkScript, err := Address(d.Bond, d.Params)
+	if err != nil {
+		return nil, fmt.Errorf("derive the bond's address: %w", err)
+	}
+	return BuildAlive(AliveDraft{
+		Bond:       d.Bond,
+		Prevout:    d.Prevout,
+		ValueAtoms: d.ValueAtoms,
+		PayScript:  pkScript,
+		FeeAtoms:   d.FeeAtoms,
+	})
+}
+
+// CheckRefreshDraft is what a member runs before pre-signing somebody else's
+// answer.
+//
+// The one thing worth checking is that it really does pay back into the same
+// bond. A signature on anything else would be a signature on that seat taking
+// its bond out early, which is exactly what the lock exists to prevent - and it
+// would be handed over months before anybody looked at it again.
+func CheckRefreshDraft(tx *wire.MsgTx, d RefreshDraft) error {
+	want, err := BuildRefresh(d)
+	if err != nil {
+		return err
+	}
+	if tx == nil || len(tx.TxIn) != 1 || len(tx.TxOut) != 1 {
+		return fmt.Errorf("a refresh has one input and one output")
+	}
+	if tx.Version != want.Version {
+		return fmt.Errorf("refresh is version %d, want %d", tx.Version, want.Version)
+	}
+	if tx.TxIn[0].PreviousOutPoint != want.TxIn[0].PreviousOutPoint {
+		return fmt.Errorf("refresh spends a different output than the bond named")
+	}
+	if tx.TxIn[0].ValueIn != want.TxIn[0].ValueIn {
+		return fmt.Errorf("refresh states the bond holds %d, not %d",
+			tx.TxIn[0].ValueIn, want.TxIn[0].ValueIn)
+	}
+	if tx.TxIn[0].Sequence != want.TxIn[0].Sequence {
+		return fmt.Errorf("refresh carries a sequence of %d, and the branch that answers has no timelock",
+			tx.TxIn[0].Sequence)
+	}
+	if tx.TxOut[0].Value != want.TxOut[0].Value {
+		return fmt.Errorf("refresh pays out %d, and the fee leaves %d",
+			tx.TxOut[0].Value, want.TxOut[0].Value)
+	}
+	if !bytes.Equal(tx.TxOut[0].PkScript, want.TxOut[0].PkScript) {
+		return fmt.Errorf("refresh pays somewhere other than back into the same bond")
+	}
+	return nil
+}

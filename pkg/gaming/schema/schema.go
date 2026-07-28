@@ -105,6 +105,18 @@ const (
 	// bond. Like KindFunded, the chain is what makes it true.
 	KindBonded Kind = "bonded"
 
+	// KindRefresh is a signature on somebody's answer to a future claim,
+	// agreed while the table is still cooperating.
+	//
+	// It has to be pre-signed. The branch that answers a claim needs every
+	// member's signature including the accusers', who will not give it once
+	// they have started - so an answer assembled at the time cannot exist,
+	// and this is the same answer agreed in advance and kept by its owner.
+	KindRefresh Kind = "refresh"
+
+	// KindSettle is a signature on the transaction that pays a table out.
+	KindSettle Kind = "settle"
+
 	// KindPayout is one member saying where it wants to be paid.
 	KindPayout Kind = "payout"
 

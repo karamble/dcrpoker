@@ -422,3 +422,124 @@ func TestTheBackstopBuildsThroughTheOrdinarySpendBuilder(t *testing.T) {
 		t.Fatal("the backstop was spent a block before it matured")
 	}
 }
+
+// The answer to a claim has to be one the accused can actually produce.
+//
+// This is the test the earlier one should have been. TestAnAnswerBeatsAClaim
+// signs with every member's key because the test holds them all - and a real
+// accused peer holds exactly one. The branch that answers needs every signature
+// including the accusers', who will not give it once they have started claiming,
+// so an answer assembled at the time is not something that can exist.
+//
+// Which is why it is agreed in advance. Every member signs the refresh while the
+// table is still cooperating, the owner keeps it, and the day somebody says they
+// have gone it is already in their hand.
+func TestAnAccusedSeatCanAnswerWithSignaturesItAlreadyHolds(t *testing.T) {
+	b := postTableBond(t, 3)
+	params := chaincfg.TestNet3Params()
+	draft := RefreshDraft{
+		Bond:       b.script,
+		Prevout:    testPrevout(),
+		ValueAtoms: testBondAtoms,
+		FeeAtoms:   testBondFee,
+		Params:     params,
+	}
+
+	// Agreed while everybody is cooperating.
+	tx, err := BuildRefresh(draft)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	held := make([][]byte, 0, len(b.terms.Members))
+	for _, m := range b.terms.Members {
+		sig, err := SignBondSpend(tx, b.script, privFor(t, b.privs, m))
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		held = append(held, sig)
+	}
+
+	// Later, with the others refusing to help, the owner assembles what it
+	// already has and it satisfies the script.
+	done, err := FinishAlive(tx, b.script, held, params)
+	if err != nil {
+		t.Fatalf("an accused seat could not answer with the signatures it held: %v", err)
+	}
+
+	// It pays back into the same bond, so holding it early is worth nothing.
+	_, pkScript, err := Address(b.script, params)
+	if err != nil {
+		t.Fatalf("address: %v", err)
+	}
+	if !bytes.Equal(done.TxOut[0].PkScript, pkScript) {
+		t.Fatal("a refresh paid somewhere other than back into the same bond")
+	}
+	if done.TxIn[0].Sequence != 0 {
+		t.Fatalf("a refresh carries a sequence of %d, so it could not beat a delayed claim",
+			done.TxIn[0].Sequence)
+	}
+	// And it spends the output a claim would be against, which is what kills it.
+	claimTx, err := BuildClaim(testDraft(t, b))
+	if err != nil {
+		t.Fatalf("build claim: %v", err)
+	}
+	if done.TxIn[0].PreviousOutPoint != claimTx.TxIn[0].PreviousOutPoint {
+		t.Fatal("the answer does not spend the output the claim is against")
+	}
+}
+
+// A member asked to pre-sign somebody's answer is being asked months in advance,
+// so what it signs has to be checked. Anything but a payment back into the same
+// bond is that seat taking its bond out early.
+func TestPreSigningAnAnswerRefusesAnythingButTheSameBond(t *testing.T) {
+	b := postTableBond(t, 3)
+	params := chaincfg.TestNet3Params()
+	draft := RefreshDraft{
+		Bond:       b.script,
+		Prevout:    testPrevout(),
+		ValueAtoms: testBondAtoms,
+		FeeAtoms:   testBondFee,
+		Params:     params,
+	}
+	honest, err := BuildRefresh(draft)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if err := CheckRefreshDraft(honest, draft); err != nil {
+		t.Fatalf("an honest refresh did not check out: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		bend func(*wire.MsgTx)
+	}{
+		{"paying the owner instead", func(tx *wire.MsgTx) {
+			tx.TxOut[0].PkScript = payTo(t, 1)[0]
+		}},
+		{"keeping some of it", func(tx *wire.MsgTx) {
+			tx.TxOut[0].Value -= 100_000
+		}},
+		{"an extra output", func(tx *wire.MsgTx) {
+			tx.AddTxOut(wire.NewTxOut(1000, payTo(t, 1)[0]))
+		}},
+		{"a different deposit", func(tx *wire.MsgTx) {
+			var h chainhash.Hash
+			copy(h[:], bytes.Repeat([]byte{0x33}, chainhash.HashSize))
+			tx.TxIn[0].PreviousOutPoint.Hash = h
+		}},
+		{"a timelock that could not beat a claim", func(tx *wire.MsgTx) {
+			tx.TxIn[0].Sequence = 10
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad, err := BuildRefresh(draft)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			tc.bend(bad)
+			if err := CheckRefreshDraft(bad, draft); err == nil {
+				t.Fatal("a member would have pre-signed a bond leaving its own lock")
+			}
+		})
+	}
+}

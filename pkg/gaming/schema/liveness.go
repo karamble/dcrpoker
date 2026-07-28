@@ -152,3 +152,32 @@ type Leaving struct {
 	Seat uint32 `json:"seat"`
 	Hand uint64 `json:"hand"`
 }
+
+// Refresh is one member's signature on another seat's answer to a future claim.
+//
+// Gathered while the table is still cooperating, because the branch that answers
+// needs every member and the accusers will not sign once they have started. The
+// owner keeps the set and broadcasts it the day somebody says they have gone.
+type Refresh struct {
+	// Seat is whose bond this answers for.
+	Seat uint32 `json:"seat"`
+	// Tx is the unsigned answer, hex-encoded, so everybody signs the same
+	// bytes rather than a description of them.
+	Tx     string `json:"tx"`
+	Signer string `json:"signer"` // hex compressed session pubkey
+	Sig    string `json:"sig"`
+}
+
+// Settle is one member's signature on the transaction that pays a table out.
+//
+// One signature per input, because each seat's stake sits behind its own script
+// and the settlement branch of every one of them names the whole table.
+type Settle struct {
+	// Hand is the checkpoint this pays out at, so a signature for one
+	// boundary cannot be applied to another.
+	Hand uint64 `json:"hand"`
+	// Tx is the unsigned settlement, hex-encoded.
+	Tx     string   `json:"tx"`
+	Signer string   `json:"signer"` // hex compressed session pubkey
+	Sigs   []string `json:"sigs"`   // one per input, in input order
+}

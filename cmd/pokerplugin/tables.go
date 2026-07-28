@@ -45,6 +45,13 @@ type table struct {
 	// stopped.
 	payouts map[uint32]string
 	claims  map[driver.Duty]*claim
+	// refresh is each seat's pre-agreed answer to a claim, and settle the
+	// table's payout. Both are gathered while everybody is cooperating,
+	// because neither can be gathered when it is needed.
+	refresh   map[uint32]*refresh
+	refreshed bool
+	settle    *settlement
+	settled   bool
 	// session is the key this seat signs table business with, and netParams
 	// the network its addresses belong to. Both are needed long after the
 	// table was joined, and deriving them twice risks deriving them
@@ -311,6 +318,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	tbl := &table{terms: terms, gcID: gcID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
+		refresh: map[uint32]*refresh{},
 		session: creds.Session, netParams: t.params, chain: t.chain, log: logKey}
 
 	if rec != nil {
@@ -459,6 +467,8 @@ func (t *tables) tick(height int64) []outgoing {
 		}
 		out = append(out, tbl.askAgain(height)...)
 		out = append(out, tbl.proposeClaim(t.params)...)
+		out = append(out, tbl.presignRefreshes()...)
+		out = append(out, tbl.proposeSettlement()...)
 		out = append(out, t.announceAgain(tbl, height)...)
 		if tbl.fundingLapsed(height) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
@@ -786,6 +796,20 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 		schema.KindLeaving:
 		return tbl.deal(msg), nil
 
+	case schema.KindRefresh:
+		var body schema.Refresh
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		return nil, tbl.adoptRefresh(body)
+
+	case schema.KindSettle:
+		var body schema.Settle
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		return tbl.adoptSettlement(context.Background(), body), nil
+
 	case schema.KindPayout:
 		var body schema.Payout
 		if err := msg.Into(&body); err != nil {
@@ -797,6 +821,12 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 		var body schema.Claim
 		if err := msg.Into(&body); err != nil {
 			return nil, err
+		}
+		if seat, ok := tbl.form.OurSeat(); ok && int(seat) == body.Duty.Seat {
+			// Claimed against. The answer was agreed in advance and needs
+			// nobody's permission now.
+			tbl.answerClaim(context.Background())
+			return nil, nil
 		}
 		if body.Sig != "" {
 			// A co-signature on something already proposed.
