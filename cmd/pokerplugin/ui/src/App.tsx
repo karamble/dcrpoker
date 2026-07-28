@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { api, type Snapshot } from './api'
 import { dcr } from './format'
 import { useHost } from './host'
 import { useTableState } from './state'
+import { Bond } from './table/Bond'
 import { Lifecycle } from './table/Lifecycle'
 import { Money } from './table/Money'
 import { Obligations } from './table/Obligations'
@@ -91,21 +93,26 @@ export function App() {
                 aria-pressed={t.sid === sid}
                 onClick={() => setChosen(t.sid)}
               >
-                {t.sid.slice(0, 8)} · {t.state}
+                {t.sid.slice(0, 8)} · {t.finished ? 'finished' : t.state}
               </button>
             ))}
           </div>
         )}
 
         {!table ? (
-          <Nothing ready={host.ready} error={state.error} />
+          <>
+            <Nothing ready={host.ready} error={state.error} />
+            {host.ready && <Bond />}
+          </>
         ) : tab === 'table' ? (
           <>
+            {table.finished && <Finished table={table} />}
             <Provenance hand={hand} />
             <Money table={table} ledger={ledger} />
             <OnChain ledger={ledger} />
             <Obligations table={table} ledger={ledger} payoutAddress={host.payoutAddress} />
             <Lifecycle table={table} />
+            <Bond />
           </>
         ) : !table.dealing || !hand ? (
           // The plugin answers 400 on /table/hand until the table deals, which
@@ -175,6 +182,54 @@ function Nothing({ ready, error }: { ready: boolean; error?: string }) {
       <p className="lede">
         This player is not at a table. Accepting an invitation in a group chat is what
         starts one.
+      </p>
+      {error && <p className="lede bad">{error}</p>}
+    </section>
+  )
+}
+
+/** Finished is a table this player has got up from, kept only because it still
+ *  holds coin. The log is offered here because this is the moment somebody
+ *  wants it: it is the account of what happened that needs nobody to be
+ *  believed, and it is what a dispute would be argued from. */
+function Finished({ table }: { table: Snapshot }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+
+  const save = () => {
+    setBusy(true)
+    setError(undefined)
+    api
+      .log(table.sid)
+      .then((text) => {
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `poker-${table.sid}.json`
+        link.click()
+        URL.revokeObjectURL(url)
+      })
+      .catch((e) => setError(String(e instanceof Error ? e.message : e)))
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <section className="card">
+      <h2>Finished</h2>
+      <p className="headline">You have left this table.</p>
+      <p className="lede">
+        It is kept because it still holds coin of yours on the chain. Nothing is dealt here
+        and nobody can be seated at it again. What is below is the record.
+      </p>
+      <div className="row">
+        <span>The signed log this table was played from</span>
+        <button className="act" disabled={busy} onClick={save}>
+          {busy ? 'fetching…' : 'Save the log'}
+        </button>
+      </div>
+      <p className="lede muted">
+        Every entry carries the signature of the seat that made it and the chain hashes
+        forward, so somebody who was not here and trusts nobody who was can check it.
       </p>
       {error && <p className="lede bad">{error}</p>}
     </section>

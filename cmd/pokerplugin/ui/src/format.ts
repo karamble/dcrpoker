@@ -53,10 +53,10 @@ export function blocks(target: number | undefined, now: number | undefined): str
   const away = target - now
   if (away <= 0) return 'passed'
   const minutes = away * 5
-  const rough =
-    minutes < 60
-      ? `about ${Math.max(1, Math.round(minutes))} min`
-      : `about ${Math.round(minutes / 60)} h`
+  let rough: string
+  if (minutes < 60) rough = `about ${Math.max(1, Math.round(minutes))} min`
+  else if (minutes < 48 * 60) rough = `about ${Math.round(minutes / 60)} h`
+  else rough = `about ${Math.round(minutes / (24 * 60))} days`
   return `${away.toLocaleString()} blocks, ${rough}`
 }
 

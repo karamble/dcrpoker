@@ -59,6 +59,9 @@ export type Snapshot = {
   height?: number
   payoutSet: boolean
   roster?: SeatView[]
+  /** This player has left and the table is kept only as a record of coin still
+   *  on the chain. Nothing is dealt at it and nobody is seated again. */
+  finished?: boolean
 }
 
 export type Shuffle = { seat: number; state: 'ours' | 'verified' | 'awaited' }
@@ -208,6 +211,26 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return text ? (JSON.parse(text) as T) : (null as T)
 }
 
+/** callText fetches something meant to be kept rather than read - a log a
+ *  person saves - so it comes back as the bytes the plugin sent. */
+async function callText(path: string): Promise<string> {
+  const res = await fetch(`${base}/${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    let message = text
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed.error === 'string') message = parsed.error
+    } catch {
+      // Not JSON. The status and the body are what there is.
+    }
+    throw new ApiError(res.status, message || res.statusText)
+  }
+  return text
+}
+
 export const api = {
   tables: () => call<{ tables: Snapshot[] }>('tables'),
   hand: (sid: string) => call<HandView>(`table/hand?sid=${encodeURIComponent(sid)}`),
@@ -237,21 +260,41 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sid, detach: true }),
     }),
-  bond: () =>
-    call<{
-      address: string
-      outpoint: string
-      minAtoms: number
-      minBlocks: number
-      confsNeed: number
-      hasDeposit: boolean
-    }>('bond'),
+  bond: () => call<Bond>('bond'),
+  /** The signed log this table was played from. Not parsed here - it is handed
+   *  to a person to keep, and the point of it is that somebody who was not
+   *  there and trusts nobody who was can check it. */
+  log: (sid: string) => callText(`table/log?sid=${encodeURIComponent(sid)}`),
   fundBond: () =>
     call<Asked>('bond/fund', {
       method: 'POST',
       body: JSON.stringify({ detach: true }),
     }),
   spend: (id: string) => call<Spend>(`spend?id=${encodeURIComponent(id)}`),
+}
+
+/** Bond is the standing deposit that makes a seat cost something.
+ *
+ *  It is not a table's bond: this one is posted once, buys the right to join
+ *  anything, and is deliberately not forfeitable. The chain fields are absent
+ *  until it has been paid, and `chainErr` says the host's node could not be
+ *  asked - which is not the same as the bond not being there. */
+export type Bond = {
+  address: string
+  scriptHex: string
+  outpoint: string
+  minAtoms: number
+  minBlocks: number
+  confsNeed: number
+  hasDeposit: boolean
+  atoms?: number
+  confirmations?: number
+  height?: number
+  maturesAt?: number
+  blocksLeft?: number
+  spendable?: boolean
+  spent?: boolean
+  chainErr?: string
 }
 
 /** Asked is what comes back from a payment nobody waited for. */
