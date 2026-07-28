@@ -277,7 +277,15 @@ func getBestFiveCards(cards []Card) ([]Card, error) {
 	// produce the best rank that matches our evaluation
 	bestCards := make([]Card, 0, 5)
 
-	// Generate all possible 5-card combinations and find the one that matches our best rank
+	// Find every combination that achieves the best rank, and take the
+	// canonical one rather than whichever turned up first.
+	//
+	// Ties are reachable and not exotic: holding K♠K♥ against a board of
+	// A♠A♥A♦A♣2♠, the fifth card can be either king and both hands evaluate
+	// identically. Taking the first match makes the answer depend on the
+	// order the seven cards happened to arrive in, so two peers replaying one
+	// hand can agree on the winner and still show different winning hands.
+	// A canonical choice costs one comparison and removes the disagreement.
 	combinations := generateCombinations(cards, 5)
 	for _, combo := range combinations {
 		// Convert this combination to chehsunliu format
@@ -292,8 +300,12 @@ func getBestFiveCards(cards []Card) ([]Card, error) {
 
 		// Check if this combination produces the same rank as our best
 		if poker.Evaluate(comboChehsunliu) == bestRank {
-			bestCards = combo
-			break
+			sorted := make([]Card, len(combo))
+			copy(sorted, combo)
+			sortCardsByValue(sorted)
+			if len(bestCards) == 0 || comboLess(sorted, bestCards) {
+				bestCards = sorted
+			}
 		}
 	}
 
@@ -340,10 +352,54 @@ func generateCombinations(cards []Card, k int) [][]Card {
 }
 
 // Helper function to sort cards by value (highest first)
+// suitOrder ranks suits so that cards have a total order. Poker attaches no
+// meaning to it; this exists only so that two peers sorting the same cards
+// produce the same slice, which sorting by value alone does not give.
+func suitOrder(s Suit) int {
+	switch s {
+	case Spades:
+		return 0
+	case Hearts:
+		return 1
+	case Diamonds:
+		return 2
+	case Clubs:
+		return 3
+	}
+	return 4
+}
+
+// cardLess is a total order on cards: value descending, then suit.
+//
+// Total, rather than merely by value. sort.Slice is not stable, so ordering
+// same-valued cards by value alone leaves their relative order up to the
+// sorting algorithm and the input order - which is fine when one process
+// displays a hand to one person, and not fine at all when every peer has to
+// reach the same answer independently.
+func cardLess(a, b Card) bool {
+	av, bv := valueToInt(a.value), valueToInt(b.value)
+	if av != bv {
+		return av > bv
+	}
+	return suitOrder(a.suit) < suitOrder(b.suit)
+}
+
 func sortCardsByValue(cards []Card) {
-	sort.Slice(cards, func(i, j int) bool {
-		return valueToInt(cards[i].value) > valueToInt(cards[j].value)
-	})
+	sort.Slice(cards, func(i, j int) bool { return cardLess(cards[i], cards[j]) })
+}
+
+// comboLess orders two equally-ranked five-card hands, so one of them can be
+// chosen canonically. Both are assumed already sorted by cardLess.
+func comboLess(a, b []Card) bool {
+	for i := range a {
+		if i >= len(b) {
+			return false
+		}
+		if a[i] != b[i] {
+			return cardLess(a[i], b[i])
+		}
+	}
+	return len(a) < len(b)
 }
 
 // Helper function to check if a card is already in a slice

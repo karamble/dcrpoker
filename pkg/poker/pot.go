@@ -333,10 +333,25 @@ func (pm *potManager) returnUncalledBet(forced []int64) (int, int64, error) {
 		}
 	}
 
-	// Find highest and second-highest current bet.
+	// Find highest and second-highest current bet, in seat order.
+	//
+	// currentBets is a map, so ranging it directly visits seats in a
+	// different order on every call. The arithmetic below happens to survive
+	// that - the highest and second-highest are the same whichever order
+	// they are seen in - but this is the one function that moves money back
+	// out of the pot, and "deterministic if you work through it" is not a
+	// property to leave resting on an accident. Every peer has to reach this
+	// answer independently; the order is pinned so that they do.
+	seats := make([]int, 0, len(pm.currentBets))
+	for i := range pm.currentBets {
+		seats = append(seats, i)
+	}
+	sort.Ints(seats)
+
 	var hi, second int64
 	hiPlayer := -1
-	for i, b := range pm.currentBets {
+	for _, i := range seats {
+		b := pm.currentBets[i]
 		if b > hi {
 			second = hi
 			hi = b
@@ -351,7 +366,8 @@ func (pm *potManager) returnUncalledBet(forced []int64) (int, int64, error) {
 
 	// "No-call" if every non-aggressor put in no more than their forced amount.
 	noCall := true
-	for i, b := range pm.currentBets {
+	for _, i := range seats {
+		b := pm.currentBets[i]
 		if i == hiPlayer {
 			continue
 		}
