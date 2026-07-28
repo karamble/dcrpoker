@@ -790,3 +790,76 @@ func TestATableThatNeverDealtHasNoLog(t *testing.T) {
 		t.Fatalf("/table/log returned %d for a table that never dealt, want 404: %s", code, body)
 	}
 }
+
+// The one the harness stopped one step short of. Everything above proves two
+// peers can be dealt in; this proves they can then play, which is a different
+// message and was the missing one.
+//
+// Three kinds carry the dealing and a fourth carries every bet. That fourth was
+// routed to the hand and never decoded, so each peer dropped every action the
+// other sent, in silence, and two fully funded seats sat waiting on each other
+// forever. No test noticed, because no test bet.
+func TestABetReachesTheOtherSeat(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+
+	// Dealing is not yet betting: the deck has to be shuffled and the hole
+	// cards handed out before anybody can act.
+	waitBetting(t, a)
+	waitBetting(t, b)
+
+	actor, waiter := a, b
+	if !toActIsOurs(t, a, terms.SID) {
+		actor, waiter = b, a
+	}
+
+	before := logLen(t, waiter, terms.SID)
+	out, err := actor.tables.Act(terms.SID, "call", 0)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	actor.publish(context.Background(), out)
+	h.inflight.Wait()
+
+	if got := logLen(t, waiter, terms.SID); got <= before {
+		t.Fatalf("the other seat's log went %d -> %d, so the bet never reached it "+
+			"and both seats are now waiting for each other", before, got)
+	}
+	// And it has to have moved the hand on, not merely been filed.
+	if toActIsOurs(t, actor, terms.SID) {
+		t.Fatal("the seat that acted is still the seat to act")
+	}
+}
+
+// toActIsOurs reports whether this peer believes it is its own turn.
+func toActIsOurs(t *testing.T, p *plugin, sid string) bool {
+	t.Helper()
+	p.tables.mu.Lock()
+	defer p.tables.mu.Unlock()
+	tbl := p.tables.m[sid]
+	if tbl == nil || tbl.play == nil {
+		t.Fatal("not dealing")
+	}
+	hand := tbl.play.Hand()
+	if hand == nil {
+		t.Fatal("no hand")
+	}
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		t.Fatal("no seat")
+	}
+	return hand.State().ToAct == int(seat)
+}
+
+// logLen is how many entries this peer has verified for itself.
+func logLen(t *testing.T, p *plugin, sid string) uint64 {
+	t.Helper()
+	p.tables.mu.Lock()
+	defer p.tables.mu.Unlock()
+	tbl := p.tables.m[sid]
+	if tbl == nil || tbl.play == nil {
+		t.Fatal("not dealing")
+	}
+	_, seq := tbl.play.Chain().Head()
+	return seq
+}

@@ -303,8 +303,33 @@ func decodeDriver(msg *schema.Message) (driver.In, error) {
 			return nil, err
 		}
 		return driver.InLeaving{Seat: int(body.Seat), Hand: body.Hand}, nil
+
+	case schema.KindAction:
+		// The bet, and the one that was missing. Three kinds carry the
+		// dealing - a card key, a shuffle, a share - and this carries
+		// everything anybody does with the cards afterwards. It was left
+		// out when the dealing was wired up and nothing said so: the
+		// registry routes an action here while a hand is running, the
+		// fall-through below returned no error and no input, and deal
+		// discards a nil input in silence.
+		//
+		// So every action any peer ever sent was dropped by every peer
+		// that received it. Two seats, both dealt in, each waiting for
+		// the other to act, neither logging a thing.
+		var body schema.Action
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		entry, err := body.Entry.Entry()
+		if err != nil {
+			return nil, fmt.Errorf("an action that cannot be read back: %w", err)
+		}
+		return driver.InAction{Entry: *entry}, nil
 	}
-	return nil, nil
+	// Loud, because the silence is what cost a table. Every kind the
+	// registry sends here is handled above, so reaching this means a new
+	// one was added to the routing and not to the decoding.
+	return nil, fmt.Errorf("nothing here knows how to read a %q into the hand", msg.Kind)
 }
 
 // Act takes this player's decision at a table.
