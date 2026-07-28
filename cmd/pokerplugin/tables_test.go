@@ -84,8 +84,12 @@ func (h *hub) lendTo(t *testing.T, session *secp256k1.PrivateKey, nonce string) 
 	h.mu.Lock()
 	h.bonds[outpoint] = hex.EncodeToString(pkScript)
 	h.mu.Unlock()
+	logKey, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate log key: %v", err)
+	}
 	return membership.Credentials{
-		Session: session, Bond: bond, BondOutpoint: outpoint, BondScript: script,
+		Session: session, Log: logKey, Bond: bond, BondOutpoint: outpoint, BondScript: script,
 	}
 }
 
@@ -970,8 +974,13 @@ func TestAJoinWhoseBondIsNotOnChainIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bond script: %v", err)
 	}
+	logKey, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate log key: %v", err)
+	}
 	deliverJoin(t, p, terms, membership.Credentials{
 		Session:      session,
+		Log:          logKey,
 		Bond:         bond,
 		BondOutpoint: strings.Repeat("9", 64) + ":0",
 		BondScript:   script,

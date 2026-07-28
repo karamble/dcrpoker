@@ -210,8 +210,13 @@ func (id *identity) credentials(sid string) (membership.Credentials, error) {
 		return membership.Credentials{}, fmt.Errorf(
 			"this player has no bond; fund one before taking a seat")
 	}
+	logKey, err := id.logKey(sid)
+	if err != nil {
+		return membership.Credentials{}, err
+	}
 	return membership.Credentials{
 		Session:      session,
+		Log:          logKey,
 		Bond:         bondPriv,
 		BondOutpoint: outpoint,
 		BondScript:   script,
@@ -221,6 +226,37 @@ func (id *identity) credentials(sid string) (membership.Credentials, error) {
 // sessionKeyTag domain-separates session keys from anything else this seed
 // might one day be used for.
 var sessionKeyTag = []byte("poker/table-session/v1")
+
+// logKeyTag derives log keys from a different string than session keys, which
+// is the point rather than tidiness: a log key is expected to become public if
+// its owner equivocates, and one derivable from the other would take the stake
+// with it.
+var logKeyTag = []byte("poker/table-log/v1")
+
+// logKey derives the key this player signs one table's log with.
+//
+// Derived rather than drawn at random, for the same reason the session key is:
+// a client that restarted mid-table and came back signing with a different key
+// would make every earlier entry unverifiable against the roster, which looks
+// exactly like having cheated.
+//
+// Never the session key and never derivable from it. Log signatures take their
+// nonce from the position in the log, so equivocating publishes this key - and
+// a key that both did that and held the stake would mean a cheat hands out
+// their own escrow instead of forfeiting a bond.
+func (id *identity) logKey(sid string) (*secp256k1.PrivateKey, error) {
+	if strings.TrimSpace(sid) == "" {
+		return nil, fmt.Errorf("no session to derive a log key for")
+	}
+	mac := hmac.New(blake256.New, id.seed)
+	mac.Write(logKeyTag)
+	mac.Write([]byte(sid))
+	sum := mac.Sum(nil)
+	if len(sum) != 32 {
+		return nil, fmt.Errorf("derived %d bytes, want 32", len(sum))
+	}
+	return secp256k1.PrivKeyFromBytes(sum), nil
+}
 
 // sessionKey derives the key this player sits at one table under.
 //

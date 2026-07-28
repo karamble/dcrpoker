@@ -420,6 +420,37 @@ func (f *Formation) Seats() (map[uint32][]byte, bool) {
 	return seats, true
 }
 
+// LogSeats maps each seat to the key that seat signs the action log with.
+//
+// This is what pkg/gamelog verifies entries against, and it is deliberately not
+// the same map as Seats. Those are session keys: they hold the stakes, they are
+// named in the escrow scripts, and they must never be the keys that sign the
+// log - a log signature's nonce comes from its position, so equivocating
+// publishes the signing key, and publishing the key that holds your stake would
+// hand the escrow to whoever was watching rather than the bond to whoever you
+// cheated.
+//
+// Derived from the joins rather than announced separately, so the two cannot
+// come apart. A join is signed by the session key over a digest covering the
+// log key, which makes the join itself the binding: nothing here is taken on
+// anybody's word, and there is no second message to go missing on a channel
+// that loses messages.
+func (f *Formation) LogSeats() (map[uint32][]byte, bool) {
+	seats, ok := f.Seats()
+	if !ok {
+		return nil, false
+	}
+	out := make(map[uint32][]byte, len(seats))
+	for seat, session := range seats {
+		j := f.joins[keyID(session)]
+		if j == nil || len(j.LogKey) != escrow.PubKeyLen {
+			return nil, false
+		}
+		out[seat] = append([]byte(nil), j.LogKey...)
+	}
+	return out, true
+}
+
 // OurSeat reports which seat this peer holds.
 func (f *Formation) OurSeat() (uint32, bool) {
 	seats, ok := f.Seats()

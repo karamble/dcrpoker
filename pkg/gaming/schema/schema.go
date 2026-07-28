@@ -80,6 +80,25 @@ const (
 	// self-contained: whoever receives it can check it without asking
 	// anyone, which is what keeps it different from an accusation.
 	KindDispute Kind = "dispute"
+
+	// KindCheckpoint is a seat's signature over the stacks at the end of a
+	// hand.
+	//
+	// It is what a table settles on when it stops unexpectedly. A hand in
+	// progress was never agreed by anybody - one seat is mid-decision and
+	// the others have not seen it - so there is nothing to settle it by,
+	// and the last checkpoint is the most recent thing everyone put their
+	// name to.
+	KindCheckpoint Kind = "checkpoint"
+
+	// KindClaim proposes taking an absent player's bond, for the other
+	// seats to co-sign.
+	//
+	// It is not an accusation and nobody weighs it. The claim is delayed on
+	// chain and the accused answers by spending the same output, so what
+	// decides it is whether they are still there - not whether anyone
+	// believed this message.
+	KindClaim Kind = "claim"
 )
 
 // Message is the envelope every payload travels in.
@@ -109,7 +128,14 @@ type Terms struct {
 // something.
 type Join struct {
 	Key string `json:"key"` // hex compressed session pubkey
-	Sig string `json:"sig"`
+	// LogKey is the per-match key this player signs the action log with.
+	//
+	// It travels inside the join, and not as a message of its own, because
+	// the join's signature covers it - so the join is the binding, there is
+	// no second message to lose on a channel that loses messages, and a peer
+	// that relays somebody else's join relays the binding with it.
+	LogKey string `json:"logKey"`
+	Sig    string `json:"sig"`
 	// The bond's script travels rather than only its outpoint, because the
 	// script is what says the coin is locked at all. Pop ties it to Key, so
 	// a deposit cited in public cannot be lifted into another join.

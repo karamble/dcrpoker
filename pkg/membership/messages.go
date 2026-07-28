@@ -123,9 +123,25 @@ func (t Terms) Hash() ([32]byte, error) {
 // identity, and a relayed join arrives from a third party, so a uid inside it
 // would be an unverifiable claim.
 type Join struct {
-	Key  []byte // compressed session pubkey
-	Bond Bond
-	Sig  []byte
+	Key []byte // compressed session pubkey
+	// LogKey is the per-match key this player's log entries are signed
+	// with, and it is not the session key.
+	//
+	// The distinction is the whole reason it is announced here. A log key
+	// is expected to become public the moment its owner misbehaves - its
+	// signatures take their nonce from the position in the log, so
+	// equivocating publishes it - and the session key holds the stake. One
+	// key doing both would mean a cheat hands out the key to their own
+	// escrow rather than forfeiting a bond.
+	//
+	// It needs no separate binding signature. The join is signed by the
+	// session key over a digest that covers this, so a valid join *is* the
+	// statement "the key that holds my stake adopts this log key for this
+	// table" - and because the terms are in the digest too, it cannot be
+	// lifted to a table where the log key would be expected fresh.
+	LogKey []byte
+	Bond   Bond
+	Sig    []byte
 }
 
 // Bond is the deposit that makes a seat cost something.
@@ -155,9 +171,14 @@ type Bond struct {
 // bond is a free seat, and a bond nobody can tie to a session key is somebody
 // else's deposit being cited.
 type Credentials struct {
-	// Session is the key this player's actions and commitments are signed
-	// with, and the key the escrow scripts name.
+	// Session is the key this player's commitments are signed with, and the
+	// key the escrow scripts name. It holds the stake.
 	Session *secp256k1.PrivateKey
+	// Log is the per-match key this player's log entries are signed with.
+	// Separate from Session on purpose - see Join.LogKey - and never reused
+	// between tables, because it is expected to become public if its owner
+	// misbehaves.
+	Log *secp256k1.PrivateKey
 	// Bond is the key the deposit pays out to. It signs nothing but the
 	// proof of possession.
 	Bond         *secp256k1.PrivateKey
@@ -170,6 +191,10 @@ func (c Credentials) Valid() error {
 	switch {
 	case c.Session == nil:
 		return fmt.Errorf("no session key")
+	case c.Log == nil:
+		return fmt.Errorf("no log key")
+	case c.Log.PubKey().IsEqual(c.Session.PubKey()):
+		return fmt.Errorf("the log key is the session key, which would put the stake at risk of forfeiture")
 	case c.Bond == nil:
 		return fmt.Errorf("no bond key")
 	case strings.TrimSpace(c.BondOutpoint) == "":
@@ -191,14 +216,16 @@ func SignJoin(t Terms, c Credentials) (*Join, error) {
 	}
 	priv, bondOutpoint, bondScript := c.Session, c.BondOutpoint, c.BondScript
 	key := priv.PubKey().SerializeCompressed()
+	logKey := c.Log.PubKey().SerializeCompressed()
 	pop, err := escrow.SignBondPoP(bondOutpoint, key, c.Bond)
 	if err != nil {
 		return nil, err
 	}
 
 	j := &Join{
-		Key:  key,
-		Bond: Bond{Outpoint: bondOutpoint, Script: bondScript, PoP: pop},
+		Key:    key,
+		LogKey: logKey,
+		Bond:   Bond{Outpoint: bondOutpoint, Script: bondScript, PoP: pop},
 	}
 	digest, err := j.digest(t)
 	if err != nil {
@@ -220,10 +247,16 @@ func (j *Join) digest(t Terms) ([32]byte, error) {
 	if len(j.Key) != escrow.PubKeyLen {
 		return [32]byte{}, fmt.Errorf("join key is %d bytes, want %d", len(j.Key), escrow.PubKeyLen)
 	}
+	if len(j.LogKey) != escrow.PubKeyLen {
+		return [32]byte{}, fmt.Errorf("join log key is %d bytes, want %d", len(j.LogKey), escrow.PubKeyLen)
+	}
 	var b bytes.Buffer
 	b.Write(joinTag)
 	b.Write(th[:])
 	b.Write(j.Key)
+	// Signing over the log key is what binds it to the session key, so no
+	// separate binding message is needed and none can go missing.
+	b.Write(j.LogKey)
 	// The bond is signed over as well, so a relayed join cannot have its
 	// deposit swapped for another on the way.
 	writeString(&b, j.Bond.Outpoint)
@@ -242,6 +275,16 @@ func (j *Join) Verify(t Terms) error {
 	}
 	if err := verifySig(j.Key, j.Sig, digest); err != nil {
 		return err
+	}
+	// A join whose log key is its session key would have the player signing
+	// the log with the key that holds their stake, so equivocating would
+	// publish the escrow rather than forfeiting the bond.
+	if bytes.Equal(j.Key, j.LogKey) {
+		return fmt.Errorf("join names its session key as its log key, " +
+			"which would put the stake at risk of forfeiture")
+	}
+	if _, err := secp256k1.ParsePubKey(j.LogKey); err != nil {
+		return fmt.Errorf("join log key: %w", err)
 	}
 
 	// The bond, as far as it can be checked without a chain. Whether the

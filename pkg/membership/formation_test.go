@@ -60,8 +60,13 @@ func testCreds(t *testing.T, priv *secp256k1.PrivateKey) Credentials {
 	if err != nil {
 		t.Fatalf("bond script: %v", err)
 	}
+	logKey, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate log key: %v", err)
+	}
 	return Credentials{
 		Session:      priv,
+		Log:          logKey,
 		Bond:         bond,
 		BondOutpoint: hex.EncodeToString(priv.PubKey().SerializeCompressed()[:32]) + ":0",
 		BondScript:   script,
@@ -842,8 +847,12 @@ func TestABondLockedTooBrieflyIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bond script: %v", err)
 	}
+	logKey, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate log key: %v", err)
+	}
 	j, err := SignJoin(terms, Credentials{
-		Session: priv, Bond: bond, BondOutpoint: "beef:0", BondScript: script,
+		Session: priv, Log: logKey, Bond: bond, BondOutpoint: "beef:0", BondScript: script,
 	})
 	if err != nil {
 		t.Fatalf("sign join: %v", err)
@@ -861,10 +870,13 @@ func TestJoiningNeedsCredentialsThatCouldWork(t *testing.T) {
 		name  string
 		creds Credentials
 	}{
-		{"no session key", Credentials{Bond: full.Bond, BondOutpoint: full.BondOutpoint, BondScript: full.BondScript}},
-		{"no bond key", Credentials{Session: full.Session, BondOutpoint: full.BondOutpoint, BondScript: full.BondScript}},
-		{"no deposit", Credentials{Session: full.Session, Bond: full.Bond, BondScript: full.BondScript}},
-		{"no script", Credentials{Session: full.Session, Bond: full.Bond, BondOutpoint: full.BondOutpoint}},
+		{"no session key", Credentials{Log: full.Log, Bond: full.Bond, BondOutpoint: full.BondOutpoint, BondScript: full.BondScript}},
+		{"no log key", Credentials{Session: full.Session, Bond: full.Bond, BondOutpoint: full.BondOutpoint, BondScript: full.BondScript}},
+		{"no bond key", Credentials{Session: full.Session, Log: full.Log, BondOutpoint: full.BondOutpoint, BondScript: full.BondScript}},
+		{"no deposit", Credentials{Session: full.Session, Log: full.Log, Bond: full.Bond, BondScript: full.BondScript}},
+		{"no script", Credentials{Session: full.Session, Log: full.Log, Bond: full.Bond, BondOutpoint: full.BondOutpoint}},
+		// The one that would put the stake at risk of forfeiture.
+		{"the session key as the log key", Credentials{Session: full.Session, Log: full.Session, Bond: full.Bond, BondOutpoint: full.BondOutpoint, BondScript: full.BondScript}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := SignJoin(terms, tc.creds); err == nil {

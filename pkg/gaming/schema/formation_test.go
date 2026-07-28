@@ -20,8 +20,12 @@ func testCreds(t *testing.T, priv *secp256k1.PrivateKey) membership.Credentials 
 	if err != nil {
 		t.Fatalf("bond script: %v", err)
 	}
+	logKey, err := secp256k1.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate log key: %v", err)
+	}
 	return membership.Credentials{
-		Session: priv, Bond: bond, BondOutpoint: "beef:0", BondScript: script,
+		Session: priv, Log: logKey, Bond: bond, BondOutpoint: "beef:0", BondScript: script,
 	}
 }
 

@@ -48,6 +48,7 @@ func JoinFrom(j *membership.Join) Join {
 	}
 	return Join{
 		Key:          hex.EncodeToString(j.Key),
+		LogKey:       hex.EncodeToString(j.LogKey),
 		Sig:          hex.EncodeToString(j.Sig),
 		BondOutpoint: j.Bond.Outpoint,
 		BondScript:   hex.EncodeToString(j.Bond.Script),
@@ -62,6 +63,10 @@ func (j Join) Into() (*membership.Join, error) {
 	if err != nil {
 		return nil, fmt.Errorf("join key: %w", err)
 	}
+	logKey, err := hex.DecodeString(j.LogKey)
+	if err != nil {
+		return nil, fmt.Errorf("join log key: %w", err)
+	}
 	sig, err := hex.DecodeString(j.Sig)
 	if err != nil {
 		return nil, fmt.Errorf("join signature: %w", err)
@@ -75,8 +80,9 @@ func (j Join) Into() (*membership.Join, error) {
 		return nil, fmt.Errorf("join bond proof: %w", err)
 	}
 	return &membership.Join{
-		Key: key,
-		Sig: sig,
+		Key:    key,
+		LogKey: logKey,
+		Sig:    sig,
 		Bond: membership.Bond{
 			Outpoint: j.BondOutpoint,
 			Script:   script,
