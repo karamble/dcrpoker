@@ -298,10 +298,25 @@ func TestBridgeReportsHostRefusal(t *testing.T) {
 }
 
 // Receive is the loop a game runs; it must stop when told to.
+//
+// The delivery is waited for on a channel rather than by watching a slice
+// grow. Every other test here drives the router on the test's own goroutine and
+// can read what came out directly; this one is the only place a delivery
+// happens on another goroutine, and polling `len` across that boundary is a
+// data race - one the detector reports, which means it fails CI.
 func TestReceiveFeedsTheRouterAndStops(t *testing.T) {
 	send := &fakeSender{}
-	var got []Delivery
-	r := newRouter(t, send, allowAll, &got)
+	delivered := make(chan Delivery, 1)
+	r, err := NewRouter(Config{
+		Game:      schema.Game,
+		GameVer:   schema.Version,
+		Sender:    send,
+		Authorize: allowAll,
+		Handle:    func(d Delivery) { delivered <- d },
+	})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
 
 	payload, _ := schema.Encode(schema.KindResync, testMatch, schema.Resync{After: 3})
 	parts, _ := wire.Encode(schema.Game, schema.Version, testSID, payload, time.Time{}, 0)
@@ -313,14 +328,11 @@ func TestReceiveFeedsTheRouterAndStops(t *testing.T) {
 	done := make(chan struct{})
 	go func() { Receive(ctx, frames, r); close(done) }()
 
-	deadline := time.After(2 * time.Second)
-	for len(got) == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("frame never reached the router")
-		default:
-			time.Sleep(time.Millisecond)
-		}
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("frame never reached the router")
 	}
 	cancel()
 	select {
