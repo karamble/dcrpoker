@@ -48,7 +48,11 @@ type table struct {
 	// refresh is each seat's pre-agreed answer to a claim, and settle the
 	// table's payout. Both are gathered while everybody is cooperating,
 	// because neither can be gathered when it is needed.
-	refresh   map[uint32]*refresh
+	// refresh is every pre-agreed answer, filed by the output it spends, and
+	// bondedAt is where a seat's bond sits now if it has answered a claim
+	// and moved it.
+	refresh   map[string]*refresh
+	bondedAt  map[uint32]string
 	refreshed bool
 	settle    *settlement
 	settled   bool
@@ -318,7 +322,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	tbl := &table{terms: terms, gcID: gcID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
-		refresh: map[uint32]*refresh{},
+		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain, log: logKey}
 
 	if rec != nil {

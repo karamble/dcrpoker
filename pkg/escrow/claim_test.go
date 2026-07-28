@@ -543,3 +543,95 @@ func TestPreSigningAnAnswerRefusesAnythingButTheSameBond(t *testing.T) {
 		})
 	}
 }
+
+// The chain of answers rests on one property of Decred's serialization: a
+// transaction's identity is its prefix, and signatures live in the witness. If
+// that ever stopped being true, every answer after the first would be built
+// against an outpoint that never existed - so it is asserted here rather than
+// assumed from a dependency.
+func TestATransactionsIdentityDoesNotDependOnItsSignatures(t *testing.T) {
+	b := postTableBond(t, 3)
+	tx, err := BuildRefresh(RefreshDraft{
+		Bond: b.script, Prevout: testPrevout(), ValueAtoms: testBondAtoms,
+		FeeAtoms: testBondFee, Params: chaincfg.TestNet3Params(),
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	before := tx.TxHash()
+
+	sigs := make([][]byte, 0, len(b.terms.Members))
+	for _, m := range b.terms.Members {
+		sig, err := SignBondSpend(tx, b.script, privFor(t, b.privs, m))
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		sigs = append(sigs, sig)
+	}
+	done, err := FinishAlive(tx, b.script, sigs, chaincfg.TestNet3Params())
+	if err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if done.TxHash() != before {
+		t.Fatal("signing changed a transaction's identity, so no answer after the first could be pre-agreed")
+	}
+}
+
+// A seat can answer more than once without going back to the people accusing it.
+func TestASeatCanAnswerMoreThanOneClaim(t *testing.T) {
+	b := postTableBond(t, 3)
+	params := chaincfg.TestNet3Params()
+	draft := RefreshDraft{
+		Bond: b.script, Prevout: testPrevout(), ValueAtoms: testBondAtoms,
+		FeeAtoms: testBondFee, Params: params,
+	}
+	chain, err := BuildRefreshChain(draft, RefreshDepth)
+	if err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+	if len(chain) != RefreshDepth {
+		t.Fatalf("built %d answers, want %d", len(chain), RefreshDepth)
+	}
+
+	// Each one spends what the one before produces, so every outpoint in the
+	// chain is known before any of them is signed.
+	for i := 1; i < len(chain); i++ {
+		want := wire.OutPoint{Hash: chain[i-1].TxHash(), Index: 0, Tree: wire.TxTreeRegular}
+		if chain[i].TxIn[0].PreviousOutPoint != want {
+			t.Fatalf("answer %d does not spend what answer %d produces", i, i-1)
+		}
+		if chain[i].TxIn[0].ValueIn != chain[i-1].TxOut[0].Value {
+			t.Fatalf("answer %d states a value of %d, and answer %d produces %d",
+				i, chain[i].TxIn[0].ValueIn, i-1, chain[i-1].TxOut[0].Value)
+		}
+	}
+
+	// Every one of them is signable now and satisfies the bond, which is what
+	// lets the accused use any of them later without asking anybody.
+	for i, tx := range chain {
+		sigs := make([][]byte, 0, len(b.terms.Members))
+		for _, m := range b.terms.Members {
+			sig, err := SignBondSpend(tx, b.script, privFor(t, b.privs, m))
+			if err != nil {
+				t.Fatalf("answer %d: sign: %v", i, err)
+			}
+			sigs = append(sigs, sig)
+		}
+		if _, err := FinishAlive(tx, b.script, sigs, params); err != nil {
+			t.Fatalf("answer %d does not satisfy the bond: %v", i, err)
+		}
+	}
+
+	// The bond shrinks by a fee each time and stays worth having.
+	last := chain[len(chain)-1].TxOut[0].Value
+	if last != testBondAtoms-int64(len(chain))*testBondFee {
+		t.Fatalf("after %d answers the bond holds %d", len(chain), last)
+	}
+	if last < MinShareAtoms {
+		t.Fatalf("after %d answers the bond is down to %d, under the %d minimum",
+			len(chain), last, MinShareAtoms)
+	}
+	if _, err := BuildRefreshChain(draft, RefreshDepth+1); err == nil {
+		t.Fatal("a chain longer than the agreed depth was built")
+	}
+}

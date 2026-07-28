@@ -392,3 +392,54 @@ func CheckRefreshDraft(tx *wire.MsgTx, d RefreshDraft) error {
 	}
 	return nil
 }
+
+// RefreshDepth is how many times a seat can answer a claim on signatures it
+// already holds.
+//
+// Answering spends the bond, so it lands at a new outpoint and the answer just
+// used is gone. A second claim needs a second answer, against an output that did
+// not exist when the first was agreed - and asking the table to sign one then
+// puts the accused back where it started, needing help from the people accusing
+// it.
+//
+// It does not have to. Decred hashes a transaction's prefix and its witness
+// separately, and the txid is the prefix alone, so the identity of an answer is
+// fixed before anybody signs it. Every outpoint in the chain is therefore known
+// in advance and the whole chain can be agreed at once.
+//
+// Eight is far past what a real table should ever see: a claim means a seat has
+// been gone half an hour, and answering eight of them in one session is not a
+// game anybody is playing. Each step costs a fee, so a deeper chain is cheap but
+// not free.
+const RefreshDepth = 8
+
+// BuildRefreshChain builds every answer a seat may need, in order.
+//
+// The first spends the bond where it is now; each one after it spends the output
+// the one before produces. A seat answers with the entry whose input is where
+// its bond actually sits, so a peer that restarts and has forgotten how many it
+// has used finds its place by looking at the chain rather than by counting.
+func BuildRefreshChain(d RefreshDraft, depth int) ([]*wire.MsgTx, error) {
+	if depth < 1 {
+		return nil, fmt.Errorf("a chain of %d answers is no chain", depth)
+	}
+	if depth > RefreshDepth {
+		return nil, fmt.Errorf("a chain of %d answers is beyond the %d agreed", depth, RefreshDepth)
+	}
+	out := make([]*wire.MsgTx, 0, depth)
+	next := d
+	for i := range depth {
+		tx, err := BuildRefresh(next)
+		if err != nil {
+			return nil, fmt.Errorf("answer %d: %w", i, err)
+		}
+		out = append(out, tx)
+
+		// The next one spends what this produces. Its outpoint is known
+		// because the txid does not depend on the signatures - which is
+		// the property the whole chain rests on.
+		next.Prevout = wire.OutPoint{Hash: tx.TxHash(), Index: 0, Tree: wire.TxTreeRegular}
+		next.ValueAtoms = tx.TxOut[0].Value
+	}
+	return out, nil
+}

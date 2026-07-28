@@ -45,31 +45,34 @@ func (tbl *table) presignRefreshes() []outgoing {
 	if !ok || tbl.session == nil {
 		return nil
 	}
+	mine, _ := tbl.form.OurSeat()
 	var out []outgoing
 	for seat := range seats {
-		tx, bond, err := tbl.refreshDraft(seat)
+		chain, bond, err := tbl.refreshChain(seat)
 		if err != nil {
 			// A seat whose bond is not yet on the chain has nothing to
 			// answer for. It gets its turn when it does.
 			continue
 		}
-		sig, err := escrow.SignBondSpend(tx, bond, tbl.session)
-		if err != nil {
-			log.Printf("pokerplugin: table %s: pre-signing an answer: %v", tbl.terms.SID, err)
-			continue
+		for _, tx := range chain {
+			sig, err := escrow.SignBondSpend(tx, bond, tbl.session)
+			if err != nil {
+				log.Printf("pokerplugin: table %s: pre-signing an answer: %v",
+					tbl.terms.SID, err)
+				continue
+			}
+			raw, err := tx.Bytes()
+			if err != nil {
+				continue
+			}
+			tbl.holdRefresh(seat, tx, bond, seats[mine], sig)
+			out = append(out, tbl.frame(schema.KindRefresh, schema.Refresh{
+				Seat:   seat,
+				Tx:     hex.EncodeToString(raw),
+				Signer: hex.EncodeToString(seats[mine]),
+				Sig:    hex.EncodeToString(sig),
+			}, gwire.ClassState))
 		}
-		raw, err := tx.Bytes()
-		if err != nil {
-			continue
-		}
-		mine, _ := tbl.form.OurSeat()
-		tbl.holdRefresh(seat, tx, bond, seats[mine], sig)
-		out = append(out, tbl.frame(schema.KindRefresh, schema.Refresh{
-			Seat:   seat,
-			Tx:     hex.EncodeToString(raw),
-			Signer: hex.EncodeToString(seats[mine]),
-			Sig:    hex.EncodeToString(sig),
-		}, gwire.ClassState))
 	}
 	if len(out) > 0 {
 		tbl.refreshed = true
@@ -77,46 +80,64 @@ func (tbl *table) presignRefreshes() []outgoing {
 	return out
 }
 
-// refreshDraft builds a seat's answer: its bond respent into the same bond.
-func (tbl *table) refreshDraft(seat uint32) (*wire.MsgTx, []byte, error) {
-	outpoint := tbl.bonded[seat]
+// refreshChain builds every answer a seat may need, in order.
+func (tbl *table) refreshChain(seat uint32) ([]*wire.MsgTx, []byte, error) {
+	d, bond, err := tbl.refreshDraft(seat)
+	if err != nil {
+		return nil, nil, err
+	}
+	chain, err := escrow.BuildRefreshChain(d, escrow.RefreshDepth)
+	return chain, bond, err
+}
+
+// refreshDraft describes a seat's answer: its bond respent into the same bond.
+func (tbl *table) refreshDraft(seat uint32) (escrow.RefreshDraft, []byte, error) {
+	outpoint := tbl.bondedAt[seat]
 	if outpoint == "" {
-		return nil, nil, fmt.Errorf("seat %d has no bond on the chain", seat)
+		outpoint = tbl.bonded[seat]
+	}
+	if outpoint == "" {
+		return escrow.RefreshDraft{}, nil, fmt.Errorf("seat %d has no bond on the chain", seat)
 	}
 	b, err := tbl.bond(seat, tbl.netParams)
 	if err != nil {
-		return nil, nil, err
+		return escrow.RefreshDraft{}, nil, err
 	}
 	script, err := hex.DecodeString(b.ScriptHex)
 	if err != nil {
-		return nil, nil, err
+		return escrow.RefreshDraft{}, nil, err
 	}
 	prevout, err := outpointOf(outpoint)
 	if err != nil {
-		return nil, nil, err
+		return escrow.RefreshDraft{}, nil, err
 	}
-	tx, err := escrow.BuildRefresh(escrow.RefreshDraft{
+	return escrow.RefreshDraft{
 		Bond:       script,
 		Prevout:    prevout,
 		ValueAtoms: int64(escrow.MinBondAtoms),
 		FeeAtoms:   claimFee,
 		Params:     tbl.netParams,
-	})
-	return tx, script, err
+	}, script, nil
 }
 
-// holdRefresh keeps a signature on a seat's answer.
+// holdRefresh keeps a signature on one answer, filed by the output it spends.
+//
+// By outpoint rather than by seat, because a seat has a chain of them and the
+// one it needs is decided by where its bond actually sits - which a peer that
+// restarted can look up rather than having to remember how many it has used.
 func (tbl *table) holdRefresh(seat uint32, tx *wire.MsgTx, bond []byte, signer, sig []byte) {
-	r := tbl.refresh[seat]
+	key := tx.TxIn[0].PreviousOutPoint.String()
+	r := tbl.refresh[key]
 	if r == nil {
-		r = &refresh{tx: tx, bond: bond, sigs: map[string][]byte{}}
-		tbl.refresh[seat] = r
+		r = &refresh{seat: seat, tx: tx, bond: bond, sigs: map[string][]byte{}}
+		tbl.refresh[key] = r
 	}
 	r.sigs[hex.EncodeToString(signer)] = sig
 }
 
 // refresh is one seat's answer and the signatures gathered for it.
 type refresh struct {
+	seat uint32
 	tx   *wire.MsgTx
 	bond []byte
 	sigs map[string][]byte
@@ -138,9 +159,21 @@ func (tbl *table) adoptRefresh(body schema.Refresh) error {
 	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
 		return fmt.Errorf("refresh transaction: %w", err)
 	}
-	want, bond, err := tbl.refreshDraft(body.Seat)
+	chain, bond, err := tbl.refreshChain(body.Seat)
 	if err != nil {
 		return err
+	}
+	// It has to be one of the answers this peer derived itself. Anything
+	// else is a signature given months early on a transaction nobody agreed.
+	var want *wire.MsgTx
+	for _, c := range chain {
+		if c.TxHash() == tx.TxHash() {
+			want = c
+			break
+		}
+	}
+	if want == nil {
+		return fmt.Errorf("an answer for seat %d that this peer did not derive", body.Seat)
 	}
 	if err := escrow.CheckRefreshDraft(tx, escrow.RefreshDraft{
 		Bond:       bond,
@@ -181,9 +214,20 @@ func (tbl *table) answerClaim(ctx context.Context) {
 	if !ok {
 		return
 	}
-	r := tbl.refresh[seat]
+	// The answer whose input is where the bond actually sits. Answering once
+	// moves it on, and the next claim is against the new output.
+	at := tbl.bondedAt[seat]
+	if at == "" {
+		at = tbl.bonded[seat]
+	}
+	prevout, err := outpointOf(at)
+	if err != nil {
+		return
+	}
+	r := tbl.refresh[prevout.String()]
 	if r == nil {
-		log.Printf("pokerplugin: table %s: claimed against and holding no answer", tbl.terms.SID)
+		log.Printf("pokerplugin: table %s: claimed against and holding no answer for %s",
+			tbl.terms.SID, at)
 		return
 	}
 	terms, err := escrow.ParseTableBond(r.bond)
@@ -215,8 +259,12 @@ func (tbl *table) answerClaim(ctx context.Context) {
 		log.Printf("pokerplugin: table %s: could not answer a claim: %v", tbl.terms.SID, err)
 		return
 	}
-	log.Printf("pokerplugin: table %s: answered a claim in %s; the bond is posted again",
-		tbl.terms.SID, txid)
+	// The bond has moved, so every future claim - and every future answer -
+	// is against the new output. Recorded here and announced, because a peer
+	// still naming the old one would build a claim nobody can sign.
+	tbl.bondedAt[seat] = fmt.Sprintf("%s:0", done.TxHash())
+	log.Printf("pokerplugin: table %s: answered a claim in %s; the bond is posted again at %s",
+		tbl.terms.SID, txid, tbl.bondedAt[seat])
 }
 
 // settleDraft is what this table would pay out, from the last boundary every
