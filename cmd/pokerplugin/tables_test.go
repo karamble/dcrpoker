@@ -17,6 +17,7 @@ import (
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
+	"github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
 
@@ -37,6 +38,15 @@ type hub struct {
 	// it only ever infers it from an obligation that stands while the chain
 	// moves. So a test cannot ask a peer to stop; it takes it off the wire.
 	muted map[string]bool
+	// swallow is how many more frames of a kind to lose on the way through,
+	// and lost records what actually went missing.
+	//
+	// A hub that delivers everything cannot tell a protocol that repeats
+	// itself from one that does not, which is why every fault of that shape
+	// here has been found at a live table rather than in a test. This channel
+	// loses messages; so does this one, on request.
+	swallow map[schema.Kind]int
+	lost    map[schema.Kind]int
 	// inflight counts deliveries that have not finished. A delivery usually
 	// produces a send, which produces more deliveries, so the count only
 	// reaches zero when the table has actually come to rest.
@@ -115,6 +125,37 @@ func (h *hub) lendTo(t *testing.T, session *secp256k1.PrivateKey, nonce string) 
 	}
 }
 
+// drop loses the next n frames of a kind, the way this channel does on its own
+// given long enough.
+func (h *hub) drop(kind schema.Kind, n int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.swallow[kind] += n
+}
+
+// dropped reports how many frames of a kind were actually lost, so a test can
+// say it tested what it meant to rather than assume the drop ever fired.
+func (h *hub) dropped(kind schema.Kind) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lost[kind]
+}
+
+// frameKind names what a frame carries, so the hub can lose one kind and not
+// another. Single-part messages only, which every kind here is: the chunk limit
+// is 200KB and the largest message in the protocol is a shuffle at about 23KB.
+func frameKind(text string) (schema.Kind, bool) {
+	part, ok := wire.Parse(text)
+	if !ok || part.Total != 1 {
+		return "", false
+	}
+	msg, err := schema.Decode(part.Chunk)
+	if err != nil {
+		return "", false
+	}
+	return msg.Kind, true
+}
+
 var testParams = chaincfg.SimNetParams()
 
 // testOutpointAtoms is what this stand-in chain says every output holds.
@@ -128,9 +169,11 @@ const testOutpointAtoms = int64(1_000_000_000)
 func newHub(t *testing.T) *hub {
 	t.Helper()
 	h := &hub{
-		peers: make(map[string]*plugin),
-		bonds: make(map[string]string),
-		muted: make(map[string]bool),
+		peers:   make(map[string]*plugin),
+		bonds:   make(map[string]string),
+		muted:   make(map[string]bool),
+		swallow: make(map[schema.Kind]int),
+		lost:    make(map[schema.Kind]int),
 	}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/gaming/chain/outpoint" {
@@ -163,6 +206,12 @@ func newHub(t *testing.T) *hub {
 		w.WriteHeader(http.StatusNoContent)
 
 		h.mu.Lock()
+		if kind, ok := frameKind(req.Frame); ok && h.swallow[kind] > 0 {
+			h.swallow[kind]--
+			h.lost[kind]++
+			h.mu.Unlock()
+			return
+		}
 		targets := make([]*plugin, 0, len(h.peers))
 		if !h.muted[token] {
 			for tok, p := range h.peers {

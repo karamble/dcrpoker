@@ -108,6 +108,10 @@ type table struct {
 	// are paid minutes apart and each has to be repeated on its own account.
 	bondedAnnouncedAt int64
 
+	// stalledAt is how far the hand had got when this seat last said its
+	// messages again, so a stall is answered once rather than every tick.
+	stalledAt string
+
 	// finished says this player has got up from the table and it is kept
 	// only because it still holds their money. See tables.drop.
 	finished bool
@@ -782,6 +786,8 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, tbl.proposeSettlement()...)
 		out = append(out, t.announceAgain(tbl, height)...)
 		out = append(out, t.announceBondAgain(tbl, height)...)
+		out = append(out, t.exchangeHeads(tbl)...)
+		out = append(out, t.republishStalled(tbl)...)
 		if tbl.fundingLapsed(height) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)
@@ -1123,6 +1129,13 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 		if err := tbl.form.AddCommit(c); err != nil {
 			return nil, err
 		}
+
+	case schema.KindHead:
+		var body schema.Head
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		return tbl.acceptHead(body), nil
 
 	case schema.KindResync:
 		var body schema.Resync

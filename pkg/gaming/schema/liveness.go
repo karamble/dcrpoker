@@ -181,3 +181,45 @@ type Settle struct {
 	Signer string   `json:"signer"` // hex compressed session pubkey
 	Sigs   []string `json:"sigs"`   // one per input, in input order
 }
+
+// HeadFrom renders a seat's claim about the log head.
+//
+// The claim exists so two peers can find out they disagree without either
+// sending its whole history. A sequence number and a hash is enough: the peer
+// that is behind is repaired by being sent what it lacks, and two different
+// hashes at one sequence is a fork, which is a different problem entirely and
+// is what makes this worth signing.
+func HeadFrom(h *gamelog.HeadAttestation) Head {
+	if h == nil {
+		return Head{}
+	}
+	return Head{
+		Seq:    h.Seq,
+		Hash:   hex.EncodeToString(h.Hash[:]),
+		Seat:   h.Seat,
+		Signer: hex.EncodeToString(h.Signer),
+		Sig:    hex.EncodeToString(h.Sig),
+	}
+}
+
+// Into reads a head claim back. It does not verify it; that needs the roster.
+func (h Head) Into() (*gamelog.HeadAttestation, error) {
+	hash, err := hex.DecodeString(h.Hash)
+	if err != nil {
+		return nil, fmt.Errorf("head hash: %w", err)
+	}
+	if len(hash) != 32 {
+		return nil, fmt.Errorf("head hash is %d bytes, want 32", len(hash))
+	}
+	signer, err := hex.DecodeString(h.Signer)
+	if err != nil {
+		return nil, fmt.Errorf("head signer: %w", err)
+	}
+	sig, err := hex.DecodeString(h.Sig)
+	if err != nil {
+		return nil, fmt.Errorf("head signature: %w", err)
+	}
+	att := &gamelog.HeadAttestation{Seq: h.Seq, Seat: h.Seat, Signer: signer, Sig: sig}
+	copy(att.Hash[:], hash)
+	return att, nil
+}

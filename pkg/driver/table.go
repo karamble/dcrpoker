@@ -72,6 +72,25 @@ type Table struct {
 	last      uint64
 	lastStack []int64
 
+	// produced is everything this peer has sent for the hand in progress.
+	//
+	// Kept so it can be said again. This channel loses messages, and a lost
+	// one deadlocks a hand outright: the seat that sent it believes it has
+	// done its part and the seat that never got it believes it is still
+	// waiting, so both wait forever and neither has anything to log. The
+	// entries are recoverable from the chain, but a shuffle and a share are
+	// not in the chain and there is nothing else that holds them.
+	//
+	// Kept for the hand in progress and the one before it, and no further.
+	//
+	// One hand is not enough. The checkpoint that ends a hand is produced at
+	// the end of it, and the seat that needs it is by definition the seat
+	// that has not finished that hand - so by the time it asks, this peer has
+	// opened the next one. Clearing on every open threw away the one message
+	// most likely to be wanted.
+	produced []HandOut
+	prior    []HandOut
+
 	// leaving is the seats that have said they are getting up. A seat on its
 	// way out folds when its turn comes and the table dissolves at the next
 	// boundary.
@@ -211,11 +230,44 @@ func (InCardKey) in()      {}
 func (InCheckpoint) in()   {}
 
 // Start opens the first hand.
+// HandOut is something this peer sent, and the hand it belongs to.
+//
+// The hand has to travel with it. A share and a shuffle carry no hand of their
+// own and are stamped with one on the way out, and a message kept from the last
+// hand and stamped with this one is a message about a deck that no longer
+// exists.
+type HandOut struct {
+	Hand uint64
+	Out  Out
+}
+
+// keep records what this peer is about to send, so it can be sent again.
+func (t *Table) keep(out []Out, err error) ([]Out, error) {
+	if err == nil {
+		for _, m := range out {
+			t.produced = append(t.produced, HandOut{Hand: t.hand, Out: m})
+		}
+	}
+	return out, err
+}
+
+// Republish returns everything this peer has sent for the hand in progress.
+//
+// For a seat that owes nothing and is still waiting: from its own side it has
+// done everything the hand asks of it, so if the hand is not moving then
+// somebody else is missing something of ours. Owes reports the first half of
+// that and this is the answer to it.
+func (t *Table) Republish() []HandOut {
+	out := make([]HandOut, 0, len(t.prior)+len(t.produced))
+	out = append(out, t.prior...)
+	return append(out, t.produced...)
+}
+
 func (t *Table) Start() ([]Out, error) {
 	if t.hand != 0 {
 		return nil, fmt.Errorf("this table has already started")
 	}
-	return t.openHand()
+	return t.keep(t.openHand())
 }
 
 // openHand draws a fresh deck key and announces it.
@@ -226,6 +278,7 @@ func (t *Table) Start() ([]Out, error) {
 // hand readable by anybody who kept the last one.
 func (t *Table) openHand() ([]Out, error) {
 	t.hand++
+	t.prior, t.produced = t.produced, nil
 	t.hands = nil
 	t.card = deck.NewKeyPair()
 	t.keys = make([]kyber.Point, t.seats)
@@ -238,7 +291,9 @@ func (t *Table) openHand() ([]Out, error) {
 //
 // Table-level messages are taken here and everything else goes to the hand in
 // progress, which is why a peer only ever has one thing to feed messages into.
-func (t *Table) Handle(in In) ([]Out, error) {
+func (t *Table) Handle(in In) ([]Out, error) { return t.keep(t.handle(in)) }
+
+func (t *Table) handle(in In) ([]Out, error) {
 	switch m := in.(type) {
 	case InCardKey:
 		return t.onCardKey(m)
@@ -335,7 +390,9 @@ func (t *Table) deal() ([]Out, error) {
 // That is the only automatic fold anywhere in this design, and it is one the
 // player asked for: nothing here folds anybody on a timer, because a timer is
 // one machine's opinion and this one would be moving money.
-func (t *Table) Leave() ([]Out, error) {
+func (t *Table) Leave() ([]Out, error) { return t.keep(t.leave()) }
+
+func (t *Table) leave() ([]Out, error) {
 	if t.over {
 		return nil, nil
 	}
@@ -395,6 +452,10 @@ func (t *Table) AtHeight(height uint32) {
 
 // Act takes this peer's decision in the hand in progress.
 func (t *Table) Act(action gamelog.Action, amount int64) ([]Out, error) {
+	return t.keep(t.act(action, amount))
+}
+
+func (t *Table) act(action gamelog.Action, amount int64) ([]Out, error) {
 	if t.hands == nil {
 		return nil, fmt.Errorf("no hand is in progress")
 	}

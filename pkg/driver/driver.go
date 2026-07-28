@@ -442,6 +442,13 @@ func (d *Driver) onShuffle(m InShuffle) ([]Out, error) {
 	if d.phase != PhaseShuffling {
 		return nil, fmt.Errorf("a shuffle arrived while %s", d.phase)
 	}
+	if m.Seat < d.round {
+		// Already folded in. This channel loses messages, so anything
+		// that must arrive gets said again, and the second telling is a
+		// repeat rather than a peer shuffling twice. The early case is
+		// held a few lines down for the same reason; this is its mirror.
+		return nil, nil
+	}
 	if m.Seat != d.round {
 		return nil, fmt.Errorf("seat %d shuffled out of turn; it is seat %d's turn", m.Seat, d.round)
 	}
@@ -475,6 +482,11 @@ func (d *Driver) onShare(m InShare) ([]Out, error) {
 	}
 	if m.Seat == d.cfg.Seat {
 		return nil, fmt.Errorf("this peer's own share came back to it")
+	}
+	if d.sharedBy(m.Slot, m.Seat) {
+		// Counted already. Adding it twice is what an opening refuses,
+		// and a retransmission must not look like a fault.
+		return nil, nil
 	}
 	d.note(m.Slot, m.Seat)
 
@@ -523,6 +535,13 @@ func (d *Driver) onAction(m InAction) ([]Out, error) {
 	}
 	if int(m.Entry.Seat) == d.cfg.Seat {
 		return nil, fmt.Errorf("this peer's own action came back to it")
+	}
+	if _, seq := d.cfg.Chain.Head(); m.Entry.Seq <= seq {
+		// Already in the chain. Backfilling a peer that turned out to be
+		// only one entry behind sends everything from its head, so the
+		// overlap is normal and is not a fork: a genuine fork is two
+		// different entries at one sequence, which Append still refuses.
+		return nil, nil
 	}
 	return d.apply(&m.Entry)
 }
