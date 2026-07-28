@@ -75,6 +75,11 @@ const (
 	DomainEntry Domain = "entry"
 	// DomainHead is a head attestation: one per sequence number.
 	DomainHead Domain = "head"
+	// DomainCheckpoint is the agreed stacks at a hand boundary: one per
+	// hand. Indexed by hand rather than by sequence number, which is safe
+	// precisely because the domain keeps the two numbering schemes from
+	// colliding.
+	DomainCheckpoint Domain = "checkpoint"
 )
 
 // Position is where a signature sits. Exactly one signature may ever be made at
