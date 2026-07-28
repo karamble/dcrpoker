@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -171,10 +172,15 @@ func (p *plugin) handleFund(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	var req struct {
 		SID string `json:"sid"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -198,36 +204,44 @@ func (p *plugin) handleFund(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, err)
 		return
 	}
-
-	// Detached from the request: a person answering takes as long as it
-	// takes, and the caller hanging up must not lose the outcome.
-	ctx, cancel := context.WithTimeout(context.Background(), fundWait)
-	defer cancel()
-	settled, err := p.bridge.AwaitSpend(ctx, spend.ID)
-	if err != nil {
-		writeErr(w, http.StatusGatewayTimeout, err)
-		return
+	pending := &pendingSpend{
+		ID: spend.ID, Purpose: purposeStake, SID: sid, Seat: seat,
+		PkScript: dep.PkScriptHex, AtAtoms: int64(terms.BuyInAtoms), State: "pending",
 	}
-	if settled.State != transport.SpendApproved {
-		writeErr(w, http.StatusForbidden, fmt.Errorf("the host %s the payment: %s", settled.State, settled.Error))
-		return
-	}
+	p.spends.put(pending)
 
-	outpoint, err := p.findDepositOutput(ctx, settled.TxID, dep.PkScriptHex)
-	if err != nil {
-		// The money moved and this could not say where. /table/deposit/set
-		// is the way back from here.
-		writeErr(w, http.StatusBadGateway, err)
+	if wantsDetach(body) {
+		// The caller is a page, and a page cannot hold a request open
+		// for five minutes while somebody decides. The work is
+		// identical; only the waiting moves.
+		p.detach(pending, fundWait)
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(w, map[string]any{"seat": seat, "spendId": spend.ID, "state": "pending"})
 		return
 	}
 
-	out, err := p.recordOwnStake(sid, seat, outpoint)
+	// Detached from the request context: a person answering takes as long as
+	// it takes, and the caller hanging up must not lose the outcome.
+	done, err := p.awaitSpend(context.Background(), pending, fundWait)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, spendErrStatus(done), err)
 		return
 	}
-	p.publish(p.ctx, out)
-	writeJSON(w, map[string]any{"seat": seat, "outpoint": outpoint, "funded": true})
+	writeJSON(w, map[string]any{"seat": seat, "outpoint": done.Outpoint, "funded": true})
+}
+
+// spendErrStatus turns what went wrong into a status a caller can act on.
+func spendErrStatus(s pendingSpend) int {
+	switch {
+	case s.State == "unanswered":
+		return http.StatusGatewayTimeout
+	case s.TxID != "":
+		// The money moved and something after that failed. The /set
+		// routes are the way back.
+		return http.StatusBadGateway
+	default:
+		return http.StatusForbidden
+	}
 }
 
 // handleDepositSet records a stake that was paid but never written down.

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -205,10 +206,15 @@ func (p *plugin) handleTableBond(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	var req struct {
 		SID string `json:"sid"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -231,28 +237,23 @@ func (p *plugin) handleTableBond(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), fundWait)
-	defer cancel()
-	settled, err := p.bridge.AwaitSpend(ctx, spend.ID)
+	pending := &pendingSpend{
+		ID: spend.ID, Purpose: purposeTableBond, SID: sid, Seat: seat,
+		PkScript: bond.PkScriptHex, AtAtoms: int64(escrow.MinBondAtoms), State: "pending",
+	}
+	p.spends.put(pending)
+
+	if wantsDetach(body) {
+		p.detach(pending, fundWait)
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(w, map[string]any{"seat": seat, "spendId": spend.ID, "state": "pending"})
+		return
+	}
+
+	done, err := p.awaitSpend(context.Background(), pending, fundWait)
 	if err != nil {
-		writeErr(w, http.StatusGatewayTimeout, err)
+		writeErr(w, spendErrStatus(done), err)
 		return
 	}
-	if settled.State != transport.SpendApproved {
-		writeErr(w, http.StatusForbidden,
-			fmt.Errorf("the host %s the bond: %s", settled.State, settled.Error))
-		return
-	}
-	outpoint, err := p.findDepositOutput(ctx, settled.TxID, bond.PkScriptHex)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	out, err := p.recordOwnBond(sid, seat, outpoint)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	p.publish(ctx, out)
-	writeJSON(w, map[string]any{"seat": seat, "outpoint": outpoint, "bonded": true})
+	writeJSON(w, map[string]any{"seat": seat, "outpoint": done.Outpoint, "bonded": true})
 }

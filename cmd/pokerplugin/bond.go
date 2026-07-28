@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -135,6 +136,11 @@ func (p *plugin) handleBondFund(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	if have := p.id.bondDeposit(); have != "" {
 		writeJSON(w, map[string]any{"outpoint": have, "funded": true})
 		return
@@ -158,33 +164,35 @@ func (p *plugin) handleBondFund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pending := &pendingSpend{
+		ID: spend.ID, Purpose: purposeBond, PkScript: hex.EncodeToString(pkScript),
+		AtAtoms: int64(escrow.MinBondAtoms), State: "pending",
+	}
+	p.spends.put(pending)
+
+	if wantsDetach(body) {
+		p.detach(pending, bondWait)
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(w, map[string]any{"spendId": spend.ID, "state": "pending"})
+		return
+	}
+
 	// A person has to answer, and they may be a while.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	settled, err := p.bridge.AwaitSpend(ctx, spend.ID)
+	done, err := p.awaitSpend(context.Background(), pending, bondWait)
 	if err != nil {
-		writeErr(w, http.StatusGatewayTimeout, err)
+		writeErr(w, spendErrStatus(done), err)
 		return
 	}
-	if settled.State != transport.SpendApproved {
-		writeErr(w, http.StatusForbidden,
-			fmt.Errorf("the bond was not paid: %s %s", settled.State, settled.Error))
-		return
-	}
-
-	outpoint, err := p.findBondOutput(ctx, settled.TxID, hex.EncodeToString(pkScript))
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	if err := p.id.setBondDeposit(outpoint); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	log.Printf("pokerplugin: bond locked at %s", outpoint)
-	writeJSON(w, map[string]any{"outpoint": outpoint, "funded": true, "txid": settled.TxID})
+	log.Printf("pokerplugin: bond locked at %s", done.Outpoint)
+	writeJSON(w, map[string]any{"outpoint": done.Outpoint, "funded": true, "txid": done.TxID})
 }
+
+// bondWait bounds how long the plugin waits for a person to lock a bond.
+//
+// Much longer than the table-level waits, because this one is not part of a
+// hand: nothing is stalled behind it, and the person is being asked to lock
+// coin for two weeks. Rushing them buys nothing.
+const bondWait = 30 * time.Minute
 
 // handleBondSet records a deposit that already exists.
 //
