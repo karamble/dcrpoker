@@ -22,6 +22,12 @@ import (
 // the table stops, the last boundary everyone put their name to is the only
 // place it can settle from.
 
+// dutyStamp is one seat's outstanding obligation and the height it arose at.
+type dutyStamp struct {
+	duty   Duty
+	height uint32
+}
+
 // TableConfig is a peer's whole seat at a table, across every hand it plays.
 type TableConfig struct {
 	Match string
@@ -75,6 +81,9 @@ type Table struct {
 	// and a height taken from a local clock would be one each machine read
 	// differently.
 	height uint32
+	// dutySince is what each seat owed when this peer last looked, and the
+	// height it started owing it.
+	dutySince map[int]dutyStamp
 
 	over bool
 }
@@ -125,6 +134,7 @@ func NewTable(cfg TableConfig) (*Table, error) {
 		last:      0,
 		lastStack: append([]int64(nil), cfg.Stakes...),
 		leaving:   map[int]bool{},
+		dutySince: map[int]dutyStamp{},
 	}
 	return t, nil
 }
@@ -380,6 +390,7 @@ func (t *Table) AtHeight(height uint32) {
 	if height > t.height {
 		t.height = height
 	}
+	t.noteDuties()
 }
 
 // Act takes this peer's decision in the hand in progress.

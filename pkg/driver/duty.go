@@ -185,6 +185,71 @@ func (d *Driver) slotsOwedBy(seat int) []int {
 	return out
 }
 
+// Claimable reports a duty that has stood long enough to be worth opening a
+// claim over, if there is one.
+//
+// The waiting is local and it has to be. Nothing records when an obligation
+// arose - the log records what happened, not what did not - so each peer times
+// it from when it first saw the duty itself. That is fine because it decides
+// only when this peer *proposes*: every co-signer checks the duty is still
+// outstanding against its own log before signing, and the accused answers on
+// chain, so a peer that started counting early has proposed early and convinced
+// nobody.
+//
+// After is in blocks. It wants to be long enough that a reconnect finishes
+// inside it, because the cost of being wrong is somebody's bond and the cost of
+// waiting is a few more minutes.
+//
+// Never reports this peer's own obligation. Knowing what it owes is what Owes is
+// for; this answers the different question of whether there is a claim to
+// propose, and there never is against oneself.
+func (t *Table) Claimable(after uint32) (Duty, bool) {
+	if t == nil || t.over {
+		return Duty{}, false
+	}
+	for seat := range t.seats {
+		if seat == t.cfg.Seat {
+			// Never against itself. A peer that owes something has an
+			// answer available to it - do the thing - and proposing to
+			// take its own bond instead is not one of the options.
+			continue
+		}
+		d, ok := t.Owes(seat)
+		if !ok {
+			continue
+		}
+		since, seen := t.dutySince[seat]
+		if !seen || since.duty != d {
+			continue
+		}
+		if t.height >= since.height+after {
+			return d, true
+		}
+	}
+	return Duty{}, false
+}
+
+// noteDuties records what each seat owes and since when.
+//
+// Called as the chain moves rather than as messages arrive, so the clock this
+// runs on is block height and not anything local. A duty that changes resets its
+// stamp: a seat that owed a shuffle and now owes a move has done the first
+// thing, and starting the count again is what stops one long hand accumulating
+// into a claim against somebody who has been playing all along.
+func (t *Table) noteDuties() {
+	for seat := range t.seats {
+		d, ok := t.Owes(seat)
+		if !ok {
+			delete(t.dutySince, seat)
+			continue
+		}
+		if since, seen := t.dutySince[seat]; seen && since.duty == d {
+			continue
+		}
+		t.dutySince[seat] = dutyStamp{duty: d, height: t.height}
+	}
+}
+
 // Agrees reports whether this peer's own copy of the log says the same thing a
 // claim does.
 //

@@ -219,3 +219,82 @@ func (r Roster) SeatKeys() (map[uint32][]byte, error) {
 	}
 	return out, nil
 }
+
+// Bonded is one member pointing at the output holding its forfeitable bond.
+type Bonded struct {
+	Seat     uint32 `json:"seat"`
+	Outpoint string `json:"outpoint"`
+	Signer   string `json:"signer"` // hex compressed session pubkey
+	Sig      string `json:"sig"`
+}
+
+// BondedFrom renders a bond announcement for the wire.
+func BondedFrom(b *membership.Bonded) Bonded {
+	if b == nil {
+		return Bonded{}
+	}
+	return Bonded{
+		Seat:     b.Seat,
+		Outpoint: b.Outpoint,
+		Signer:   hex.EncodeToString(b.Signer),
+		Sig:      hex.EncodeToString(b.Sig),
+	}
+}
+
+// Into reads a bond announcement back. Its signature is checked by membership
+// against the terms the reader holds, and the output itself against the chain.
+func (b Bonded) Into() (*membership.Bonded, error) {
+	signer, err := hex.DecodeString(b.Signer)
+	if err != nil {
+		return nil, fmt.Errorf("bond signer: %w", err)
+	}
+	sig, err := hex.DecodeString(b.Sig)
+	if err != nil {
+		return nil, fmt.Errorf("bond signature: %w", err)
+	}
+	return &membership.Bonded{
+		Seat:     b.Seat,
+		Outpoint: b.Outpoint,
+		Signer:   signer,
+		Sig:      sig,
+	}, nil
+}
+
+// Payout is where a member wants coin sent that it did not pay for itself.
+type Payout struct {
+	Seat    uint32 `json:"seat"`
+	Address string `json:"address"`
+	Signer  string `json:"signer"` // hex compressed session pubkey
+	Sig     string `json:"sig"`
+}
+
+// PayoutFrom renders a payout announcement for the wire.
+func PayoutFrom(p *membership.Payout) Payout {
+	if p == nil {
+		return Payout{}
+	}
+	return Payout{
+		Seat:    p.Seat,
+		Address: p.Address,
+		Signer:  hex.EncodeToString(p.Signer),
+		Sig:     hex.EncodeToString(p.Sig),
+	}
+}
+
+// Into reads a payout announcement back.
+func (p Payout) Into() (*membership.Payout, error) {
+	signer, err := hex.DecodeString(p.Signer)
+	if err != nil {
+		return nil, fmt.Errorf("payout signer: %w", err)
+	}
+	sig, err := hex.DecodeString(p.Sig)
+	if err != nil {
+		return nil, fmt.Errorf("payout signature: %w", err)
+	}
+	return &membership.Payout{
+		Seat:    p.Seat,
+		Address: p.Address,
+		Signer:  signer,
+		Sig:     sig,
+	}, nil
+}

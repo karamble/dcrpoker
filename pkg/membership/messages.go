@@ -30,6 +30,12 @@ var (
 	seatTag   = []byte("gaming/table/seats/v1")
 	commitTag = []byte("gaming/table/commit/v1")
 	fundedTag = []byte("gaming/table/funded/v1")
+	// bondedTag separates a bond announcement from a stake announcement. The
+	// two carry the same fields, so without it one could be replayed as the
+	// other - and a seat's bond passed off as its stake would have a table
+	// dealing against money that is not there.
+	bondedTag = []byte("gaming/table/bonded/v1")
+	payoutTag = []byte("gaming/table/payout/v1")
 )
 
 // Terms are what an invitation states and every join commits to.
@@ -536,6 +542,140 @@ func (f *Funding) Verify(t Terms) error {
 		return err
 	}
 	return verifySig(f.Signer, f.Sig, digest)
+}
+
+// Bonded is one member pointing at the output holding its forfeitable bond.
+//
+// Separate from Funding and for a different thing. A stake is what a player can
+// lose at cards; a bond is what they lose for not playing - walking out of a
+// hand, or holding the table up until everybody else gives up. A table deals
+// only when both are on the chain for every seat, because a table without bonds
+// has no answer to somebody who stops.
+type Bonded struct {
+	Seat     uint32
+	Outpoint string
+	Signer   []byte
+	Sig      []byte
+}
+
+// SignBonded says where this member's forfeitable bond is.
+func SignBonded(t Terms, seat uint32, outpoint string, priv *secp256k1.PrivateKey) (*Bonded, error) {
+	if priv == nil {
+		return nil, fmt.Errorf("no signing key")
+	}
+	b := &Bonded{
+		Seat:     seat,
+		Outpoint: strings.TrimSpace(outpoint),
+		Signer:   priv.PubKey().SerializeCompressed(),
+	}
+	digest, err := b.digest(t)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := schnorr.Sign(priv, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign bonded: %w", err)
+	}
+	b.Sig = sig.Serialize()
+	return b, nil
+}
+
+func (b *Bonded) digest(t Terms) ([32]byte, error) {
+	th, err := t.Hash()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if len(b.Signer) != escrow.PubKeyLen {
+		return [32]byte{}, fmt.Errorf("bond signer is %d bytes, want %d", len(b.Signer), escrow.PubKeyLen)
+	}
+	if strings.TrimSpace(b.Outpoint) == "" {
+		return [32]byte{}, fmt.Errorf("bond announcement names no outpoint")
+	}
+	var buf bytes.Buffer
+	buf.Write(bondedTag)
+	buf.Write(th[:])
+	_ = binary.Write(&buf, binary.BigEndian, b.Seat)
+	writeString(&buf, b.Outpoint)
+	return blake256.Sum256(buf.Bytes()), nil
+}
+
+// Verify checks the announcement's signature against the key it names, and
+// nothing else. Whether the output exists and pays the right script is the
+// chain's answer, and the caller has to go and get it.
+func (b *Bonded) Verify(t Terms) error {
+	digest, err := b.digest(t)
+	if err != nil {
+		return err
+	}
+	return verifySig(b.Signer, b.Sig, digest)
+}
+
+// Payout is where a member wants coin sent that it did not pay for itself.
+//
+// A share of somebody's forfeited bond, mostly. It is signed because a claim is
+// built by the others: without a signature a member could announce an address on
+// a neighbour's behalf and quietly redirect their share of every forfeit at the
+// table.
+type Payout struct {
+	Seat    uint32
+	Address string
+	Signer  []byte
+	Sig     []byte
+}
+
+// SignPayout says where this member wants to be paid.
+func SignPayout(t Terms, seat uint32, address string, priv *secp256k1.PrivateKey) (*Payout, error) {
+	if priv == nil {
+		return nil, fmt.Errorf("no signing key")
+	}
+	if strings.TrimSpace(address) == "" {
+		return nil, fmt.Errorf("no payout address")
+	}
+	p := &Payout{
+		Seat:    seat,
+		Address: strings.TrimSpace(address),
+		Signer:  priv.PubKey().SerializeCompressed(),
+	}
+	digest, err := p.digest(t)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := schnorr.Sign(priv, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign payout: %w", err)
+	}
+	p.Sig = sig.Serialize()
+	return p, nil
+}
+
+func (p *Payout) digest(t Terms) ([32]byte, error) {
+	th, err := t.Hash()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if len(p.Signer) != escrow.PubKeyLen {
+		return [32]byte{}, fmt.Errorf("payout signer is %d bytes, want %d", len(p.Signer), escrow.PubKeyLen)
+	}
+	if strings.TrimSpace(p.Address) == "" {
+		return [32]byte{}, fmt.Errorf("payout names no address")
+	}
+	var b bytes.Buffer
+	b.Write(payoutTag)
+	b.Write(th[:])
+	_ = binary.Write(&b, binary.BigEndian, p.Seat)
+	writeString(&b, p.Address)
+	return blake256.Sum256(b.Bytes()), nil
+}
+
+// Verify checks the announcement against the key it names. Whether the address
+// is one this network understands is the caller's question, and it has to ask
+// it: an address nobody can decode makes every claim built to pay it fail.
+func (p *Payout) Verify(t Terms) error {
+	digest, err := p.digest(t)
+	if err != nil {
+		return err
+	}
+	return verifySig(p.Signer, p.Sig, digest)
 }
 
 // ConflictingCommits is proof that one key bound itself to two rosters at one

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/client"
 	"github.com/vctt94/pokerbisonrelay/pkg/driver"
@@ -39,6 +40,22 @@ type table struct {
 	// differently.
 	log *forfeit.LogKey
 
+	// payouts is where each seat wants coin sent that it did not pay for
+	// itself, and claims is the proposals in flight against seats that have
+	// stopped.
+	payouts map[uint32]string
+	claims  map[driver.Duty]*claim
+	// session is the key this seat signs table business with, and netParams
+	// the network its addresses belong to. Both are needed long after the
+	// table was joined, and deriving them twice risks deriving them
+	// differently.
+	session   *secp256k1.PrivateKey
+	netParams stdaddr.AddressParams
+	// chain is what a finished claim is broadcast through. Held here rather
+	// than reached for, so the one thing that talks to the network from a
+	// table is visible in the table.
+	chain broadcaster
+
 	// play is the hand in progress and the ones after it, once the table is
 	// seated and every stake is on the chain. Nil until then: dealing before
 	// the money is down would be dealing for nothing.
@@ -54,6 +71,11 @@ type table struct {
 	// so and the chain agreed. A seat missing from here has not been paid
 	// for as far as this peer can tell, whoever says otherwise.
 	funded map[uint32]string
+
+	// bonded is the same for each seat's forfeitable bond. Kept apart from
+	// funded because they answer different questions: a stake is what a
+	// player can lose at cards, a bond is what they lose for not playing.
+	bonded map[uint32]string
 
 	// announcedAt is the height this table last said where our stake is, so
 	// it is repeated once a block rather than once a poll.
@@ -287,7 +309,9 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 		return nil, err
 	}
 	tbl := &table{terms: terms, gcID: gcID, form: form,
-		funded: map[uint32]string{}, log: logKey}
+		funded: map[uint32]string{}, bonded: map[uint32]string{},
+		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
+		session: creds.Session, netParams: t.params, chain: t.chain, log: logKey}
 
 	if rec != nil {
 		if err := tbl.resume(rec); err != nil {
@@ -434,6 +458,7 @@ func (t *tables) tick(height int64) []outgoing {
 			t.persist(tbl)
 		}
 		out = append(out, tbl.askAgain(height)...)
+		out = append(out, tbl.proposeClaim(t.params)...)
 		out = append(out, t.announceAgain(tbl, height)...)
 		if tbl.fundingLapsed(height) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
@@ -656,6 +681,9 @@ func (t *tables) deliver(ctx context.Context, d transport.Delivery) []outgoing {
 	if d.Msg.Kind == schema.KindFunded {
 		return t.acceptFunding(ctx, d)
 	}
+	if d.Msg.Kind == schema.KindBonded {
+		return t.acceptBond(ctx, d)
+	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -757,6 +785,25 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 	case schema.KindCardKey, schema.KindShuffle, schema.KindShare, schema.KindCheckpoint,
 		schema.KindLeaving:
 		return tbl.deal(msg), nil
+
+	case schema.KindPayout:
+		var body schema.Payout
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		return nil, tbl.adoptPayout(body)
+
+	case schema.KindClaim:
+		var body schema.Claim
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		if body.Sig != "" {
+			// A co-signature on something already proposed.
+			tbl.collectClaimSig(context.Background(), tbl.chain, body)
+			return nil, nil
+		}
+		return tbl.acceptClaim(body, tbl.netParams), nil
 
 	default:
 		// A kind this build does not know must not take the table down.

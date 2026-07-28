@@ -54,6 +54,12 @@ func (tbl *table) startPlaying() []outgoing {
 		// tell. Somebody else saying otherwise is not the same thing.
 		return nil
 	}
+	if len(tbl.bonded) < int(tbl.terms.Seats) {
+		// And not every seat has posted what it loses for walking out.
+		// Dealing before then is dealing with no answer to somebody who
+		// stops, which is the whole thing the bond is for.
+		return nil
+	}
 	seats, ok := tbl.form.LogSeats()
 	if !ok {
 		return nil

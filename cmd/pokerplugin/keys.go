@@ -12,6 +12,7 @@ import (
 
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
@@ -31,11 +32,22 @@ type identity struct {
 	// cost of being somebody, and paying it again per table would price
 	// playing rather than price existing.
 	bondOutpoint string
+	// payout is where this player wants coin sent when a table owes it
+	// something it did not pay for itself - a share of somebody's forfeited
+	// bond, and settlement later.
+	//
+	// Set by the person rather than derived, because this process holds no
+	// wallet: the seed here produces keys that sign, and nothing that
+	// receives. It is announced per table so the others can build a claim
+	// that pays this seat, and it is signed, so a member cannot redirect a
+	// neighbour's share by announcing an address on their behalf.
+	payout string
 }
 
 type identityFile struct {
 	SeedHex      string `json:"seed_hex"`
 	BondOutpoint string `json:"bond_outpoint,omitempty"`
+	Payout       string `json:"payout,omitempty"`
 }
 
 // loadIdentity reads the seed under dir, creating one the first time.
@@ -53,7 +65,7 @@ func loadIdentity(dir string) (*identity, error) {
 		if err != nil || len(seed) != 32 {
 			return nil, fmt.Errorf("identity seed is not 32 bytes of hex")
 		}
-		return &identity{dir: dir, seed: seed, bondOutpoint: f.BondOutpoint}, nil
+		return &identity{dir: dir, seed: seed, bondOutpoint: f.BondOutpoint, payout: f.Payout}, nil
 	case !os.IsNotExist(err):
 		return nil, fmt.Errorf("read identity: %w", err)
 	}
@@ -133,6 +145,7 @@ func (id *identity) writeLocked(seed []byte, outpoint string) error {
 	out, err := json.Marshal(identityFile{
 		SeedHex:      hex.EncodeToString(seed),
 		BondOutpoint: outpoint,
+		Payout:       id.payout,
 	})
 	if err != nil {
 		return err
@@ -189,6 +202,32 @@ func (id *identity) restore(seedHex, bondOutpoint string) error {
 	}
 	id.seed, id.bondOutpoint = seed, outpoint
 	return nil
+}
+
+// payoutAddress reports where this player wants to be paid.
+func (id *identity) payoutAddress() string {
+	id.mu.Lock()
+	defer id.mu.Unlock()
+	return id.payout
+}
+
+// setPayout records where this player wants to be paid.
+//
+// Checked against the network before it is kept, because an address this
+// process cannot decode is one every claim built to pay it would fail on - and
+// it would fail at the other seats, looking like they were refusing to pay.
+func (id *identity) setPayout(addr string, params stdaddr.AddressParams) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return fmt.Errorf("no address")
+	}
+	if _, err := stdaddr.DecodeAddress(addr, params); err != nil {
+		return fmt.Errorf("payout address: %w", err)
+	}
+	id.mu.Lock()
+	defer id.mu.Unlock()
+	id.payout = addr
+	return id.writeLocked(id.seed, id.bondOutpoint)
 }
 
 // credentials are what this player sits down with.

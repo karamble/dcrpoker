@@ -292,6 +292,15 @@ func (p *plugin) routes() http.Handler {
 	mux.HandleFunc("/table/fund", p.guard(p.handleFund))
 	mux.HandleFunc("/table/deposit/set", p.guard(p.handleDepositSet))
 
+	// The bond a table can take, as opposed to the standing one that buys a
+	// seat. Posted once the seating is drawn, because it names the table.
+	mux.HandleFunc("/table/bond", p.guard(p.handleTableBond))
+
+	// Where this player wants coin sent that it did not pay for itself: a
+	// share of somebody's forfeited bond, and settlement later. This process
+	// holds no wallet, so it has to be told.
+	mux.HandleFunc("/payout/set", p.guard(p.handlePayoutSet))
+
 	// Playing. /table/hand is what a caller polls to know whose turn it is
 	// and what it may do; /table/act is the one place a person's decision
 	// enters the protocol at all.

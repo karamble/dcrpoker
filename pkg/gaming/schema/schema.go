@@ -101,6 +101,13 @@ const (
 	KindShuffle Kind = "shuffle"
 	KindShare   Kind = "share"
 
+	// KindBonded is one member saying which output holds its forfeitable
+	// bond. Like KindFunded, the chain is what makes it true.
+	KindBonded Kind = "bonded"
+
+	// KindPayout is one member saying where it wants to be paid.
+	KindPayout Kind = "payout"
+
 	// KindLeaving is a seat saying it is getting up.
 	//
 	// Not the same as going quiet, which is the whole reason it exists: a

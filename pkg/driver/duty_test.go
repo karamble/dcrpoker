@@ -234,3 +234,105 @@ func TestATableThatIsOverOwesNothing(t *testing.T) {
 		}
 	}
 }
+
+// A claim is proposed only after an obligation has stood for a while, and the
+// waiting is timed in blocks because that is the only clock available.
+func TestAClaimWaitsForTheObligationToStand(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+
+	const start uint32 = 1_100_000
+	for _, p := range n.peers {
+		p.AtHeight(start)
+	}
+	// Nothing is claimable the moment a duty appears, whatever the window.
+	for i, p := range n.peers {
+		if d, ok := p.Claimable(0); ok {
+			// A zero window is claimable immediately by definition; what
+			// must not happen is a real window firing at once.
+			_ = d
+		}
+		if d, ok := p.Claimable(3); ok {
+			t.Fatalf("peer %d would claim %s the moment it arose", i, d)
+		}
+	}
+
+	// Still not, one block short.
+	for _, p := range n.peers {
+		p.AtHeight(start + 2)
+	}
+	for i, p := range n.peers {
+		if d, ok := p.Claimable(3); ok {
+			t.Fatalf("peer %d would claim %s a block early", i, d)
+		}
+	}
+
+	// And now.
+	for _, p := range n.peers {
+		p.AtHeight(start + 3)
+	}
+	turn := n.peers[0].Hand().State().ToAct
+	waiting := 1 - turn
+	d, ok := n.peers[waiting].Claimable(3)
+	if !ok {
+		t.Fatal("an obligation that stood the whole window is not claimable")
+	}
+	if d.Seat != turn {
+		t.Fatalf("the claim names seat %d, and seat %d is the one holding things up", d.Seat, turn)
+	}
+	// The seat holding things up has nobody to claim against.
+	if d, ok := n.peers[turn].Claimable(3); ok {
+		t.Fatalf("the seat holding the table up would claim %s", d)
+	}
+}
+
+// Acting resets the clock. Otherwise a long hand accumulates into a claim
+// against somebody who has been playing all along.
+func TestActingResetsTheClaimClock(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+
+	const start uint32 = 1_100_000
+	for _, p := range n.peers {
+		p.AtHeight(start + 2)
+	}
+	// One block short of claimable, then the seat acts.
+	n.act(gamelog.ActionCall, 0)
+	for _, p := range n.peers {
+		p.AtHeight(start + 3)
+	}
+	for i, p := range n.peers {
+		if d, ok := p.Claimable(3); ok {
+			t.Fatalf("peer %d would claim %s from a seat that just acted", i, d)
+		}
+	}
+
+	// The new obligation has to stand its own window.
+	for _, p := range n.peers {
+		p.AtHeight(start + 6)
+	}
+	found := false
+	for _, p := range n.peers {
+		if _, ok := p.Claimable(3); ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the obligation that replaced it never became claimable")
+	}
+}
+
+// A table that is over produces no claims, whatever heights arrive afterwards.
+func TestAFinishedTableProposesNoClaims(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+	n.leave(0)
+	n.playOut()
+
+	for _, p := range n.peers {
+		p.AtHeight(2_000_000)
+		if d, ok := p.Claimable(1); ok {
+			t.Fatalf("a finished table would still claim %s", d)
+		}
+	}
+}

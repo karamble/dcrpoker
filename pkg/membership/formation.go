@@ -451,6 +451,19 @@ func (f *Formation) LogSeats() (map[uint32][]byte, bool) {
 	return out, true
 }
 
+// TableBonds derives every seat's forfeitable bond from this table's seating.
+//
+// Empty until the seating is drawn, for the same reason the deposits are: the
+// bonds name the membership, and a membership that could still change is one
+// nobody should be paying into.
+func (f *Formation) TableBonds(params stdaddr.AddressParams) ([]TableBond, error) {
+	seats, ok := f.Seats()
+	if !ok {
+		return nil, fmt.Errorf("this table has no seating yet")
+	}
+	return TableBonds(seats, params)
+}
+
 // OurSeat reports which seat this peer holds.
 func (f *Formation) OurSeat() (uint32, bool) {
 	seats, ok := f.Seats()
