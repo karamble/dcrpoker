@@ -292,6 +292,12 @@ func (p *plugin) routes() http.Handler {
 	mux.HandleFunc("/table/fund", p.guard(p.handleFund))
 	mux.HandleFunc("/table/deposit/set", p.guard(p.handleDepositSet))
 
+	// Playing. /table/hand is what a caller polls to know whose turn it is
+	// and what it may do; /table/act is the one place a person's decision
+	// enters the protocol at all.
+	mux.HandleFunc("/table/hand", p.guard(p.handleHand))
+	mux.HandleFunc("/table/act", p.guard(p.handleAct))
+
 	// Taking our own coin back out, once its lock has matured. The escape
 	// hatch that works when nothing else does.
 	mux.HandleFunc("/table/refund", p.guard(p.handleTableRefund))

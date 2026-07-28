@@ -162,6 +162,24 @@ func (c Card) point() kyber.Point {
 	return suite.Point().Mul(suite.Scalar().SetInt64(int64(c)+1), nil)
 }
 
+// String names a card the way a person reads one: rank then suit, "As", "Td",
+// "2c".
+//
+// The encoding is suit-major and lives here rather than being repeated wherever
+// a card is displayed, because a second copy of it is a second chance to get it
+// wrong - and a card shown as the wrong one is the kind of bug a player notices
+// only after they have acted on it.
+func (c Card) String() string {
+	if c < 0 || c >= Size {
+		return fmt.Sprintf("card(%d)", int(c))
+	}
+	const (
+		ranks = "23456789TJQKA"
+		suits = "shdc"
+	)
+	return string(ranks[int(c)%13]) + string(suits[int(c)/13])
+}
+
 // CardOf recovers a card from its group element.
 //
 // A linear scan of 52, which is nothing, and the only way round: the encoding
