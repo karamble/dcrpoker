@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/driver"
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/replay"
 )
@@ -61,6 +62,9 @@ func (p *plugin) handleAct(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
+	// Everybody watching hears about this now rather than within half a
+	// second. It is the one place a person is waiting on their own input.
+	p.notifyNow()
 	writeJSON(w, view)
 }
 
@@ -102,10 +106,25 @@ type handView struct {
 	MinRaise int64    `json:"minRaise"`
 	Legal    []string `json:"legal,omitempty"`
 
-	Hole   []string `json:"hole,omitempty"`
-	Board  []string `json:"board,omitempty"`
-	Pot    int64    `json:"pot"`
-	Stacks []int64  `json:"stacks"`
+	Hole  []string `json:"hole,omitempty"`
+	Board []string `json:"board,omitempty"`
+
+	// Pot is what earlier streets collected, and Chairs carries what each
+	// seat has put in on this one. They are separate because the reducer
+	// keeps them separate, and it keeps them separate because an uncalled
+	// bet has to be returnable - so chips on the current street are still
+	// the seat's until the street ends.
+	//
+	// A caller that showed only Pot would show nothing moving for the whole
+	// of a betting round, which is most of a hand.
+	Pot    int64   `json:"pot"`
+	Chairs []chair `json:"chairs,omitempty"`
+	Stacks []int64 `json:"stacks"`
+
+	// Shuffles is where the deck came from, seat by seat. It is the one
+	// question a player has to be able to answer about a hand they cannot
+	// see being dealt, and the answer is per hand: nothing carries over.
+	Shuffles []shuffleView `json:"shuffles,omitempty"`
 
 	Done    bool             `json:"done"`
 	Awards  []replay.Award   `json:"awards,omitempty"`
@@ -117,6 +136,66 @@ type handView struct {
 type settledBoundary struct {
 	Hand   uint64  `json:"hand"`
 	Stacks []int64 `json:"stacks"`
+}
+
+// chair is one seat's position in the hand being played.
+//
+// Distinct from the stacks a table carries, which are the ones every seat has
+// signed for at the last boundary. These move within a hand and mean nothing
+// until it ends; those are agreed and mean everything. Showing one where the
+// other belongs is the difference between a promise and a fact, so they are
+// two fields rather than one.
+type chair struct {
+	Seat int `json:"seat"`
+	// Stack is what is still behind, and Committed what this seat has put
+	// in on this street - the chips in front of them, not yet in the pot.
+	Stack     int64 `json:"stack"`
+	Committed int64 `json:"committed"`
+	// Total is what this seat has put in across the whole hand.
+	Total  int64 `json:"total"`
+	Folded bool  `json:"folded,omitempty"`
+	AllIn  bool  `json:"allIn,omitempty"`
+}
+
+// shuffleView is one seat's turn with the deck, and what this peer can say
+// about it.
+//
+// Three states and not two. "We permuted it ourselves" is a stronger claim than
+// "we checked their proof", and both are stronger than "the network verified
+// it", which is not a thing this process can know and must never be rendered.
+// Collapsing ours into verified would overstate by exactly the amount that
+// matters.
+type shuffleView struct {
+	Seat  uint32 `json:"seat"`
+	State string `json:"state"`
+}
+
+// The states a shuffle can be in, from this peer's own point of view.
+const (
+	shuffleOurs     = "ours"
+	shuffleVerified = "verified"
+	shuffleAwaited  = "awaited"
+)
+
+// shuffles reports the deck's provenance for the hand in progress.
+//
+// Seats shuffle in seat order and a shuffle is counted only once it has been
+// verified and built on, so the count divides the table cleanly: below it is
+// established, at and above it is still owed.
+func shuffles(d *driver.Driver, seats int, ours uint32) []shuffleView {
+	done := d.Shuffled()
+	out := make([]shuffleView, 0, seats)
+	for seat := range uint32(seats) {
+		state := shuffleAwaited
+		if int(seat) < done {
+			state = shuffleVerified
+			if seat == ours {
+				state = shuffleOurs
+			}
+		}
+		out = append(out, shuffleView{Seat: seat, State: state})
+	}
+	return out
 }
 
 // HandView reports what this player can see of a table's hand.
@@ -169,6 +248,15 @@ func (t *tables) HandView(sid string) (*handView, error) {
 			v.Legal = legalActions(st, int(seat))
 		}
 	}
+	v.Shuffles = shuffles(h, len(tbl.play.Stacks()), seat)
+	for i := range st.Seats {
+		s := st.Seats[i]
+		v.Chairs = append(v.Chairs, chair{
+			Seat: i, Stack: s.Stack, Committed: s.Committed,
+			Total: s.Total, Folded: s.Folded, AllIn: s.AllIn,
+		})
+	}
+
 	if hole, ok := h.Hole(); ok {
 		for _, c := range hole {
 			v.Hole = append(v.Hole, c.String())

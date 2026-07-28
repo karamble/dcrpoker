@@ -102,6 +102,8 @@ func (tbl *table) proposeClaim(params stdaddr.AddressParams) []outgoing {
 	c := &claim{duty: duty, tx: tx, bond: bond, sigs: map[string][]byte{}}
 	tbl.claims[duty] = c
 	log.Printf("pokerplugin: table %s: proposing a claim - %s", tbl.terms.SID, duty)
+	tbl.note(eventProposed, fmt.Sprintf("proposed taking seat %d's bond: %s", duty.Seat, duty),
+		"", seatp(duty.Seat))
 
 	return []outgoing{tbl.frame(schema.KindClaim, schema.Claim{
 		Seat:         uint32(duty.Seat),
@@ -219,6 +221,8 @@ func (tbl *table) acceptClaim(body schema.Claim, params stdaddr.AddressParams) [
 	// Does this peer's own log say the same thing?
 	if err := tbl.play.Agrees(body.Duty); err != nil {
 		log.Printf("pokerplugin: table %s: not co-signing a claim: %v", tbl.terms.SID, err)
+		tbl.note(eventRefused, fmt.Sprintf("did not co-sign a claim against seat %d: %v",
+			body.Duty.Seat, err), "", seatp(body.Duty.Seat))
 		return nil
 	}
 	// Is it the transaction this peer would have built?
@@ -238,6 +242,8 @@ func (tbl *table) acceptClaim(body schema.Claim, params stdaddr.AddressParams) [
 	}
 	if err := escrow.CheckClaimDraft(tx, draft); err != nil {
 		log.Printf("pokerplugin: table %s: not co-signing a claim: %v", tbl.terms.SID, err)
+		tbl.note(eventRefused, fmt.Sprintf("a claim against seat %d was not the transaction this peer would have built: %v",
+			body.Duty.Seat, err), "", seatp(body.Duty.Seat))
 		return nil
 	}
 	// And is this peer one of the seats the bond can pay?
@@ -248,6 +254,8 @@ func (tbl *table) acceptClaim(body schema.Claim, params stdaddr.AddressParams) [
 	seats, _ := tbl.form.Seats()
 	if _, err := escrow.MemberIndex(terms, seats[seat]); err != nil {
 		log.Printf("pokerplugin: table %s: not co-signing a bond that cannot pay this seat", tbl.terms.SID)
+		tbl.note(eventRefused, fmt.Sprintf("did not co-sign a claim against seat %d: its bond cannot pay this seat",
+			body.Duty.Seat), "", seatp(body.Duty.Seat))
 		return nil
 	}
 
@@ -268,6 +276,8 @@ func (tbl *table) acceptClaim(body schema.Claim, params stdaddr.AddressParams) [
 		tbl.claims[body.Duty] = c
 	}
 	c.sigs[hex.EncodeToString(seats[seat])] = sig
+	tbl.note(eventCosigned, fmt.Sprintf("co-signed taking seat %d's bond: %s", body.Duty.Seat, body.Duty),
+		"", seatp(body.Duty.Seat))
 
 	return []outgoing{tbl.frame(schema.KindClaim, schema.Claim{
 		Seat:         uint32(body.Duty.Seat),
@@ -319,6 +329,8 @@ func (tbl *table) collectClaimSig(ctx context.Context, chain broadcaster, body s
 	if err != nil {
 		log.Printf("pokerplugin: table %s: a fully signed claim did not satisfy the bond: %v",
 			tbl.terms.SID, err)
+		tbl.note(eventBlocked, fmt.Sprintf("a fully signed claim against seat %d did not satisfy the bond: %v",
+			c.duty.Seat, err), "", seatp(c.duty.Seat))
 		return
 	}
 	raw, err := done.Bytes()
@@ -331,10 +343,14 @@ func (tbl *table) collectClaimSig(ctx context.Context, chain broadcaster, body s
 		// The window is what matters, not this attempt. Another peer holds
 		// the same signatures and will broadcast the same transaction.
 		log.Printf("pokerplugin: table %s: could not broadcast a claim: %v", tbl.terms.SID, err)
+		tbl.note(eventBlocked, fmt.Sprintf("this peer could not send a claim against seat %d; another holds the same one: %v",
+			c.duty.Seat, err), "", seatp(c.duty.Seat))
 		return
 	}
 	log.Printf("pokerplugin: table %s: claimed seat %d's bond in %s - %s",
 		tbl.terms.SID, c.duty.Seat, txid, c.duty)
+	tbl.note(eventClaimed, fmt.Sprintf("took seat %d's bond: %s", c.duty.Seat, c.duty),
+		txid, seatp(c.duty.Seat))
 }
 
 // broadcaster is what a claim needs from the chain, and nothing more.
@@ -391,7 +407,16 @@ func (tbl *table) announcePayout(addr string) []outgoing {
 
 // handlePayoutSet records where this player wants to be paid, and tells every
 // table it is at.
+//
+// A GET reads it back. Not decoration: until every seat at a table has said
+// this, no claim there can be built at all, so whether it is set is an
+// obligation somebody has to be able to check rather than infer from a claim
+// that never appears.
 func (p *plugin) handlePayoutSet(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, map[string]any{"address": p.id.payoutAddress()})
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return

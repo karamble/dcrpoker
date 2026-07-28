@@ -93,6 +93,11 @@ func main() {
 	}
 	go transport.Receive(ctx, frames, p.router)
 	go p.watchChain(ctx)
+	go p.watchTables(ctx)
+	// Payments that were still in flight when this process last stopped. A
+	// person may have approved one while it was down, and money that moved
+	// with nothing pointing at it is worse than money that has not moved.
+	p.resumeSpends()
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -123,6 +128,13 @@ type plugin struct {
 	id     *identity
 	token  string
 	params stdaddr.AddressParams
+	// notify is what says a table moved, to anybody watching. A table moves
+	// for reasons nobody asked about - a block, somebody else's turn, a
+	// claim - so there has to be something that speaks first.
+	notify *notifier
+	// spends is every payment asked for and not yet accounted for, kept so
+	// a caller need not hold a request open while a person decides.
+	spends *spends
 }
 
 func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *store, params stdaddr.AddressParams) (*plugin, error) {
@@ -131,7 +143,8 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 		return nil, err
 	}
 
-	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), store: st, id: id, token: token, params: params}
+	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), store: st, id: id, token: token,
+		params: params, notify: newNotifier(), spends: newSpends(st)}
 	// A seat has to cost something, so every join is checked against the
 	// chain before it is admitted. The rule lives in pkg/membership; what
 	// happens here is fetching the facts it needs.
@@ -269,13 +282,26 @@ func (p *plugin) routes() http.Handler {
 	// process is actually serving, so "ready" means reachable rather than
 	// merely started.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		// Whether the interface is really in here, so a release that
+		// shipped the placeholder can be caught by the thing that signs
+		// it rather than by a player looking at a page that explains
+		// itself through a proxy, inside a frame, where it reads as
+		// every layer in between being broken.
+		ui := "placeholder"
+		if uiBuilt() {
+			ui = "built"
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"game":            schema.Game,
 			"protocolVersion": schema.Version,
+			"ui":              ui,
 			"ok":              true,
 		})
 	})
+
+	// The interface itself, unguarded and framed by the host. See ui.go.
+	mux.HandleFunc("/ui/", p.handleUI)
 
 	// One entry point for the whole command vocabulary, mirroring the FFI
 	// the Flutter client used. Adding a command to golib adds it here.
@@ -300,12 +326,29 @@ func (p *plugin) routes() http.Handler {
 	// share of somebody's forfeited bond, and settlement later. This process
 	// holds no wallet, so it has to be told.
 	mux.HandleFunc("/payout/set", p.guard(p.handlePayoutSet))
+	mux.HandleFunc("/payout", p.guard(p.handlePayoutSet))
 
 	// Playing. /table/hand is what a caller polls to know whose turn it is
 	// and what it may do; /table/act is the one place a person's decision
 	// enters the protocol at all.
 	mux.HandleFunc("/table/hand", p.guard(p.handleHand))
 	mux.HandleFunc("/table/act", p.guard(p.handleAct))
+
+	// Where the money is, as opposed to where the cards are. It answers
+	// before the table deals, because stakes, bonds, payout addresses and a
+	// funding deadline all exist and all matter while /table/hand is still
+	// saying there is no hand.
+	mux.HandleFunc("/table/ledger", p.guard(p.handleLedger))
+
+	// Saying when a table moved, rather than waiting to be asked. A table
+	// moves for reasons nobody asked about, so there has to be one route
+	// here that speaks first.
+	mux.HandleFunc("/events", p.guard(p.handleEvents))
+
+	// What became of a payment somebody asked for and did not wait on. A
+	// page cannot hold a request open for the half hour a person may take
+	// to approve a bond, so it asks here instead.
+	mux.HandleFunc("/spend", p.guard(p.handleSpend))
 
 	// Taking our own coin back out, once its lock has matured. The escape
 	// hatch that works when nothing else does.
@@ -415,9 +458,24 @@ func (p *plugin) handleTables(w http.ResponseWriter, r *http.Request) {
 // It is the one secret here that nothing can regenerate. The bond key and every
 // session key are derived from it, so a data volume removed without a copy
 // leaves the bond unspendable forever and any stake in escrow unrefundable.
+// It is also the one route here that must never be reachable from a browser,
+// and this process cannot enforce that: every request arrives with the same
+// valid token, and there is no honest way to tell a proxied page from the host.
+// The enforcement is the host's route allowlist.
+//
+// So this asks for a header as well - one no proxy has any reason to forward.
+// It stops a page that got as far as this route from reading the seed with an
+// ordinary fetch, which is not the same as making it safe, and is worth having
+// precisely because the real control lives in another repository.
 func (p *plugin) handleIdentityBackup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get(confirmHeader) != confirmSeed {
+		writeErr(w, http.StatusForbidden, fmt.Errorf(
+			"reading the seed needs the %s: %s header, and is not something to do from a game's own interface",
+			confirmHeader, confirmSeed))
 		return
 	}
 	seed, outpoint := p.id.backup()
@@ -463,6 +521,14 @@ func (p *plugin) handleIdentityRestore(w http.ResponseWriter, r *http.Request) {
 	log.Printf("pokerplugin: identity restored from a backup")
 	writeJSON(w, map[string]any{"restored": true, "bondOutpoint": p.id.bondDeposit()})
 }
+
+// confirmHeader is asked for by the routes that hand out something no page
+// should ever hold. It is not a secret and not authentication - it is a
+// deliberate step, of the kind a fetch from a page does not take by accident.
+const (
+	confirmHeader = "X-Poker-Confirm"
+	confirmSeed   = "seed"
+)
 
 // gcIDRe is the shape a Bison Relay group chat id takes, checked here so an
 // unusable one is refused rather than carried until the host rejects the first

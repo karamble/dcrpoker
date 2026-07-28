@@ -215,6 +215,14 @@ func New(cfg Config) (*Driver, error) {
 // Phase reports how far through the hand this peer is.
 func (d *Driver) Phase() Phase { return d.phase }
 
+// Shuffled reports how many seats have shuffled this hand.
+//
+// A count of checks, not of messages. A shuffle from anybody else is verified
+// against its own proof before it is built on, and one that did not verify was
+// never applied - so this is how much of the deck's provenance this process
+// established itself, which is the only kind it can honestly report.
+func (d *Driver) Shuffled() int { return d.round }
+
 // State is the betting, as folded from the log so far.
 func (d *Driver) State() *replay.State { return d.state }
 

@@ -228,6 +228,12 @@ func (tbl *table) answerClaim(ctx context.Context) {
 	if r == nil {
 		log.Printf("pokerplugin: table %s: claimed against and holding no answer for %s",
 			tbl.terms.SID, at)
+		// The bond is going. Nothing else in this process is going to say
+		// so, and the player cannot be told to check a log they have no
+		// shell to read.
+		tbl.note(eventUnanswerable,
+			fmt.Sprintf("claimed against, and this peer holds no answer for the bond at %s", at),
+			"", seatp(int(seat)))
 		return
 	}
 	terms, err := escrow.ParseTableBond(r.bond)
@@ -240,6 +246,9 @@ func (tbl *table) answerClaim(ctx context.Context) {
 		if !ok {
 			log.Printf("pokerplugin: table %s: claimed against and short of an answer's signatures",
 				tbl.terms.SID)
+			tbl.note(eventUnanswerable,
+				"claimed against, and the answer this peer holds is short of a signature",
+				"", seatp(int(seat)))
 			return
 		}
 		sigs = append(sigs, sig)
@@ -248,6 +257,9 @@ func (tbl *table) answerClaim(ctx context.Context) {
 	if err != nil {
 		log.Printf("pokerplugin: table %s: the answer held does not satisfy the bond: %v",
 			tbl.terms.SID, err)
+		tbl.note(eventUnanswerable,
+			fmt.Sprintf("claimed against, and the answer this peer holds does not satisfy the bond: %v", err),
+			"", seatp(int(seat)))
 		return
 	}
 	raw, err := done.Bytes()
@@ -257,6 +269,12 @@ func (tbl *table) answerClaim(ctx context.Context) {
 	txid, err := tbl.chain.Broadcast(ctx, hex.EncodeToString(raw))
 	if err != nil {
 		log.Printf("pokerplugin: table %s: could not answer a claim: %v", tbl.terms.SID, err)
+		// Unanswerable rather than blocked: the answer existed and did
+		// not go out, which from the bond's point of view is the same
+		// thing as not having one.
+		tbl.note(eventUnanswerable,
+			fmt.Sprintf("claimed against, and the answer could not be sent: %v", err),
+			"", seatp(int(seat)))
 		return
 	}
 	// The bond has moved, so every future claim - and every future answer -
@@ -265,6 +283,9 @@ func (tbl *table) answerClaim(ctx context.Context) {
 	tbl.bondedAt[seat] = fmt.Sprintf("%s:0", done.TxHash())
 	log.Printf("pokerplugin: table %s: answered a claim in %s; the bond is posted again at %s",
 		tbl.terms.SID, txid, tbl.bondedAt[seat])
+	tbl.note(eventAnswered,
+		fmt.Sprintf("claimed against, and the pre-agreed answer was sent; the bond is posted again at %s",
+			tbl.bondedAt[seat]), txid, seatp(int(seat)))
 }
 
 // settleDraft is what this table would pay out, from the last boundary every
@@ -415,6 +436,8 @@ func (tbl *table) adoptSettlement(ctx context.Context, body schema.Settle) []out
 	}
 	if err := escrow.CheckSettleDraft(tx, d); err != nil {
 		log.Printf("pokerplugin: table %s: not signing a settlement: %v", tbl.terms.SID, err)
+		tbl.note(eventRefused,
+			fmt.Sprintf("a proposed payout was not the one this peer would have built: %v", err), "", nil)
 		return nil
 	}
 	seats, ok := tbl.form.Seats()
@@ -477,6 +500,8 @@ func (tbl *table) broadcastSettlement(ctx context.Context) {
 	if err != nil {
 		log.Printf("pokerplugin: table %s: a fully signed settlement did not satisfy the escrows: %v",
 			tbl.terms.SID, err)
+		tbl.note(eventBlocked,
+			fmt.Sprintf("a fully signed payout did not satisfy the escrows: %v", err), "", nil)
 		return
 	}
 	raw, err := done.Bytes()
@@ -490,9 +515,13 @@ func (tbl *table) broadcastSettlement(ctx context.Context) {
 		// transaction, so one of them will send it.
 		log.Printf("pokerplugin: table %s: could not broadcast the settlement: %v",
 			tbl.terms.SID, err)
+		tbl.note(eventBlocked,
+			fmt.Sprintf("this peer could not send the payout; every other seat holds the same one: %v", err),
+			"", nil)
 		return
 	}
 	log.Printf("pokerplugin: table %s: settled in %s", tbl.terms.SID, txid)
+	tbl.note(eventSettled, "the table paid out", txid, nil)
 }
 
 func outpointOf(s string) (wire.OutPoint, error) {

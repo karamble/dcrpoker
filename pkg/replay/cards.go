@@ -214,9 +214,13 @@ type Showdown struct {
 }
 
 // Award is what one seat is paid.
+//
+// Tagged because this crosses the wire to whatever is looking at the table, and
+// every other field a caller reads there is lower case. An exported Go name is
+// not a JSON key anybody should have to know about.
 type Award struct {
-	Seat  int
-	Atoms int64
+	Seat  int   `json:"seat"`
+	Atoms int64 `json:"atoms"`
 }
 
 // Settle works out who is paid what.

@@ -13,7 +13,6 @@ import (
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/client"
 	"github.com/vctt94/pokerbisonrelay/pkg/driver"
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
@@ -34,11 +33,19 @@ type table struct {
 	// check signatures against.
 	watch *client.ChainWatch
 
-	// log is the key this seat signs entries and checkpoints with. Kept
+	// logPriv is the key this seat signs entries and checkpoints with. Kept
 	// from the credentials the table was joined under, because it is needed
 	// long after joining and deriving it twice would risk deriving it
 	// differently.
-	log *forfeit.LogKey
+	//
+	// The private half and not a forfeit.LogKey, because a log key carries
+	// the match it may sign for and at join time this table does not have
+	// one yet: the match is the roster hash, and there is no roster until
+	// every seat has committed. Binding it early bound it to something else
+	// - the group chat and the session - and everything downstream then
+	// refused it, because the log chain and the driver both identify this
+	// table by its roster. A hand could not be opened at all.
+	logPriv *secp256k1.PrivateKey
 
 	// payouts is where each seat wants coin sent that it did not pay for
 	// itself, and claims is the proposals in flight against seats that have
@@ -72,6 +79,11 @@ type table struct {
 	// the money is down would be dealing for nothing.
 	play *driver.Table
 
+	// held is frames for a hand this peer had not started when they arrived.
+	// Kept rather than dropped, because every seat starts at a different
+	// moment and this channel never sends anything twice. See hold.
+	held []*schema.Message
+
 	bound bool
 
 	// askedAt is the height this table last asked to be caught up at, so a
@@ -91,6 +103,88 @@ type table struct {
 	// announcedAt is the height this table last said where our stake is, so
 	// it is repeated once a block rather than once a poll.
 	announcedAt int64
+
+	// events is what this table did on the chain, kept so it can be reported
+	// and not only logged.
+	//
+	// Every outcome here was already written to the log, which is the
+	// operator's record: it is read by whoever runs the container, after the
+	// fact, if they think to look. That is the wrong audience for the one
+	// that matters. A player whose bond is being taken finds out from this
+	// or does not find out at all, and "check the container's stdout" is not
+	// an answer when the thing being lost is their money.
+	//
+	// Bounded, because a table that has been running all week is not a
+	// reason to hold every line it ever wrote.
+	events []chainEvent
+}
+
+// chainEvent is one thing this table did on the chain, and why.
+type chainEvent struct {
+	// At is the hand this happened during, or zero before there was one.
+	At   uint64  `json:"at"`
+	Kind string  `json:"kind"`
+	Text string  `json:"text"`
+	TxID string  `json:"txid,omitempty"`
+	Seat *uint32 `json:"seat,omitempty"`
+}
+
+// The kinds of thing a table records. They are few on purpose: this is what
+// happened to the money, not a trace.
+const (
+	// eventProposed and eventCosigned are a claim being built against
+	// somebody, and eventRefused this peer declining to help.
+	eventProposed = "proposed"
+	eventCosigned = "cosigned"
+	eventRefused  = "refused"
+	// eventClaimed is a bond taken, eventAnswered one saved.
+	eventClaimed  = "claimed"
+	eventAnswered = "answered"
+	// eventUnanswerable is the one that matters: claimed against, and
+	// nothing held that would answer it. It is the moment a bond is going
+	// and, until this existed, the moment nothing told the player.
+	eventUnanswerable = "unanswerable"
+	eventSettled      = "settled"
+	eventBlocked      = "blocked"
+)
+
+// maxEvents is how much of a table's history is kept.
+const maxEvents = 64
+
+// note records an outcome, beside the log line rather than instead of it.
+//
+// Requires the registry lock, which every caller already holds: these are all
+// reached from deliver or tick.
+func (tbl *table) note(kind, text, txid string, seat *uint32) {
+	var at uint64
+	if tbl.play != nil {
+		if h := tbl.play.Hand(); h != nil {
+			at = h.State().Hand
+		}
+	}
+	// Some of these are reached once per message or once per block, so the
+	// same refusal can be reported for as long as whatever caused it lasts.
+	// Saying it once is the report; saying it forty times is a log, and the
+	// ring is only long enough to hold what happened if it is not filled with
+	// one thing that kept happening.
+	if n := len(tbl.events); n > 0 {
+		if last := tbl.events[n-1]; last.Kind == kind && last.Text == text && last.TxID == txid {
+			return
+		}
+	}
+	tbl.events = append(tbl.events, chainEvent{At: at, Kind: kind, Text: text, TxID: txid, Seat: seat})
+	if n := len(tbl.events); n > maxEvents {
+		tbl.events = append(tbl.events[:0], tbl.events[n-maxEvents:]...)
+	}
+}
+
+// seatp is a seat number as a pointer, for the events that name one.
+func seatp(seat int) *uint32 {
+	if seat < 0 {
+		return nil
+	}
+	s := uint32(seat)
+	return &s
 }
 
 // outgoing is something to publish once the registry lock is released.
@@ -126,6 +220,12 @@ type tables struct {
 	// an announcement has to be repeatable after a restart, when the one
 	// signed at the time is long gone.
 	signFunding func(terms membership.Terms, seat uint32, outpoint string) (*membership.Funding, error)
+
+	// height is where the host last said the chain was. Kept because every
+	// deadline here is a block number, and a block number reported on its
+	// own is not information - "funded by 1101193" says nothing to somebody
+	// who cannot see how far away that is.
+	height int64
 }
 
 func newTables(st *store) *tables {
@@ -315,15 +415,11 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	if err != nil {
 		return nil, err
 	}
-	logKey, err := forfeit.LogKeyFrom(creds.Log, membership.MatchID(gcID, terms.SID))
-	if err != nil {
-		return nil, err
-	}
 	tbl := &table{terms: terms, gcID: gcID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
-		session: creds.Session, netParams: t.params, chain: t.chain, log: logKey}
+		session: creds.Session, netParams: t.params, chain: t.chain, logPriv: creds.Log}
 
 	if rec != nil {
 		if err := tbl.resume(rec); err != nil {
@@ -456,6 +552,10 @@ func (t *tables) leave(sid string) ([]outgoing, bool) {
 func (t *tables) tick(height int64) []outgoing {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	if height > 0 {
+		t.height = height
+	}
 
 	var out []outgoing
 	for _, tbl := range t.m {
@@ -1149,6 +1249,70 @@ type snapshot struct {
 	// FundingDeadline is the height after which an unfunded table is given
 	// up on. Zero before there is anything to fund.
 	FundingDeadline uint32 `json:"fundingDeadline,omitempty"`
+
+	// Bonded counts the seats whose table bond this peer has found on the
+	// chain, the same way Funded counts stakes. Dealing needs every one of
+	// them, so a table can be fully funded and still not deal - which,
+	// without this, reads as nothing happening for no reason.
+	Bonded int `json:"bonded"`
+
+	// Dealing says whether there is a hand to look at, and Over whether
+	// there will be another. /table/hand answers 400 until dealing starts,
+	// which is an ordinary state and not a failure; a caller with no way to
+	// tell the two apart shows somebody an error for waiting.
+	Dealing bool   `json:"dealing"`
+	Over    bool   `json:"over,omitempty"`
+	Hand    uint64 `json:"hand,omitempty"`
+
+	// Settled is the last boundary every seat put their name to and Live is
+	// what the table thinks right now. The pair is the whole of "where the
+	// money is": Settled is what a table that stopped would pay out, Live is
+	// a promise, and the difference is what the hand in progress voids back
+	// to if it never finishes.
+	Settled *settledBoundary `json:"settled,omitempty"`
+	Live    []int64          `json:"live,omitempty"`
+
+	// Height is where this peer last read the chain, so a deadline above has
+	// something to be measured against.
+	Height int64 `json:"height,omitempty"`
+
+	// PayoutSet reports whether this player has said where to pay it. Until
+	// every seat has, no claim can be built at this table at all.
+	PayoutSet bool `json:"payoutSet"`
+
+	// Roster is what this peer knows about each seat, and how it knows it.
+	// Named for the escrow roster rather than for the group, because that is
+	// what it is: the membership the money is bound to.
+	Roster []seatView `json:"roster,omitempty"`
+}
+
+// seatView is one seat, and the difference between what the chain says and what
+// somebody said.
+//
+// Every field here is this peer's own answer. Stake and Bond are outpoints it
+// found itself; an empty one means it has not seen the money, which is not the
+// same as the money not being there and must not be rendered as though it were.
+type seatView struct {
+	Seat uint32 `json:"seat"`
+	Ours bool   `json:"ours,omitempty"`
+	Key  string `json:"key,omitempty"`
+
+	Stake string `json:"stake,omitempty"`
+	Bond  string `json:"bond,omitempty"`
+	// BondAt is where this seat's bond sits now, if it has answered a claim
+	// and moved it. Later claims are against this and not Bond.
+	BondAt string `json:"bondAt,omitempty"`
+	// Payout is where this seat wants coin it did not pay for itself. While
+	// any seat's is empty no claim at this table can be built.
+	Payout  string `json:"payout,omitempty"`
+	Leaving bool   `json:"leaving,omitempty"`
+
+	// Owes is what the log says this seat is holding the table up on, and
+	// Says is the same thing in the words the protocol already uses for it.
+	// Both, because a caller must not have to invent the wording and a claim
+	// is checked against the structure.
+	Owes *driver.Duty `json:"owes,omitempty"`
+	Says string       `json:"says,omitempty"`
 }
 
 func (t *tables) snapshots() []snapshot {
@@ -1175,9 +1339,13 @@ func (t *tables) snapshots() []snapshot {
 		}
 
 		s.Funded = len(tbl.funded)
+		s.Bonded = len(tbl.bonded)
+		s.Height = t.height
+		s.Roster = tbl.seatViews()
 		if seat, ok := tbl.form.OurSeat(); ok {
 			s.Seat = &seat
 			s.Stake = tbl.funded[seat]
+			s.PayoutSet = tbl.payouts[seat] != ""
 			s.FundingDeadline = membership.FundingDeadline(tbl.terms)
 			// Reporting the address is what lets a host show somebody
 			// where their money is going before it goes.
@@ -1185,7 +1353,54 @@ func (t *tables) snapshots() []snapshot {
 				s.DepositAddr = dep.DepositAddr
 			}
 		}
+		if tbl.play != nil {
+			s.Dealing = true
+			s.Over = tbl.play.Over()
+			s.Live = tbl.play.Stacks()
+			at, stacks := tbl.play.Settled()
+			s.Settled = &settledBoundary{Hand: at, Stacks: stacks}
+			if h := tbl.play.Hand(); h != nil {
+				s.Hand = h.State().Hand
+			}
+		}
 		out = append(out, s)
+	}
+	return out
+}
+
+// seatViews is what this peer knows about every seat.
+//
+// Empty until the seating is drawn, which is deliberate: before that there are
+// joins but no seats, and numbering them would invent an order the table has
+// not agreed to.
+//
+// Requires the registry lock.
+func (tbl *table) seatViews() []seatView {
+	seats, ok := tbl.form.Seats()
+	if !ok {
+		return nil
+	}
+	mine, ours := tbl.form.OurSeat()
+
+	out := make([]seatView, 0, len(seats))
+	for seat := range uint32(len(seats)) {
+		v := seatView{
+			Seat:   seat,
+			Ours:   ours && seat == mine,
+			Key:    hex.EncodeToString(seats[seat]),
+			Stake:  tbl.funded[seat],
+			Bond:   tbl.bonded[seat],
+			BondAt: tbl.bondedAt[seat],
+			Payout: tbl.payouts[seat],
+		}
+		if tbl.play != nil {
+			v.Leaving = tbl.play.Leaving(int(seat))
+			if d, owes := tbl.play.Owes(int(seat)); owes {
+				v.Owes = &d
+				v.Says = d.String()
+			}
+		}
+		out = append(out, v)
 	}
 	return out
 }
