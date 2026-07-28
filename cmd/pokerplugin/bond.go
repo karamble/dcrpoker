@@ -102,6 +102,16 @@ const maxFundingVout = 4
 
 // handleBond reports this player's bond: where it must be paid, and what the
 // chain says about it if it has been.
+//
+// The chain facts are the point of asking. A bond is coin locked for two weeks
+// and the only question anybody has about it is when it comes back - which is
+// not a property of the deposit but of how many blocks now sit on top of it. A
+// report that named the outpoint and stopped would leave a player counting
+// blocks in a block explorer.
+//
+// One lookup, on one output, on a route nobody polls hard. It is skipped
+// entirely when there is no deposit, because then there is nothing to ask
+// about.
 func (p *plugin) handleBond(w http.ResponseWriter, r *http.Request) {
 	script, err := p.id.bondScript()
 	if err != nil {
@@ -114,16 +124,60 @@ func (p *plugin) handleBond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	outpoint := p.id.bondDeposit()
 	out := map[string]any{
 		"address":    addr.String(),
 		"scriptHex":  hex.EncodeToString(script),
-		"outpoint":   p.id.bondDeposit(),
+		"outpoint":   outpoint,
 		"minAtoms":   escrow.MinBondAtoms,
 		"minBlocks":  escrow.MinBondBlocks,
 		"confsNeed":  escrow.BondConfirmations,
-		"hasDeposit": p.id.bondDeposit() != "",
+		"hasDeposit": outpoint != "",
+	}
+	if outpoint != "" {
+		p.describeBond(r.Context(), outpoint, out)
 	}
 	writeJSON(w, out)
+}
+
+// describeBond adds what the chain says about a bond that has been paid.
+//
+// Failures are reported rather than raised. A bond whose state cannot be read
+// right now is still a bond, and the rest of this answer - where it is, what it
+// cost, how long the lock is - is true whether or not the host's node can be
+// reached this second.
+func (p *plugin) describeBond(ctx context.Context, outpoint string, out map[string]any) {
+	txid, vout, err := splitOutpoint(outpoint)
+	if err != nil {
+		out["chainErr"] = err.Error()
+		return
+	}
+	found, err := p.bridge.Outpoint(ctx, txid, vout)
+	if err != nil {
+		out["chainErr"] = err.Error()
+		return
+	}
+	if !found.Found {
+		// Never confirmed, or already spent. Both mean the same thing to
+		// a caller: there is nothing locked here to wait for.
+		out["spent"] = true
+		return
+	}
+
+	out["atoms"] = found.ValueAtoms
+	out["confirmations"] = found.Confirmations
+	if tip, err := p.bridge.ChainTip(ctx); err == nil {
+		out["height"] = tip.Height
+		// The height at which the lock is satisfied, which is the number
+		// a person actually wants: the output's own height plus the lock.
+		out["maturesAt"] = tip.Height - found.Confirmations + 1 + int64(escrow.MinBondBlocks)
+	}
+	if left := int64(escrow.MinBondBlocks) - found.Confirmations; left > 0 {
+		out["blocksLeft"] = left
+	} else {
+		out["blocksLeft"] = int64(0)
+		out["spendable"] = true
+	}
 }
 
 // handleBondFund asks the host to lock this player's bond.

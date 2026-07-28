@@ -104,6 +104,15 @@ type table struct {
 	// it is repeated once a block rather than once a poll.
 	announcedAt int64
 
+	// finished says this player has got up from the table and it is kept
+	// only because it still holds their money. See tables.drop.
+	finished bool
+
+	// archived says this table's log has been written down. Once, because
+	// a table that is over stops producing entries and rewriting the same
+	// bytes every half minute is work nobody asked for.
+	archived bool
+
 	// events is what this table did on the chain, kept so it can be reported
 	// and not only logged.
 	//
@@ -312,7 +321,14 @@ func (t *tables) persist(tbl *table) {
 
 // record renders what has to survive a restart.
 func (tbl *table) record() *record {
-	rec := &record{Terms: schema.TermsFrom(tbl.terms), Bound: tbl.bound}
+	rec := &record{Terms: schema.TermsFrom(tbl.terms), Bound: tbl.bound,
+		Finished: tbl.finished, GCID: tbl.gcID}
+	if len(tbl.bonded) > 0 {
+		rec.Bonded = make(map[uint32]string, len(tbl.bonded))
+		for seat, outpoint := range tbl.bonded {
+			rec.Bonded[seat] = outpoint
+		}
+	}
 	for _, j := range tbl.form.Joins() {
 		rec.Joins = append(rec.Joins, schema.JoinFrom(j))
 	}
@@ -451,6 +467,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 // exists - the alternative is a restart signing a contradiction with a key
 // that is derived, not stored, and so is exactly the key it was before.
 func (tbl *table) resume(rec *record) error {
+	tbl.finished = rec.Finished
 	for i, wj := range rec.Joins {
 		j, err := wj.Into()
 		if err != nil {
@@ -503,6 +520,9 @@ func (tbl *table) resume(rec *record) error {
 	for seat, outpoint := range rec.Funded {
 		tbl.funded[seat] = outpoint
 	}
+	for seat, outpoint := range rec.Bonded {
+		tbl.bonded[seat] = outpoint
+	}
 
 	// A resumed table takes its own history back up rather than waiting for
 	// something to advance it: joining is the only path here, and it ends by
@@ -533,16 +553,157 @@ func (t *tables) leave(sid string) ([]outgoing, bool) {
 		return nil, false
 	}
 	if tbl.play == nil || tbl.play.Over() {
-		delete(t.m, sid)
+		t.drop(sid, tbl)
 		return nil, true
 	}
 	out, err := tbl.play.Leave()
 	if err != nil {
 		log.Printf("pokerplugin: table %s: %v", sid, err)
-		delete(t.m, sid)
+		t.drop(sid, tbl)
 		return nil, true
 	}
 	return tbl.publish(out), true
+}
+
+// drop forgets a table, unless forgetting it would lose the only record of
+// where this player's money is.
+//
+// A stake sits behind a timelock that outlives the table by hours, and the
+// outpoint holding it is not written anywhere a person can see except in the
+// table that put it there. Dropping the table at the moment the cards stop
+// leaves coin on the chain with nothing pointing at it, recoverable only by
+// somebody who thought to write the outpoint down first.
+//
+// So a table that still holds something is kept and marked finished instead. It
+// deals nothing, admits nothing and is not played; it is a receipt.
+//
+// Requires the registry lock.
+func (t *tables) drop(sid string, tbl *table) {
+	if tbl.holdsOurs() {
+		tbl.finished = true
+		t.persist(tbl)
+		t.archive(tbl)
+		return
+	}
+	delete(t.m, sid)
+}
+
+// archive keeps a table's signed log beside its record.
+//
+// The record says where the money is; the log says how it got there, and it is
+// what a dispute is argued from. It lives in memory, so a table kept as a
+// receipt across a restart would otherwise come back with nothing behind it.
+//
+// Requires the registry lock.
+func (t *tables) archive(tbl *table) {
+	if t.store == nil || tbl.archived {
+		return
+	}
+	blob, err := tbl.log()
+	if err != nil {
+		log.Printf("pokerplugin: table %s: cannot render its log: %v", tbl.terms.SID, err)
+		return
+	}
+	if blob == nil {
+		return
+	}
+	if err := t.store.saveTranscript(tbl.terms.SID, blob); err != nil {
+		log.Printf("pokerplugin: table %s: cannot keep its log: %v", tbl.terms.SID, err)
+		return
+	}
+	tbl.archived = true
+}
+
+// holdsOurs reports whether this player still has coin at this table that
+// nothing has taken back out.
+func (tbl *table) holdsOurs() bool {
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		return false
+	}
+	return tbl.funded[seat] != "" || tbl.bonded[seat] != "" || tbl.bondedAt[seat] != ""
+}
+
+// resumeHeld brings back the tables that still hold this player's money.
+//
+// Nothing else loads a session at startup: a table comes back when its
+// invitation is accepted again, which is right for one being played and useless
+// for one that is over. A finished table is a receipt, and a receipt that only
+// exists while the process happens not to have restarted is not one - the coin
+// is behind a timelock measured in days and the process is not.
+//
+// These are constructed as receipts and nothing more. They publish no join, ask
+// for no resync and cannot start dealing, so bringing one back says nothing to
+// anybody: it only puts the outpoints back where a person can see them.
+func (t *tables) resumeHeld(id *identity) {
+	if t.store == nil {
+		return
+	}
+	sids, err := t.store.sessions()
+	if err != nil {
+		log.Printf("pokerplugin: cannot list past tables: %v", err)
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for _, sid := range sids {
+		if _, live := t.m[sid]; live {
+			continue
+		}
+		rec, err := t.store.load(sid)
+		if err != nil || rec == nil {
+			continue
+		}
+		if !heldByUs(rec) {
+			// Nothing of ours left in it, so there is nothing to
+			// keep. An aborted table nobody funded is just history.
+			continue
+		}
+		tbl, err := t.receipt(rec, id)
+		if err != nil {
+			log.Printf("pokerplugin: cannot read back table %s: %v", sid, err)
+			continue
+		}
+		t.m[sid] = tbl
+		log.Printf("pokerplugin: table %s is finished and still holds coin", sid)
+	}
+}
+
+// heldByUs reports whether a stored table still names an output of ours.
+//
+// Read from the record rather than from a rebuilt table, because it decides
+// whether to rebuild one at all.
+func heldByUs(rec *record) bool {
+	return len(rec.Funded) > 0 || len(rec.Bonded) > 0
+}
+
+// receipt rebuilds a finished table from its record.
+func (t *tables) receipt(rec *record, id *identity) (*table, error) {
+	terms := rec.Terms.Into()
+	creds, err := id.credentials(terms.SID)
+	if err != nil {
+		return nil, err
+	}
+	form, err := membership.NewFormation(terms, creds)
+	if err != nil {
+		return nil, err
+	}
+	tbl := &table{terms: terms, gcID: rec.GCID, form: form,
+		funded: map[uint32]string{}, bonded: map[uint32]string{},
+		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
+		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
+		session: creds.Session, netParams: t.params, chain: t.chain,
+		logPriv: creds.Log, finished: true}
+
+	if err := tbl.resume(rec); err != nil {
+		return nil, err
+	}
+	// Finished whatever the record said. A table only gets here because it
+	// still holds coin, and one that is over must not come back playable.
+	tbl.finished = true
+	return tbl, nil
 }
 
 // tick tells every table where the chain is, which is how a deadline passes.
@@ -568,6 +729,12 @@ func (t *tables) tick(height int64) []outgoing {
 		if tbl.deadlinePassed(height) {
 			out = append(out, tbl.advance(before, beforeJoins)...)
 			t.persist(tbl)
+		}
+		if tbl.play != nil && tbl.play.Over() {
+			// The table has stopped producing entries, so this is
+			// the last chance to write them down that does not
+			// depend on somebody pressing leave.
+			t.archive(tbl)
 		}
 		out = append(out, tbl.askAgain(height)...)
 		out = append(out, tbl.proposeClaim(t.params)...)
@@ -1280,6 +1447,10 @@ type snapshot struct {
 	// every seat has, no claim can be built at this table at all.
 	PayoutSet bool `json:"payoutSet"`
 
+	// Finished says this player has left and the table is kept only as a
+	// record of coin still on the chain. It is not played and not joined.
+	Finished bool `json:"finished,omitempty"`
+
 	// Roster is what this peer knows about each seat, and how it knows it.
 	// Named for the escrow roster rather than for the group, because that is
 	// what it is: the membership the money is bound to.
@@ -1341,6 +1512,7 @@ func (t *tables) snapshots() []snapshot {
 		s.Funded = len(tbl.funded)
 		s.Bonded = len(tbl.bonded)
 		s.Height = t.height
+		s.Finished = tbl.finished
 		s.Roster = tbl.seatViews()
 		if seat, ok := tbl.form.OurSeat(); ok {
 			s.Seat = &seat

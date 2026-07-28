@@ -189,6 +189,12 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 		log.Printf("pokerplugin: reconnected to the host; frames may have been missed")
 		p.publish(p.ctx, p.tables.resync())
 	}
+
+	// Tables that are over and still hold coin. Nothing else reads a session
+	// back, so without this a timelocked stake outlives every record of
+	// where it is - and the timelock is measured in days while this process
+	// is not.
+	p.tables.resumeHeld(id)
 	return p, nil
 }
 
@@ -339,6 +345,10 @@ func (p *plugin) routes() http.Handler {
 	// funding deadline all exist and all matter while /table/hand is still
 	// saying there is no hand.
 	mux.HandleFunc("/table/ledger", p.guard(p.handleLedger))
+
+	// The signed log a table was played from, live or read back from disk.
+	// It is the one account of a hand that needs nobody to be believed.
+	mux.HandleFunc("/table/log", p.guard(p.handleTableLog))
 
 	// Saying when a table moved, rather than waiting to be asked. A table
 	// moves for reasons nobody asked about, so there has to be one route

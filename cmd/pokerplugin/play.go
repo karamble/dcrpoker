@@ -50,6 +50,12 @@ func (tbl *table) startPlaying() []outgoing {
 	if tbl.play != nil || tbl.watch == nil {
 		return nil
 	}
+	if tbl.finished {
+		// This player got up. The table is kept only as a record of coin
+		// still on the chain, and a late arrival must not seat them at
+		// something they left.
+		return nil
+	}
 	if len(tbl.funded) < int(tbl.terms.Seats) {
 		// Not every stake is on the chain yet, as far as this peer can
 		// tell. Somebody else saying otherwise is not the same thing.

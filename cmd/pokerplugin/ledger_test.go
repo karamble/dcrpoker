@@ -600,3 +600,193 @@ func dutyAgainst(t *testing.T, tbl *table) driver.Duty {
 	t.Helper()
 	return driver.Duty{Seat: int(theirSeat(t, tbl)), Kind: driver.DutyAction, Hand: 1, At: 9}
 }
+
+// Leaving a table must not lose the only record of where the money is.
+//
+// A stake sits behind a timelock that outlives the table by hours, and the
+// outpoint holding it is written nowhere a person can see except in the table
+// that put it there. Forgetting the table at the moment the cards stop would
+// leave coin on the chain with nothing pointing at it.
+func TestLeavingKeepsATableThatStillHoldsOurMoney(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	// Pay this seat's stake, so the table holds something of ours.
+	tbl := p.tables.m[terms.SID]
+	seat, _ := tbl.form.OurSeat()
+	dep, err := tbl.deposit(seat, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	outpoint := payTo(h, dep.PkScriptHex, "5b")
+	if _, err := p.recordOwnStake(terms.SID, seat, outpoint); err != nil {
+		t.Fatalf("record stake: %v", err)
+	}
+
+	if code, body := post(t, p, "/table/leave", map[string]string{"sid": terms.SID}); code != http.StatusOK {
+		t.Fatalf("/table/leave returned %d: %s", code, body)
+	}
+
+	snaps := p.tables.snapshots()
+	if len(snaps) != 1 {
+		t.Fatalf("leaving forgot a table still holding a stake; %d tables remain", len(snaps))
+	}
+	if !snaps[0].Finished {
+		t.Fatal("a table this player left is not reported as finished")
+	}
+	if snaps[0].Stake != outpoint {
+		t.Fatalf("the kept table names stake %q, want %q", snaps[0].Stake, outpoint)
+	}
+	// And it is a receipt, not a table: nothing seats anybody at it again.
+	p.tables.mu.Lock()
+	out := p.tables.m[terms.SID].startPlaying()
+	p.tables.mu.Unlock()
+	if len(out) != 0 {
+		t.Fatal("a finished table started dealing")
+	}
+}
+
+// A table that holds nothing of ours is forgotten, as before.
+func TestLeavingForgetsATableHoldingNothing(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	if code, body := post(t, p, "/table/leave", map[string]string{"sid": terms.SID}); code != http.StatusOK {
+		t.Fatalf("/table/leave returned %d: %s", code, body)
+	}
+	if snaps := p.tables.snapshots(); len(snaps) != 0 {
+		t.Fatalf("leaving kept a table with nothing in it: %+v", snaps)
+	}
+}
+
+// Being finished has to survive a restart, or a table this player left comes
+// back as a live one.
+func TestAFinishedTableComesBackFinished(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	dir := t.TempDir()
+
+	p := h.restart(t, dir, "tok")
+	acceptInvite(t, p, inv)
+	terms := inviteTerms(inv)
+	deliverJoin(t, p, terms, other)
+	p.tables.tick(int64(terms.Until) + 1)
+
+	bound := p.tables.snapshots()[0]
+	c, err := membership.SignCommit(terms, rosterHashOf(t, bound.MatchID), other.Session)
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindCommit, schema.CommitFrom(c))
+	beacon := make([]byte, 32)
+	for i := range beacon {
+		beacon[i] = byte(i + 3)
+	}
+	p.tables.seat(terms.SID, beacon)
+
+	tbl := p.tables.m[terms.SID]
+	seat, _ := tbl.form.OurSeat()
+	dep, err := tbl.deposit(seat, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	if _, err := p.recordOwnStake(terms.SID, seat, payTo(h, dep.PkScriptHex, "5c")); err != nil {
+		t.Fatalf("record stake: %v", err)
+	}
+	post(t, p, "/table/leave", map[string]string{"sid": terms.SID})
+
+	back := h.restart(t, dir, "tok2")
+	snaps := back.tables.snapshots()
+	if len(snaps) != 1 {
+		t.Fatalf("a finished table did not come back; %d tables", len(snaps))
+	}
+	if !snaps[0].Finished {
+		t.Fatal("a finished table came back as a live one")
+	}
+}
+
+// The signed log is what a finished table is evidence of, and it has to
+// outlive the process that played it.
+//
+// Every entry carries the signature of the seat that made it and the chain
+// hashes forward, so a transcript can be checked by somebody who was not there
+// and trusts nobody who was. It lives in memory while a table is played; a
+// receipt with no evidence behind it would be worth much less.
+//
+// The specific thing pinned here is which chain gets read. A table writes to
+// two at different times - the watcher folds entries in until it starts
+// dealing, and after that the hand owns the log because it appends and folds
+// each entry itself. Reading the watcher for a table that is dealing hands over
+// an empty transcript for a table that has been playing for hours.
+func TestAFinishedTableKeepsItsLog(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+	waitBetting(t, a)
+
+	code, body := get(t, a, "/table/log?sid="+terms.SID)
+	if code != http.StatusOK {
+		t.Fatalf("/table/log returned %d: %s", code, body)
+	}
+	var live struct {
+		MatchID string            `json:"match_id"`
+		Roster  map[string]string `json:"roster"`
+	}
+	if err := json.Unmarshal([]byte(body), &live); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if live.MatchID == "" {
+		t.Fatal("the log names no match")
+	}
+	if len(live.Roster) == 0 {
+		t.Fatal("the log carries no roster, so nothing in it can be checked")
+	}
+
+	// It is the hand's chain, not the watcher's. Compared rather than
+	// described: the two are the same shape and differ only in what they
+	// contain, so nothing short of the bytes distinguishes them.
+	a.tables.mu.Lock()
+	tbl := a.tables.m[terms.SID]
+	want, err := tbl.play.Chain().Marshal()
+	a.tables.mu.Unlock()
+	if err != nil {
+		t.Fatalf("marshal the hand's chain: %v", err)
+	}
+	if body != string(want) {
+		t.Fatal("the log served is not the chain the hand is writing")
+	}
+
+	// And it is written down when the table stops being played, because the
+	// entries live in memory and the coin behind them does not.
+	a.tables.mu.Lock()
+	a.tables.drop(terms.SID, tbl)
+	a.tables.mu.Unlock()
+
+	stored, err := a.store.loadTranscript(terms.SID)
+	if err != nil {
+		t.Fatalf("read back the log: %v", err)
+	}
+	if len(stored) == 0 {
+		t.Fatal("a finished table kept no log on disk")
+	}
+	if string(stored) != string(want) {
+		t.Fatal("the log written down is not the one the table was playing")
+	}
+}
+
+// A table that never dealt has no log, and says so rather than handing over an
+// empty one that looks like a played hand with nothing in it.
+func TestATableThatNeverDealtHasNoLog(t *testing.T) {
+	h := newHub(t)
+	p := h.join(t, "tok")
+	acceptInvite(t, p, testInvite(2))
+
+	code, body := get(t, p, "/table/log?sid="+inviteTerms(testInvite(2)).SID)
+	if code != http.StatusNotFound {
+		t.Fatalf("/table/log returned %d for a table that never dealt, want 404: %s", code, body)
+	}
+}

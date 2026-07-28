@@ -47,6 +47,19 @@ type record struct {
 	Roster  string `json:"roster,omitempty"`
 	Aborted bool   `json:"aborted,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+	// Finished records that this player got up and the table is kept only
+	// because it still holds their money. Without it a restart would bring
+	// a table this player has left back as a live one.
+	Finished bool `json:"finished,omitempty"`
+	// GCID is the conversation this table's frames belong to. Kept so a
+	// table read back at startup is complete rather than nearly so; a
+	// finished one sends nothing, but a record that cannot say where it
+	// came from is a worse record.
+	GCID string `json:"gcid,omitempty"`
+	// Bonded is where each seat's table bond sits, the counterpart to
+	// Funded. Both are needed to answer "does this table still hold any of
+	// my money", which is the question that decides whether it is kept.
+	Bonded map[uint32]string `json:"bonded,omitempty"`
 }
 
 // sidRe is the shape a session id takes, repeated here because this builds a
@@ -91,6 +104,75 @@ func (s *store) used() (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// sessions lists every session this player has a record for.
+func (s *store) sessions() ([]string, error) {
+	entries, err := os.ReadDir(s.dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read sessions: %w", err)
+	}
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if sid := strings.TrimSuffix(name, ".json"); sidRe.MatchString(sid) {
+			out = append(out, sid)
+		}
+	}
+	return out, nil
+}
+
+// saveTranscript keeps a finished table's signed log.
+//
+// The record says where the money is; this says how it got there. It is written
+// when a table stops being played, because the log lives in memory and a
+// restart would otherwise leave a receipt with no evidence behind it - and the
+// entries are exactly what a dispute is argued from.
+func (s *store) saveTranscript(sid string, blob []byte) error {
+	path, err := s.logPath(sid)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create log directory: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
+		return fmt.Errorf("write log: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("write log: %w", err)
+	}
+	return nil
+}
+
+// loadTranscript reads back a finished table's log, or nil when there is none.
+func (s *store) loadTranscript(sid string) ([]byte, error) {
+	path, err := s.logPath(sid)
+	if err != nil {
+		return nil, err
+	}
+	blob, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read log: %w", err)
+	}
+	return blob, nil
+}
+
+func (s *store) logPath(sid string) (string, error) {
+	if !sidRe.MatchString(sid) {
+		return "", fmt.Errorf("session id %q is not a name this can store", sid)
+	}
+	return filepath.Join(s.dir, "..", "logs", sid+".json"), nil
 }
 
 // load reads a session's record, returning nil when there is none.
