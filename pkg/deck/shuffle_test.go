@@ -46,7 +46,7 @@ func TestAnHonestShuffleVerifies(t *testing.T) {
 	c := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestASwappedCardIsRejected(t *testing.T) {
 	c := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestADuplicatedCardIsRejected(t *testing.T) {
 	c := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestACardFromNowhereIsRejected(t *testing.T) {
 	c := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestAProofFromAnotherRoundIsRejected(t *testing.T) {
 	first := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(first, joint, in)
+	out, prf, _, err := Shuffle(first, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestAnotherPlayersProofIsRejected(t *testing.T) {
 	mine := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(mine, joint, in)
+	out, prf, _, err := Shuffle(mine, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestAProofUnderAnotherKeyIsRejected(t *testing.T) {
 	c := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestACorruptedProofIsRejected(t *testing.T) {
 	c := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestAMisshapenProofIsRejected(t *testing.T) {
 	c := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestAnHonestProofIsAlwaysTheSameLength(t *testing.T) {
 		t.Fatalf("measure: %v", err)
 	}
 	for i := 0; i < 8; i++ {
-		_, prf, err := Shuffle(c, joint, in)
+		_, prf, _, err := Shuffle(c, joint, in)
 		if err != nil {
 			t.Fatalf("shuffle: %v", err)
 		}
@@ -297,7 +297,7 @@ func TestAShuffleSurvivesASerializationRoundTrip(t *testing.T) {
 	c := withProver(t, testContext())
 	in := Fresh(joint)
 
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}

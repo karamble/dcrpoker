@@ -31,6 +31,7 @@
 package deck
 
 import (
+	"crypto/cipher"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -219,31 +220,93 @@ func join(x, y []kyber.Point) Deck {
 	return d
 }
 
+// ShuffleSecret is what a shuffler used, kept so it can be published when the
+// hand is over.
+//
+// Secret during the hand and worthless after it: together with every player's
+// card key it reproduces the shuffle exactly, which is the point. See audit.go
+// for why a hand ends by giving all of this away.
+type ShuffleSecret struct {
+	// Pi is the permutation applied: output slot i took input slot Pi[i].
+	Pi []int
+	// Beta is the re-masking randomness, indexed by *input* slot.
+	Beta []kyber.Scalar
+}
+
+// remask applies a permutation and re-masking to a deck.
+//
+// This is kyber's own formula, written out here rather than called, because the
+// audit has to recompute a shuffle from published secrets without going through
+// a prover. Getting it wrong in either direction would make honest hands look
+// like cheating, so the two uses share this one function. Note Beta is indexed
+// by Pi[i] and not by i - a detail worth exactly one bug if missed.
+func remask(in Deck, joint kyber.Point, pi []int, beta []kyber.Scalar) Deck {
+	out := make(Deck, len(in))
+	for i := range in {
+		j := pi[i]
+		out[i] = Masked{
+			C1: suite.Point().Add(in[j].C1, suite.Point().Mul(beta[j], nil)),
+			C2: suite.Point().Add(in[j].C2, suite.Point().Mul(beta[j], joint)),
+		}
+	}
+	return out
+}
+
 // Shuffle permutes and re-masks a deck, and proves it did nothing else.
 //
 // The proof is what separates this from a player simply asserting a deck. It
 // establishes that the output is a permutation and re-masking of the input -
 // so a shuffler cannot introduce a card, duplicate one or remove one - while
 // revealing nothing about which card went where.
-func Shuffle(c Context, joint kyber.Point, in Deck) (out Deck, proofBytes []byte, err error) {
-	if len(in) == 0 {
-		return nil, nil, fmt.Errorf("nothing to shuffle")
+//
+// The permutation and blinding factors are drawn here rather than left inside
+// kyber's convenience wrapper, which discards them. They are returned because a
+// hand ends by publishing them: the proof says the shuffle was honest, and the
+// secrets let everyone check that claim directly rather than take the proof's
+// word for it.
+func Shuffle(c Context, joint kyber.Point, in Deck) (out Deck, proofBytes []byte, sec *ShuffleSecret, err error) {
+	k := len(in)
+	if k == 0 {
+		return nil, nil, nil, fmt.Errorf("nothing to shuffle")
 	}
-	x, y := in.split()
-	xbar, ybar, prover := shuffle.Shuffle(suite, nil, joint, x, y, random.New())
-	out = join(xbar, ybar)
+	rand := random.New()
+
+	pi := make([]int, k)
+	for i := range pi {
+		pi[i] = i
+	}
+	for i := k - 1; i > 0; i-- {
+		j := int(randUint64(rand) % uint64(i+1))
+		pi[i], pi[j] = pi[j], pi[i]
+	}
+	beta := make([]kyber.Scalar, k)
+	for i := range beta {
+		beta[i] = suite.Scalar().Pick(rand)
+	}
+	out = remask(in, joint, pi, beta)
 
 	// The label covers both decks, so it can only be built once the shuffle
 	// has produced the second one.
 	lbl, err := label(shuffleBase, c, joint, in, out)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	x, y := in.split()
+	ps := shuffle.PairShuffle{}
+	ps.Init(suite, k)
+	prover := func(ctx proof.ProverContext) error {
+		return ps.Prove(pi, nil, joint, beta, x, y, rand, ctx)
 	}
 	proofBytes, err = proof.HashProve(suite, lbl, prover)
 	if err != nil {
-		return nil, nil, fmt.Errorf("prove shuffle: %w", err)
+		return nil, nil, nil, fmt.Errorf("prove shuffle: %w", err)
 	}
-	return out, proofBytes, nil
+	return out, proofBytes, &ShuffleSecret{Pi: pi, Beta: beta}, nil
+}
+
+// randUint64 draws a uniform 64-bit value, as kyber's own shuffle does.
+func randUint64(rand cipher.Stream) uint64 {
+	return binary.BigEndian.Uint64(random.Bits(64, false, rand))
 }
 
 // proofLen is how many bytes an honest shuffle proof over k cards occupies.

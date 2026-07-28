@@ -39,7 +39,7 @@ func TestWhatAHandCosts(t *testing.T) {
 	in := Fresh(joint)
 
 	start := time.Now()
-	out, prf, err := Shuffle(c, joint, in)
+	out, prf, _, err := Shuffle(c, joint, in)
 	if err != nil {
 		t.Fatalf("shuffle: %v", err)
 	}
@@ -92,5 +92,16 @@ func TestWhatAHandCosts(t *testing.T) {
 			n, shuffling+board+holes+showdown, shuffling, board, holes, showdown, mine)
 		t.Logf("%d seats: shuffling takes about %v of proving and %v of verification per player",
 			n, proving, time.Duration(n-1)*verifying)
+	}
+
+	// What ending a hand honestly costs. The permutation is 52 indices, each
+	// of which fits in a byte; the blinding factors are one scalar per card;
+	// the card key is one more.
+	secrets := Size + Size*pointBytes + pointBytes
+	t.Logf("end-of-hand secrets are %d bytes per player", secrets)
+	for _, n := range []int{2, 6} {
+		t.Logf("%d seats: the audit adds %d bytes to a hand, %.1f%% of its total",
+			n, n*secrets, 100*float64(n*secrets)/float64(
+				n*(deckBytes+shuffleProof)+(7*n+2*n*(n-1))*shareBytes))
 	}
 }

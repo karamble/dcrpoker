@@ -41,7 +41,7 @@ func seat(t *testing.T, n int) *table {
 		c.Round = uint32(i)
 		c.Prover = kp.Public
 
-		out, prf, err := Shuffle(c, joint, tb.deck)
+		out, prf, _, err := Shuffle(c, joint, tb.deck)
 		if err != nil {
 			t.Fatalf("player %d shuffle: %v", i, err)
 		}
