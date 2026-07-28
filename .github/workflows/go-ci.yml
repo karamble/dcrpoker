@@ -41,3 +41,58 @@ jobs:
       - name: Go tests (lockcheck, race, repeated)
         run: go test -tags=lockcheck -v -race ./... -count=3 -timeout 600s
 
+  # The interface that ships inside pokerplugin.
+  #
+  # A separate job on purpose, and vet-and-format above is deliberately left
+  # alone: it runs against the committed placeholder, and its continuing to pass
+  # is the proof that the Go side still builds and tests without a JavaScript
+  # toolchain anywhere near it.
+  ui:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: cmd/pokerplugin/ui/package-lock.json
+
+      - name: Typecheck the interface
+        working-directory: cmd/pokerplugin/ui
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit
+
+      - name: Build the interface
+        run: ./scripts/build-ui.sh
+
+      - name: Build and test the plugin around it
+        run: |
+          go build ./cmd/pokerplugin
+          go test ./cmd/pokerplugin/... -count=1 -timeout 600s
+
+      # The built bundle is an artifact and dist/ is gitignored, so building it
+      # must leave the tree exactly as it was. If this fails, something in the
+      # build is writing over a file somebody committed.
+      # --untracked-files=all so an untracked directory is listed by its
+      # contents rather than collapsed to one line, which is what lets a
+      # deleted-then-rebuilt file inside it be seen at all.
+      - name: Fail if the build changed the tree
+        run: |
+          dirty=$(git status --porcelain --untracked-files=all \
+            | grep -v 'cmd/pokerplugin/ui/node_modules/' || true)
+          if [ -n "$dirty" ]; then
+            echo "Building the interface changed the tree:" >&2
+            echo "$dirty" >&2
+            exit 1
+          fi
+

@@ -898,6 +898,63 @@ Ordered by what would bite first.
 - **The server path is knowingly broken** against current clients, and is being
   deleted rather than fixed. See the note under "What is trusted today".
 
+### Two defects the interface work found, 2026-07-28
+
+Both were in code that had passing tests, and both stopped a table dealing
+outright. Neither could be seen by any test that existed, for the same reason:
+every test had one real peer and a stand-in, and a stand-in does not have its
+own view of the chain or its own moment of deciding to start.
+
+- **The log key was bound to the wrong match.** It was labelled with
+  `gcID|sessionID` at join time, because that is what exists at join time, while
+  the log chain and the driver both identify a table by its roster hash — so
+  `driver.New` refused every hand and the table sat at "between hands" forever.
+  Fixed by binding the key where the match becomes known
+  (`cmd/pokerplugin/play.go`), which is a label change and touches no wire
+  format. **`go build` and the whole suite were green throughout.**
+
+- **Driver frames that arrived before a peer started dealing were dropped**, on
+  the stated grounds that "the sender repeats them" — and nothing repeated them.
+  This deadlocked *every* table rather than an unlucky one: each seat starts
+  dealing when it has seen the last bond confirmed, each sees that at its own
+  moment, and the first to start publishes its card key to a table where nobody
+  else is dealing yet. It collected everybody's keys and everybody else was
+  short of its. The two peers then sat owing each other nothing they could see,
+  until the obligation stood long enough for the bonds to be claimed over a hand
+  that was never dealt. Fixed by holding those frames, bounded, and feeding them
+  in when dealing starts — the same rule the driver already applies one layer
+  down to shares that arrive before their slot opens, and for the same reason.
+
+The lesson is the one already recorded about tests that agree with themselves,
+in a new shape: **a stand-in has no independent clock.** Anything whose
+correctness depends on two peers reaching a state at different moments is
+invisible until both peers are real.
+
+### What a caller can see, 2026-07-28
+
+The claim, answer and settlement machinery was reachable by nobody: every
+outcome was a `log.Printf` in a container with no shell, including the one that
+matters most — claimed against while holding no answer, which is the moment a
+bond is going. That is now reported.
+
+- `/table/ledger` answers **before** a table deals, deliberately unlike
+  `/table/hand`: stakes, bonds, payout addresses and a funding deadline all
+  exist and all matter while there is no hand. It carries a bounded ring of what
+  the table did on chain, the claims in flight, and the payout with the reason
+  it cannot be built yet in the draft's own words.
+- `/tables` gained the facts a caller cannot infer: the bonded count, whether
+  the table is dealing, the settled boundary against the live stacks, the chain
+  height the deadlines are measured against, and a per-seat roster of what this
+  peer found on chain versus what it was told.
+- `/events` is a server-sent stream of exactly those bodies. Not a websocket:
+  gorilla's `CheckOrigin` refuses the `Origin: null` a sandboxed frame sends,
+  and replacing it with `return true` would delete the only check there is to
+  buy a channel nothing wants.
+- **`payoutsMissing` is the quiet one.** Until every seat has said where to pay
+  it, no claim at that table can be built at all — so a table where one seat
+  never answered has no working punishment for anybody, and the only previous
+  sign was a claim that never appeared.
+
 ### Out of scope
 
 Trustless card handling does not address collusion between players, which is the
