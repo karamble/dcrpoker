@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/driver"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
@@ -72,6 +73,17 @@ func (tbl *table) startPlaying() []outgoing {
 	if !ok {
 		return nil
 	}
+	// The log key is bound to its match here and not at join, because until
+	// the roster settled there was no match to bind it to. It has to be the
+	// same string the log chain identifies this table by, or every entry
+	// this seat signs is refused by its own chain before it ever reaches
+	// anybody: a table that looked like it had started and could not open a
+	// hand.
+	logKey, err := forfeit.LogKeyFrom(tbl.logPriv, match)
+	if err != nil {
+		log.Printf("pokerplugin: table %s cannot start dealing: %v", tbl.terms.SID, err)
+		return nil
+	}
 	schedule, err := blindsFor(tbl.terms.BuyInAtoms)
 	if err != nil {
 		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
@@ -88,7 +100,7 @@ func (tbl *table) startPlaying() []outgoing {
 	p, err := driver.NewTable(driver.TableConfig{
 		Match:    match,
 		Seat:     int(seat),
-		Log:      tbl.log,
+		Log:      logKey,
 		Roster:   seats,
 		Stakes:   stakes,
 		Schedule: schedule,
@@ -107,7 +119,56 @@ func (tbl *table) startPlaying() []outgoing {
 	}
 	log.Printf("pokerplugin: table %s is dealing, %d seats, blinds %d/%d",
 		tbl.terms.SID, len(seats), schedule.Levels[0].Small, schedule.Levels[0].Big)
-	return tbl.publish(out)
+	return append(tbl.publish(out), tbl.drainHeld()...)
+}
+
+// maxHeld is how many frames are kept for a table that has not started dealing.
+//
+// A hand's opening is a card key from each seat, so a full table needs at most
+// one per seat and this is generous. It is a bound and not a buffer: the point
+// is that an unbounded one is a way to fill this process's memory with frames
+// for a table that will never deal.
+const maxHeld = 32
+
+// hold keeps a frame for a hand this peer has not started yet.
+//
+// Every seat starts dealing at a different moment, because each waits for the
+// chain to confirm the last bond and each sees that in its own time. The seat
+// that sees it first opens the hand and publishes its card key immediately -
+// to a table where nobody else is dealing yet.
+//
+// Dropping those frames deadlocks the table, and does so at every table rather
+// than rarely: the first seat to start collects everybody else's keys, and
+// everybody else is missing that first seat's. Both then sit owing each other
+// nothing they can see, until the obligation stands long enough for the bonds
+// to start being claimed - over a hand that was never dealt.
+//
+// The driver already holds shares that arrive before their slot is open, for
+// exactly this reason and in almost these words. This is the same rule one
+// layer up: early is not wrong, it is just early.
+func (tbl *table) hold(msg *schema.Message) {
+	if tbl.watch == nil {
+		// No membership, so no table these could belong to. Before the
+		// roster settles there is nothing to feed them into and nothing
+		// to check them against.
+		return
+	}
+	if len(tbl.held) >= maxHeld {
+		return
+	}
+	tbl.held = append(tbl.held, msg)
+}
+
+// drainHeld feeds in what arrived before this peer was dealing.
+func (tbl *table) drainHeld() []outgoing {
+	held := tbl.held
+	tbl.held = nil
+
+	var out []outgoing
+	for _, msg := range held {
+		out = append(out, tbl.deal(msg)...)
+	}
+	return out
 }
 
 // publish turns what the driver wants to send into frames.
@@ -174,9 +235,7 @@ func renderDriver(m driver.Out, hand uint64) (schema.Kind, any, error) {
 // a table its money is already in. The bond is what answers misbehaviour.
 func (tbl *table) deal(msg *schema.Message) []outgoing {
 	if tbl.play == nil {
-		// Not dealing yet. Frames for a hand this peer has not started are
-		// kept by nobody: the sender repeats them, or the hand stalls and
-		// is answered as an absence.
+		tbl.hold(msg)
 		return nil
 	}
 	in, err := decodeDriver(msg)
