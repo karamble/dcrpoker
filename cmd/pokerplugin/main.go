@@ -159,6 +159,13 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 		}
 		return membership.SignFunding(terms, seat, outpoint, session)
 	}
+	p.tables.signBonded = func(terms membership.Terms, seat uint32, outpoint string) (*membership.Bonded, error) {
+		session, err := id.sessionKey(terms.SID)
+		if err != nil {
+			return nil, err
+		}
+		return membership.SignBonded(terms, seat, outpoint, session)
+	}
 	p.router, err = transport.NewRouter(transport.Config{
 		Game:    schema.Game,
 		GameVer: schema.Version,

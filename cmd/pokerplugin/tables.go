@@ -104,6 +104,10 @@ type table struct {
 	// it is repeated once a block rather than once a poll.
 	announcedAt int64
 
+	// bondedAnnouncedAt is the same for the bond. Kept apart because the two
+	// are paid minutes apart and each has to be repeated on its own account.
+	bondedAnnouncedAt int64
+
 	// finished says this player has got up from the table and it is kept
 	// only because it still holds their money. See tables.drop.
 	finished bool
@@ -229,6 +233,11 @@ type tables struct {
 	// an announcement has to be repeatable after a restart, when the one
 	// signed at the time is long gone.
 	signFunding func(terms membership.Terms, seat uint32, outpoint string) (*membership.Funding, error)
+
+	// signBonded is the same for this seat's forfeitable bond, and exists
+	// for the same reason: a bond said once is a bond the other seats may
+	// never have accepted.
+	signBonded func(terms membership.Terms, seat uint32, outpoint string) (*membership.Bonded, error)
 
 	// height is where the host last said the chain was. Kept because every
 	// deadline here is a block number, and a block number reported on its
@@ -673,7 +682,11 @@ func (t *tables) resumeHeld(id *identity) {
 			continue
 		}
 		t.m[sid] = tbl
-		log.Printf("pokerplugin: table %s is finished and still holds coin", sid)
+		if tbl.finished {
+			log.Printf("pokerplugin: table %s is finished and still holds coin", sid)
+		} else {
+			log.Printf("pokerplugin: table %s is still forming and holds coin; carrying on", sid)
+		}
 	}
 }
 
@@ -685,7 +698,29 @@ func heldByUs(rec *record) bool {
 	return len(rec.Funded) > 0 || len(rec.Bonded) > 0
 }
 
-// receipt rebuilds a finished table from its record.
+// everDealt reports whether a table had everything it needs to start dealing.
+//
+// There is no play state in a record - no deck, no round, no bets - so a table
+// that had begun a hand cannot be rejoined from disk and must come back as a
+// receipt. This is the marker for that, and it is exact rather than
+// approximate: startPlaying deals the moment every seat is both funded and
+// bonded, so a record showing both complete is a record of a table that had
+// started, or was about to on the same tick.
+func everDealt(rec *record) bool {
+	seats := int(rec.Terms.Seats)
+	return seats > 0 && len(rec.Funded) >= seats && len(rec.Bonded) >= seats
+}
+
+// receipt rebuilds a table from its record.
+//
+// Not always a receipt. Forming and funding a table takes as many blocks as the
+// terms say - hours, at a day's timelock - and a restart in that window used to
+// come back finished, which is a table nobody can play and nobody left. Every
+// funded table on this box died that way once, to a container restart.
+//
+// So the record is believed about what it records: this player got up, or the
+// table had begun a hand it cannot be put back into. Anything else comes back
+// as what it was.
 func (t *tables) receipt(rec *record, id *identity) (*table, error) {
 	terms := rec.Terms.Into()
 	creds, err := id.credentials(terms.SID)
@@ -696,19 +731,18 @@ func (t *tables) receipt(rec *record, id *identity) (*table, error) {
 	if err != nil {
 		return nil, err
 	}
+	done := rec.Finished || rec.Aborted || everDealt(rec)
 	tbl := &table{terms: terms, gcID: rec.GCID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain,
-		logPriv: creds.Log, finished: true}
+		logPriv: creds.Log, finished: done}
 
 	if err := tbl.resume(rec); err != nil {
 		return nil, err
 	}
-	// Finished whatever the record said. A table only gets here because it
-	// still holds coin, and one that is over must not come back playable.
-	tbl.finished = true
+	tbl.finished = done
 	return tbl, nil
 }
 
@@ -747,6 +781,7 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, tbl.presignRefreshes()...)
 		out = append(out, tbl.proposeSettlement()...)
 		out = append(out, t.announceAgain(tbl, height)...)
+		out = append(out, t.announceBondAgain(tbl, height)...)
 		if tbl.fundingLapsed(height) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)
@@ -804,6 +839,59 @@ func (t *tables) announceAgain(tbl *table, height int64) []outgoing {
 	}
 	tbl.announcedAt = height
 	return []outgoing{tbl.frame(schema.KindFunded, schema.FundedFrom(fn), wire.ClassState)}
+}
+
+// announceBondAgain says again where this seat's bond is.
+//
+// Exactly the fault announceAgain was written for, one field over, and it cost
+// a live table before anybody noticed the asymmetry. A bond needs two
+// confirmations; it is announced the moment it is broadcast, so the first
+// telling is refused by everyone, every time, on purpose. The stake recovered
+// from that because it was repeated. The bond was said once and never again, so
+// two peers sat with every stake down, each holding its own bond and neither
+// holding the other's, waiting on a message nothing would ever send.
+//
+// Not bounded by the funding deadline, unlike the stake. Past that deadline a
+// stake stops mattering because the table lapses - but a table short only of a
+// bond does not lapse, so a deadline here would leave exactly the state this is
+// meant to fix, permanently. It stops when the table stops needing it: when it
+// deals, or when this player gets up.
+func (t *tables) announceBondAgain(tbl *table, height int64) []outgoing {
+	if height <= 0 || height <= tbl.bondedAnnouncedAt || t.signBonded == nil {
+		return nil
+	}
+	// Deliberately not "stop once this table is dealing". Dealing means our
+	// own view is complete, and the peer that still needs to hear this is by
+	// definition the one whose view differs - the same reasoning written out
+	// at length in announceAgain, and ignored here once already: this peer
+	// heard the other's bond, started dealing, stopped repeating its own, and
+	// left the other seat short of the one thing it was waiting for.
+	//
+	// So it stops only when this player is up from the table. A peer that has
+	// the bond already drops the repeat on arrival, so the cost of saying it
+	// is one small frame a block and the cost of not saying it is a seat that
+	// waits forever.
+	if tbl.finished {
+		return nil
+	}
+	if tbl.form.State() != membership.Settled {
+		return nil
+	}
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		return nil
+	}
+	outpoint := tbl.bonded[seat]
+	if outpoint == "" {
+		return nil
+	}
+	bn, err := t.signBonded(tbl.terms, seat, outpoint)
+	if err != nil {
+		log.Printf("pokerplugin: table %s: cannot say again where our bond is: %v", tbl.terms.SID, err)
+		return nil
+	}
+	tbl.bondedAnnouncedAt = height
+	return []outgoing{tbl.frame(schema.KindBonded, schema.BondedFrom(bn), wire.ClassState)}
 }
 
 // fundingLapsed gives up on a settled table that was never fully paid for.

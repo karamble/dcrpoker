@@ -124,6 +124,12 @@ func (p *plugin) handleTableRefund(w http.ResponseWriter, r *http.Request) {
 		SID      string `json:"sid"`
 		DestAddr string `json:"destAddr"`
 		FeeAtoms int64  `json:"feeAtoms"`
+		// Outpoint takes back something other than the stake this seat is
+		// playing with. A deposit address can be paid more than once - by a
+		// wallet, or by a funding request asked for twice - and the second
+		// payment is not the seat's stake and is not in the record, so
+		// nothing else can ever reach it.
+		Outpoint string `json:"outpoint"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
@@ -135,6 +141,17 @@ func (p *plugin) handleTableRefund(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	named := strings.TrimSpace(req.Outpoint)
+	if named != "" {
+		// Checked, not believed, exactly as /table/deposit/set checks its
+		// claim: it has to pay this seat's own deposit script, so this can
+		// only ever name money this key already controls.
+		if err := p.paysOurDeposit(r.Context(), named, dep.PkScriptHex); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		stake = named
 	}
 	if stake == "" {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("nothing was ever paid into seat %d of %s", seat, sid))
@@ -160,8 +177,11 @@ func (p *plugin) handleTableRefund(w http.ResponseWriter, r *http.Request) {
 
 	// Forget the stake only once it is on its way, and forget it before
 	// replying: a table still citing an output it has spent would announce
-	// a stake that is no longer there.
-	p.tables.forgetStake(sid, seat)
+	// a stake that is no longer there. A named outpoint was never the
+	// seat's stake, so there is nothing to forget.
+	if named == "" {
+		p.tables.forgetStake(sid, seat)
+	}
 	log.Printf("pokerplugin: table %s: reclaimed seat %d's stake in %s", sid, seat, txid)
 	writeJSON(w, map[string]any{"sid": sid, "seat": seat, "txid": txid})
 }

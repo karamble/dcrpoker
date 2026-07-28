@@ -195,6 +195,37 @@ func (p *plugin) recordOwnBond(sid string, seat uint32, outpoint string) ([]outg
 	return out, nil
 }
 
+// announceOwnBond says again where this seat's bond already is.
+//
+// The same frame recordOwnBond sends, without the recording: the bond is on the
+// chain and written down, and the only thing missing is that somebody else
+// heard about it.
+func (p *plugin) announceOwnBond(sid string) ([]outgoing, error) {
+	p.tables.mu.Lock()
+	defer p.tables.mu.Unlock()
+
+	tbl := p.tables.m[sid]
+	if tbl == nil {
+		return nil, fmt.Errorf("not at a table under session %s", sid)
+	}
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		return nil, fmt.Errorf("this table has no seating yet")
+	}
+	outpoint := tbl.bonded[seat]
+	if outpoint == "" {
+		return nil, fmt.Errorf("this seat has posted no bond")
+	}
+	if p.tables.signBonded == nil {
+		return nil, fmt.Errorf("nothing here can sign a bond announcement")
+	}
+	bn, err := p.tables.signBonded(tbl.terms, seat, outpoint)
+	if err != nil {
+		return nil, err
+	}
+	return []outgoing{tbl.frame(schema.KindBonded, schema.BondedFrom(bn), wire.ClassState)}, nil
+}
+
 // handleTableBond pays this player's forfeitable bond for a table.
 //
 // A second approval after the stake, and it has to be: a spend pays one address,
@@ -226,7 +257,21 @@ func (p *plugin) handleTableBond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if already != "" {
-		writeJSON(w, map[string]any{"seat": seat, "outpoint": already, "bonded": true})
+		// Paid, so nothing is asked for again - but say where it is once
+		// more on the way out. Somebody pressing this a second time is
+		// somebody whose table has not started, and the likeliest reason
+		// is a peer that never accepted this bond. Answering "yes, done"
+		// and sending nothing is the one response that cannot help them.
+		if out, err := p.announceOwnBond(sid); err != nil {
+			log.Printf("pokerplugin: table %s: cannot say again where our bond is: %v", sid, err)
+		} else {
+			p.publish(r.Context(), out)
+		}
+		writeJSON(w, map[string]any{"seat": seat, "outpoint": already, "bonded": true, "announced": true})
+		return
+	}
+	if open, ok := p.spends.openFor(purposeTableBond, sid, seat); ok {
+		writeOpenSpend(w, open)
 		return
 	}
 

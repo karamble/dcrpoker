@@ -199,6 +199,10 @@ func (p *plugin) handleBondFund(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"outpoint": have, "funded": true})
 		return
 	}
+	if open, ok := p.spends.openFor(purposeBond, "", 0); ok {
+		writeOpenSpend(w, open)
+		return
+	}
 
 	script, err := p.id.bondScript()
 	if err != nil {

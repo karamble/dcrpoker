@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -56,7 +57,19 @@ type pendingSpend struct {
 	TxID     string `json:"txid,omitempty"`
 	Outpoint string `json:"outpoint,omitempty"`
 	Recorded bool   `json:"recorded"`
-	Error    string `json:"error,omitempty"`
+	// Error is the host's own refusal, and Settled says the host answered
+	// at all. Kept apart from Unreachable, which only says this process
+	// could not ask: a payment nobody could ask about may still have been
+	// made, and treating the two alike loses money.
+	Error       string `json:"error,omitempty"`
+	Settled     bool   `json:"settled,omitempty"`
+	Unreachable string `json:"unreachable,omitempty"`
+}
+
+// open reports whether this payment is still worth asking about. A refusal the
+// host actually gave is done with; anything else is not.
+func (p *pendingSpend) open() bool {
+	return !p.Recorded && !p.Settled
 }
 
 // spends is every payment asked for and not yet accounted for.
@@ -118,6 +131,36 @@ func (s *spends) save(p *pendingSpend) {
 	}
 }
 
+// openFor finds a payment already asked for and not yet accounted for.
+//
+// The already-paid checks at each call site only see money that has arrived. A
+// request whose answer was lost is money that may well have been paid and has
+// nothing pointing at it yet, and asking again for that is how a stake gets
+// paid twice.
+func (s *spends) openFor(purpose spendPurpose, sid string, seat uint32) (pendingSpend, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.m {
+		if p.Purpose == purpose && p.SID == sid && p.Seat == seat && p.open() {
+			return *p, true
+		}
+	}
+	return pendingSpend{}, false
+}
+
+// writeOpenSpend answers somebody asking to pay for what is already being paid.
+func writeOpenSpend(w http.ResponseWriter, open pendingSpend) {
+	w.WriteHeader(http.StatusConflict)
+	writeJSON(w, map[string]any{
+		"spendId": open.ID,
+		"state":   open.State,
+		"pending": true,
+		"error": fmt.Sprintf("a %s was already asked for as %s and has not been "+
+			"answered yet, so waiting on it is right and asking again would pay twice",
+			open.Purpose, open.ID),
+	})
+}
+
 // resume picks up payments that were still in flight when this process stopped.
 func (s *spends) resume() []*pendingSpend {
 	if s.store == nil {
@@ -132,13 +175,46 @@ func (s *spends) resume() []*pendingSpend {
 	s.mu.Lock()
 	for _, p := range saved {
 		s.m[p.ID] = p
-		if !p.Recorded && p.Error == "" {
+		if p.open() {
 			open = append(open, p)
 		}
 	}
 	s.mu.Unlock()
 	return open
 }
+
+// awaitAnswer waits for the host's answer, and keeps asking if the host is
+// simply not there.
+//
+// The host restarting mid-payment is ordinary - it is a container next to this
+// one - and it survives its own restart, so the answer is still there when it
+// comes back. Giving up on the first refused connection is what turned a
+// restart into a payment made twice.
+func (p *plugin) awaitAnswer(ctx context.Context, req *pendingSpend) (transport.Spend, error) {
+	var last error
+	for {
+		settled, err := p.bridge.AwaitSpend(ctx, req.ID)
+		if err == nil {
+			return settled, nil
+		}
+		last = err
+		if ctx.Err() != nil {
+			return transport.Spend{}, last
+		}
+		log.Printf("pokerplugin: cannot ask about the %s asked for as %s, trying again: %v",
+			req.Purpose, req.ID, err)
+		select {
+		case <-ctx.Done():
+			return transport.Spend{}, last
+		case <-time.After(spendRetryEvery):
+		}
+	}
+}
+
+// spendRetryEvery is how long to leave the host alone between attempts. Long
+// enough not to spin against a container that is starting, short enough that a
+// person watching a panel sees it resolve.
+const spendRetryEvery = 5 * time.Second
 
 // awaitSpend does everything that happens after the host has been asked.
 //
@@ -149,25 +225,37 @@ func (p *plugin) awaitSpend(ctx context.Context, req *pendingSpend, wait time.Du
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
-	settled, err := p.bridge.AwaitSpend(ctx, req.ID)
+	settled, err := p.awaitAnswer(ctx, req)
 	if err != nil {
+		// Not being able to ask is not an answer. The host may have paid
+		// while this could not reach it - a restart of the host is
+		// exactly when that happens - so the payment stays open and is
+		// asked about again rather than being written off.
+		//
+		// Recording it as refused here once cost a real 0.01 DCR: the
+		// stake was paid, this stopped watching, the interface still
+		// said it was owed, and it was paid a second time.
 		out, _ := p.spends.update(req.ID, func(s *pendingSpend) {
-			s.State = "unanswered"
-			s.Error = err.Error()
+			s.State = "unknown"
+			s.Unreachable = err.Error()
 		})
 		return out, err
 	}
 	if settled.State != transport.SpendApproved {
+		// The host answered, and the answer was no. That is terminal.
 		err := fmt.Errorf("the host %s the payment: %s", settled.State, settled.Error)
 		out, _ := p.spends.update(req.ID, func(s *pendingSpend) {
 			s.State = string(settled.State)
 			s.Error = settled.Error
+			s.Settled = true
 		})
 		return out, err
 	}
 	p.spends.update(req.ID, func(s *pendingSpend) {
 		s.State = string(transport.SpendApproved)
 		s.TxID = settled.TxID
+		s.Settled = true
+		s.Unreachable = ""
 	})
 
 	find := p.findDepositOutput
@@ -184,7 +272,20 @@ func (p *plugin) awaitSpend(ctx context.Context, req *pendingSpend, wait time.Du
 	}
 
 	if err := p.recordSpend(req, outpoint); err != nil {
-		out, _ := p.spends.update(req.ID, func(s *pendingSpend) { s.Error = err.Error() })
+		// Surplus coin is settled: asking again would not change the
+		// answer. It is written down with where it landed, because that
+		// outpoint is the only way anything reaches it later.
+		out, _ := p.spends.update(req.ID, func(s *pendingSpend) {
+			s.Error = err.Error()
+			if errors.Is(err, errSurplus) {
+				s.Outpoint = outpoint
+				s.Settled = true
+			}
+		})
+		if errors.Is(err, errSurplus) {
+			log.Printf("pokerplugin: the %s asked for as %s is spare coin at %s; "+
+				"reclaim it by naming that outpoint", req.Purpose, req.ID, outpoint)
+		}
 		return out, err
 	}
 	out, _ := p.spends.update(req.ID, func(s *pendingSpend) {
@@ -195,16 +296,33 @@ func (p *plugin) awaitSpend(ctx context.Context, req *pendingSpend, wait time.Du
 	return out, nil
 }
 
+// errSurplus says a payment arrived somewhere that is already paid for.
+//
+// Not a failure and not something to retry: the coin is real and is this
+// player's, it is simply not the seat's stake. Filing it would displace the
+// outpoint the other seats have already checked and announce a stake that is
+// not the one being played with, which is worse than leaving it where it is.
+var errSurplus = errors.New("this seat is already paid for, so this payment is spare coin at the same script; " +
+	"take it back by naming its outpoint")
+
 // recordSpend files a completed payment where it belongs.
 func (p *plugin) recordSpend(req *pendingSpend, outpoint string) error {
 	switch req.Purpose {
 	case purposeStake:
+		if _, _, _, already, err := p.tables.ourDeposit(req.SID); err == nil &&
+			already != "" && !strings.EqualFold(already, outpoint) {
+			return errSurplus
+		}
 		out, err := p.recordOwnStake(req.SID, req.Seat, outpoint)
 		if err != nil {
 			return err
 		}
 		p.publish(p.ctx, out)
 	case purposeTableBond:
+		if _, _, already, err := p.tables.ourBond(req.SID); err == nil &&
+			already != "" && !strings.EqualFold(already, outpoint) {
+			return errSurplus
+		}
 		out, err := p.recordOwnBond(req.SID, req.Seat, outpoint)
 		if err != nil {
 			return err
@@ -270,7 +388,7 @@ func (p *plugin) handleSpend(w http.ResponseWriter, r *http.Request) {
 
 	// The host is asked too, so a payment answered while this process was
 	// not watching is still reported correctly.
-	if !local.Recorded && local.Error == "" {
+	if local.open() {
 		if status, err := p.bridge.SpendStatus(r.Context(), id); err == nil {
 			local.State = string(status.State)
 			if status.TxID != "" {

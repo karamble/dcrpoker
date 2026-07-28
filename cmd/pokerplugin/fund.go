@@ -197,6 +197,10 @@ func (p *plugin) handleFund(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"seat": seat, "outpoint": already, "funded": true})
 		return
 	}
+	if open, ok := p.spends.openFor(purposeStake, sid, seat); ok {
+		writeOpenSpend(w, open)
+		return
+	}
 
 	spend, err := p.bridge.RequestSpend(r.Context(), dep.DepositAddr, int64(terms.BuyInAtoms),
 		fmt.Sprintf("buy into table %s at seat %d, refundable by you alone after the timelock", sid, seat))
@@ -230,10 +234,38 @@ func (p *plugin) handleFund(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"seat": seat, "outpoint": done.Outpoint, "funded": true})
 }
 
+// paysOurDeposit checks that an outpoint somebody named really does pay this
+// seat's own deposit script.
+//
+// The one thing standing between "take this back" and "sign away anything I am
+// pointed at". Shared by the route that records a stake and the route that
+// takes one back, because both are told an outpoint by a caller.
+func (p *plugin) paysOurDeposit(ctx context.Context, outpoint, wantScript string) error {
+	txid, vout, err := splitOutpoint(outpoint)
+	if err != nil {
+		return err
+	}
+	// Confirmations are not required here, for the reason /bond/set does not
+	// require them: a peer will refuse a stake it cannot see yet, and that
+	// resolves itself as blocks arrive. The reclaim path checks maturity
+	// against the chain itself regardless.
+	out, err := p.bridge.UnconfirmedOutpoint(ctx, txid, vout)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !out.Found:
+		return fmt.Errorf("%s holds no coin", outpoint)
+	case !strings.EqualFold(out.PkScriptHex, wantScript):
+		return fmt.Errorf("%s does not pay this seat's deposit script", outpoint)
+	}
+	return nil
+}
+
 // spendErrStatus turns what went wrong into a status a caller can act on.
 func spendErrStatus(s pendingSpend) int {
 	switch {
-	case s.State == "unanswered":
+	case s.State == "unanswered", s.State == "unknown":
 		return http.StatusGatewayTimeout
 	case s.TxID != "":
 		// The money moved and something after that failed. The /set
@@ -275,25 +307,8 @@ func (p *plugin) handleDepositSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	txid, vout, err := splitOutpoint(req.Outpoint)
-	if err != nil {
+	if err := p.paysOurDeposit(r.Context(), req.Outpoint, dep.PkScriptHex); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	// Confirmations are not required here, for the reason /bond/set does not
-	// require them: a peer will refuse a stake it cannot see yet, and that
-	// resolves itself as blocks arrive.
-	out, err := p.bridge.UnconfirmedOutpoint(r.Context(), txid, vout)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	switch {
-	case !out.Found:
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s holds no coin", req.Outpoint))
-		return
-	case !strings.EqualFold(out.PkScriptHex, dep.PkScriptHex):
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s does not pay this seat's deposit script", req.Outpoint))
 		return
 	}
 
