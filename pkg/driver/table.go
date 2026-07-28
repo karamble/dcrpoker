@@ -523,7 +523,23 @@ func (t *Table) maybeFinish() ([]Out, error) {
 		return nil, err
 	}
 	t.record(cp)
-	return []Out{OutCheckpoint{Checkpoint: cp}}, nil
+
+	// Ours may be the one that completes the set, and then this is the
+	// boundary. Nothing else will notice: the only other place that advances
+	// is a checkpoint arriving from somebody else, so a peer whose own
+	// signature was the last one needed used to sign it, file it, and sit
+	// there - hand finished, owing nothing, waiting for a message that had
+	// already arrived.
+	//
+	// Which peer that is comes down to whether the other seat's checkpoint
+	// landed before or after this one finished the hand. Both orders are
+	// ordinary, so the table stopped about half the time.
+	out := []Out{OutCheckpoint{Checkpoint: cp}}
+	adv, err := t.maybeAdvance(t.hand)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, adv...), nil
 }
 
 func (t *Table) onCheckpoint(m InCheckpoint) ([]Out, error) {

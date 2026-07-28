@@ -39,26 +39,6 @@ func TestAHandIsPlayedToShowdown(t *testing.T) {
 // Chips are neither made nor destroyed, across as many hands as anybody plays.
 // The button has to move too, or the same seat pays the small blind forever.
 func TestSeveralHandsKeepTheChipsAndMoveTheButton(t *testing.T) {
-	// SKIPPED, and not because it is a bad test.
-	//
-	// It stalls intermittently at the boundary between one hand and the next:
-	// the betting finishes, one peer signs the checkpoint that fixes the
-	// stacks and settles, and the other never does - so nobody owes anything,
-	// nobody has a turn, and the table sits there. It repairs itself
-	// sometimes, and adding logging to watch it makes it repair itself far
-	// more often, which is the signature of a race rather than a missing
-	// message.
-	//
-	// What is not yet established is which side it is on: the hand boundary
-	// crossing the wire, or this pump failing to drain something at exactly
-	// that moment. Both are plausible and guessing between them at four in
-	// the morning is how the last three bugs got mis-diagnosed twice each.
-	//
-	// Left in the tree, skipped, because it is the next thing to find and a
-	// deleted test finds nothing. TestAHandIsPlayedToShowdown covers the same
-	// ground up to the boundary and passes reliably.
-	t.Skip("intermittent stall at the hand boundary; see the comment")
-
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
 	waitBetting(t, a)
@@ -95,26 +75,6 @@ func TestSeveralHandsKeepTheChipsAndMoveTheButton(t *testing.T) {
 // opened. That is what lets an abandoned hand settle: nothing was revealed, so
 // there is nothing to argue about.
 func TestAFoldedHandEndsAndOpensNoCard(t *testing.T) {
-	// SKIPPED, and not because it is a bad test.
-	//
-	// It stalls intermittently at the boundary between one hand and the next:
-	// the betting finishes, one peer signs the checkpoint that fixes the
-	// stacks and settles, and the other never does - so nobody owes anything,
-	// nobody has a turn, and the table sits there. It repairs itself
-	// sometimes, and adding logging to watch it makes it repair itself far
-	// more often, which is the signature of a race rather than a missing
-	// message.
-	//
-	// What is not yet established is which side it is on: the hand boundary
-	// crossing the wire, or this pump failing to drain something at exactly
-	// that moment. Both are plausible and guessing between them at four in
-	// the morning is how the last three bugs got mis-diagnosed twice each.
-	//
-	// Left in the tree, skipped, because it is the next thing to find and a
-	// deleted test finds nothing. TestAHandIsPlayedToShowdown covers the same
-	// ground up to the boundary and passes reliably.
-	t.Skip("intermittent stall at the hand boundary; see the comment")
-
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
 	waitBetting(t, a)
