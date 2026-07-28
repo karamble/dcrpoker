@@ -1,0 +1,8 @@
+# The built bundle is an artifact and is never committed.
+#
+# This file is here so the directory exists in a fresh checkout: //go:embed
+# fails outright on a missing directory, and `go build ./...` has to work for
+# somebody who has never run npm. The binary then serves ../placeholder.html
+# instead, and says so on /health.
+*
+!.gitignore

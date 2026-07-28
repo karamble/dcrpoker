@@ -9,3 +9,4 @@ grpc/generated
 .gomodcache
 .cache
 releases/
+cmd/pokerplugin/ui/node_modules

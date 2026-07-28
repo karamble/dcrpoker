@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>poker: no interface in this build</title>
+<style>
+  body { font: 15px/1.6 system-ui, sans-serif; margin: 0; padding: 2.5rem 1.5rem;
+         color: #d8d8dc; background: #16161a; }
+  main { max-width: 34rem; margin: 0 auto; }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 1rem; }
+  code { background: #222228; padding: .15em .4em; border-radius: 3px; }
+  p { margin: 0 0 1rem; }
+  .quiet { color: #85858e; }
+  @media (prefers-color-scheme: light) {
+    body { color: #1c1c21; background: #f4f4f6; }
+    code { background: #e6e6ea; }
+    .quiet { color: #6a6a74; }
+  }
+</style>
+<main>
+  <h1>This build has no interface in it.</h1>
+  <p>
+    The Go side of the plugin is complete and serving. What is missing is the
+    built bundle, which is a separate step because it needs npm.
+  </p>
+  <p>
+    <code>scripts/build-ui.sh</code> builds it, and
+    <code>scripts/build-pokerplugin.sh</code> builds it and then the binary
+    around it. A release binary reports <code>"ui":"built"</code> on
+    <code>/health</code>; this one reports <code>"placeholder"</code>.
+  </p>
+  <p class="quiet">
+    This page is committed so that <code>go build ./...</code> works without a
+    JavaScript toolchain, which keeps the Go side buildable and testable on its
+    own. It is not an error &mdash; unless you are looking at it in a release.
+  </p>
+</main>

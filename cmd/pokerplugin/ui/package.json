@@ -1,0 +1,33 @@
+{
+  "name": "pokerplugin-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "//overrides": [
+    "Rollup ships a per-platform native binary that needs a newer glibc than",
+    "some build hosts have, and it is a compiled artifact in the toolchain of",
+    "something that gets signed. The WASM build is maintained by the same",
+    "people, emits the same bundle, and runs anywhere node does - so the",
+    "output stops depending on which machine produced it."
+  ],
+  "overrides": {
+    "rollup": "npm:@rollup/wasm-node@^4.24.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.8.3",
+    "vite": "^5.4.19",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}
