@@ -657,13 +657,19 @@ func (t *tables) resumeHeld(id *identity) {
 			continue
 		}
 		if !heldByUs(rec) {
-			// Nothing of ours left in it, so there is nothing to
+			// Nothing anybody paid into it, so there is nothing to
 			// keep. An aborted table nobody funded is just history.
 			continue
 		}
 		tbl, err := t.receipt(rec, id)
 		if err != nil {
 			log.Printf("pokerplugin: cannot read back table %s: %v", sid, err)
+			continue
+		}
+		if !tbl.holdsOurs() {
+			// Somebody paid into it and it was not this player. The
+			// record says where their coin is, which is their
+			// business and not a receipt to keep here.
 			continue
 		}
 		t.m[sid] = tbl
