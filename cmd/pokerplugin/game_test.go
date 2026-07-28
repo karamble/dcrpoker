@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
@@ -141,5 +142,110 @@ func TestAHandSurvivesALostFrameOfEveryKind(t *testing.T) {
 	if total(stacks) != 2*int64(terms.BuyInAtoms) {
 		t.Fatalf("the table holds %d chips and started with %d",
 			total(stacks), 2*int64(terms.BuyInAtoms))
+	}
+}
+
+// The money leaving the table, which is the half none of this had ever tested.
+//
+// A hand is played, somebody gets up, and the two seats build the payout
+// between them: each signs every input, they exchange signatures, and whichever
+// is complete first sends it. What has to be true of that transaction is the
+// whole point of the escrow - it spends both stakes, it pays each seat the
+// stack they both signed off, and it does it without anybody having been able
+// to build it alone.
+func TestATableThatEndsPaysTheWinner(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a)
+	waitBetting(t, b)
+
+	addrs := sayWhereToPay(t, h, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+	stacks := agreeOnTheMoney(t, terms.SID, a, b)
+
+	getUp(t, h, terms.SID, a)
+	waitOver(t, h, terms.SID, a, b)
+	tx := waitPaid(t, h, a, b)
+
+	// It spends both stakes and nothing else. An escrow output needs every
+	// member's signature, so a payout that reached the chain at all is one
+	// both seats agreed to.
+	if len(tx.TxIn) != 2 {
+		t.Fatalf("the payout spends %d outputs, want the two stakes", len(tx.TxIn))
+	}
+	want := map[string]bool{}
+	for _, p := range []*plugin{a, b} {
+		p.tables.mu.Lock()
+		for _, outpoint := range p.tables.m[terms.SID].funded {
+			want[outpoint] = true
+		}
+		p.tables.mu.Unlock()
+	}
+	for _, in := range tx.TxIn {
+		if !want[in.PreviousOutPoint.String()] {
+			t.Fatalf("the payout spends %s, which is not a stake at this table",
+				in.PreviousOutPoint)
+		}
+	}
+
+	// And it pays each seat what both of them signed off, less the fee that
+	// gets it mined.
+	if len(tx.TxOut) != 2 {
+		t.Fatalf("the payout has %d outputs, want one a seat", len(tx.TxOut))
+	}
+	paidTo := map[string]int64{}
+	for _, o := range tx.TxOut {
+		paidTo[hex.EncodeToString(o.PkScript)] += o.Value
+	}
+	var paid int64
+	for _, p := range []*plugin{a, b} {
+		script, err := payScriptFor(addrs[p], testParams)
+		if err != nil {
+			t.Fatalf("payout script: %v", err)
+		}
+		got, ok := paidTo[hex.EncodeToString(script)]
+		if !ok {
+			t.Fatalf("nothing was paid to the address a seat asked for")
+		}
+		paid += got
+	}
+	staked := 2 * int64(terms.BuyInAtoms)
+	if paid != staked-settleFee {
+		t.Fatalf("the table took in %d and paid out %d, with a fee of %d",
+			staked, paid, settleFee)
+	}
+	if total(stacks) != staked {
+		t.Fatalf("the seats signed off %d chips at a table holding %d", total(stacks), staked)
+	}
+}
+
+// The chain refuses the second copy. Every seat holds the same fully signed
+// transaction and any of them may send it, which is what stops one peer going
+// quiet from stranding the money - and means the others must not be able to
+// pay the table out twice between them.
+func TestTheTableCannotBePaidOutTwice(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a)
+	waitBetting(t, b)
+
+	sayWhereToPay(t, h, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	getUp(t, h, terms.SID, a)
+	waitOver(t, h, terms.SID, a, b)
+	tx := waitPaid(t, h, a, b)
+
+	// Both peers keep ticking, and both hold the same signatures.
+	advance(t, h, 6, a, b)
+	if sent := h.relayed(); len(sent) != 1 {
+		t.Fatalf("the table paid out %d times", len(sent))
+	}
+	for _, in := range tx.TxIn {
+		if !h.isSpent(in.PreviousOutPoint.String()) {
+			t.Fatalf("%s was paid out of and is still spendable", in.PreviousOutPoint)
+		}
 	}
 }

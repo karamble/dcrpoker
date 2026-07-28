@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	dcrwire "github.com/decred/dcrd/wire"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
@@ -38,6 +40,15 @@ type hub struct {
 	// it only ever infers it from an obligation that stands while the chain
 	// moves. So a test cannot ask a peer to stop; it takes it off the wire.
 	muted map[string]bool
+	// sent is every transaction this chain was asked to relay, newest last,
+	// and spent is the outpoints they consumed.
+	//
+	// A stand-in chain that answers lookups and cannot take a transaction can
+	// watch a table play and not watch it pay, which is the half that holds
+	// the money.
+	sent  []*dcrwire.MsgTx
+	spent map[string]bool
+
 	// swallow is how many more frames of a kind to lose on the way through,
 	// and lost records what actually went missing.
 	//
@@ -125,6 +136,20 @@ func (h *hub) lendTo(t *testing.T, session *secp256k1.PrivateKey, nonce string) 
 	}
 }
 
+// relayed is every transaction this chain was asked to send.
+func (h *hub) relayed() []*dcrwire.MsgTx {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]*dcrwire.MsgTx(nil), h.sent...)
+}
+
+// isSpent reports whether a payout has already taken an outpoint.
+func (h *hub) isSpent(outpoint string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.spent[outpoint]
+}
+
 // drop loses the next n frames of a kind, the way this channel does on its own
 // given long enough.
 func (h *hub) drop(kind schema.Kind, n int) {
@@ -174,19 +199,61 @@ func newHub(t *testing.T) *hub {
 		muted:   make(map[string]bool),
 		swallow: make(map[schema.Kind]int),
 		lost:    make(map[schema.Kind]int),
+		spent:   make(map[string]bool),
 	}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/gaming/chain/outpoint" {
 			q := r.URL.Query()
+			key := q.Get("txid") + ":" + q.Get("vout")
 			h.mu.Lock()
-			pkScript := h.bonds[q.Get("txid")+":"+q.Get("vout")]
+			pkScript, gone := h.bonds[key], h.spent[key]
 			h.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(transport.Outpoint{
-				Found:         pkScript != "",
+				// Spent is indistinguishable from never-existed here, and
+				// that is what the real lookup says too: it answers about
+				// coin anybody can still take, not about history.
+				Found:         pkScript != "" && !gone,
 				ValueAtoms:    testOutpointAtoms,
 				PkScriptHex:   pkScript,
 				Confirmations: int64(escrow.BondConfirmations),
 			})
+			return
+		}
+		if r.URL.Path == "/gaming/chain/broadcast" {
+			var req struct {
+				RawTxHex string `json:"rawTxHex"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			raw, err := hex.DecodeString(req.RawTxHex)
+			if err != nil {
+				http.Error(w, "not hex", http.StatusBadRequest)
+				return
+			}
+			tx := dcrwire.NewMsgTx()
+			if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+				http.Error(w, "not a transaction: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			h.mu.Lock()
+			for _, in := range tx.TxIn {
+				if h.spent[in.PreviousOutPoint.String()] {
+					// Already taken. A real node refuses this, and a
+					// test that let it through would let two peers
+					// both pay the table out.
+					h.mu.Unlock()
+					http.Error(w, "already spent", http.StatusForbidden)
+					return
+				}
+			}
+			for _, in := range tx.TxIn {
+				h.spent[in.PreviousOutPoint.String()] = true
+			}
+			h.sent = append(h.sent, tx)
+			h.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]string{"txid": tx.TxHash().String()})
 			return
 		}
 		if r.URL.Path != "/gaming/send" {

@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	dcrwire "github.com/decred/dcrd/wire"
 )
 
 // Playing a whole hand between two real peers, over the wire.
@@ -290,5 +292,90 @@ func waitSettled(t *testing.T, sid string, hand uint64, peers ...*plugin) {
 			}
 			t.Fatalf("hand %d was played and never signed off by everybody", hand)
 		}
+	}
+}
+
+// sayWhereToPay gives every peer a payout address and tells the table.
+//
+// Not decoration and not optional: a settlement names an output per seat, so a
+// table where anybody has not said this cannot be paid out at all. The address
+// is signed by the seat that owns it, because the transaction is built by the
+// others and a seat that could name a neighbour's address would be taking their
+// money with everybody's signature on it.
+func sayWhereToPay(t *testing.T, h *hub, peers ...*plugin) map[*plugin]string {
+	t.Helper()
+	out := make(map[*plugin]string, len(peers))
+	for _, p := range peers {
+		addr := payoutAddress(t, p)
+		if err := p.id.setPayout(addr, testParams); err != nil {
+			t.Fatalf("payout address: %v", err)
+		}
+		p.publish(context.Background(), p.tables.announcePayouts(addr))
+		out[p] = addr
+	}
+	h.inflight.Wait()
+	return out
+}
+
+// getUp has a peer leave, which is what ends a table that nobody has busted at.
+//
+// A seat on its way out folds when its turn comes and the table ends at the next
+// boundary rather than dealing on short-handed: the escrow, the bond and the
+// roster all name the full membership, so carrying on without somebody would be
+// a different table, not this one with a gap in it.
+func getUp(t *testing.T, h *hub, sid string, p *plugin) {
+	t.Helper()
+	out, ok := p.tables.leave(sid)
+	if !ok {
+		t.Fatal("nothing to leave")
+	}
+	p.publish(context.Background(), out)
+	h.inflight.Wait()
+}
+
+// waitOver waits for every peer to agree the table has finished.
+func waitOver(t *testing.T, h *hub, sid string, peers ...*plugin) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		done := true
+		for _, p := range peers {
+			if !over(t, p, sid) {
+				done = false
+			}
+		}
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the table never ended")
+		}
+		time.Sleep(tickEvery)
+		tickAll(peers...)
+		h.inflight.Wait()
+	}
+}
+
+// waitPaid waits for a settlement to reach the chain and returns it.
+func waitPaid(t *testing.T, h *hub, peers ...*plugin) *dcrwire.MsgTx {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		if sent := h.relayed(); len(sent) > 0 {
+			// One and only one. Every seat holds the same fully signed
+			// transaction and any of them may send it, so the second is
+			// refused by the chain rather than by good manners - but a
+			// test that saw two would be watching the table pay twice.
+			if len(sent) > 1 {
+				t.Fatalf("the table paid out %d times", len(sent))
+			}
+			return sent[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the table ended and never paid anybody")
+		}
+		time.Sleep(tickEvery)
+		tickAll(peers...)
+		h.inflight.Wait()
 	}
 }
