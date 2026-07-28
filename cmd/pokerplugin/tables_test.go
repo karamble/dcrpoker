@@ -117,6 +117,14 @@ func (h *hub) lendTo(t *testing.T, session *secp256k1.PrivateKey, nonce string) 
 
 var testParams = chaincfg.SimNetParams()
 
+// testOutpointAtoms is what this stand-in chain says every output holds.
+//
+// Enough for anything these tests ask about, and named rather than borrowed:
+// it used to be escrow.MinBondAtoms, which is not a claim about buy-ins at all
+// and only worked while the bond happened to be the larger number. Lowering
+// the bond then made every stake look underfunded.
+const testOutpointAtoms = int64(1_000_000_000)
+
 func newHub(t *testing.T) *hub {
 	t.Helper()
 	h := &hub{
@@ -132,7 +140,7 @@ func newHub(t *testing.T) *hub {
 			h.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(transport.Outpoint{
 				Found:         pkScript != "",
-				ValueAtoms:    int64(escrow.MinBondAtoms),
+				ValueAtoms:    testOutpointAtoms,
 				PkScriptHex:   pkScript,
 				Confirmations: int64(escrow.BondConfirmations),
 			})

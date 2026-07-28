@@ -18,8 +18,17 @@ const MinBondBlocks uint32 = 2016
 //
 // It lives here beside the script because both a referee and a peer have to
 // reach the same verdict about the same deposit, and a threshold each of them
-// kept its own copy of is one they would eventually disagree on.
-const MinBondAtoms uint64 = 10_000_000 // 0.1 DCR
+// kept its own copy of is one they would eventually disagree on. Which is also
+// why changing it means changing it everywhere at once: a peer running the old
+// number refuses a bond a peer running the new one accepts, and neither is
+// wrong.
+//
+// A development value. It is charged twice - once to hold an identity at all,
+// and again for every table joined - so the real cost of a day's testing is
+// this times the number of tables, each locked for a week. At 0.1 DCR that came
+// to more locked coin than the testing was worth. It has to go back up before
+// this deters anybody.
+const MinBondAtoms uint64 = 100_000 // 0.001 DCR
 
 // BondConfirmations is what a bond must have before it counts. A deposit that
 // is not yet buried can still be replaced, and a bond that can be undone after

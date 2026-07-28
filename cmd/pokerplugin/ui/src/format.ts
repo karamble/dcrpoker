@@ -3,14 +3,23 @@
 const ATOMS = 100_000_000
 
 /** dcr renders atoms as DCR. Trailing zeros are kept to four places so a
- *  column of them lines up and two amounts can be compared by looking. */
+ *  column of them lines up and two amounts can be compared by looking.
+ *
+ *  Except when four places would say zero about money that is not zero. Four
+ *  is enough for a table priced in hundredths of a coin and silently wrong
+ *  below that: at a 0.001 buy-in the blinds are 500 and 1000 atoms, so every
+ *  bet, call and pot in the hand read 0.0000 and the whole hand looked free.
+ *  A column that lines up is worth something; a column of zeros standing for
+ *  real amounts is worth less than nothing. */
 export function dcr(atoms: number | undefined): string {
   if (atoms === undefined) return '—'
   const sign = atoms < 0 ? '-' : ''
   const abs = Math.abs(atoms)
   const whole = Math.floor(abs / ATOMS)
-  const frac = String(abs % ATOMS).padStart(8, '0').slice(0, 4)
-  return `${sign}${whole.toLocaleString()}.${frac}`
+  const full = String(abs % ATOMS).padStart(8, '0')
+  const short = full.slice(0, 4)
+  const vanishes = abs > 0 && whole === 0 && short === '0000'
+  return `${sign}${whole.toLocaleString()}.${vanishes ? full : short}`
 }
 
 /** atoms parses what somebody typed as DCR back into atoms.
