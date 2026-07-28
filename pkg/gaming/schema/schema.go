@@ -91,6 +91,16 @@ const (
 	// name to.
 	KindCheckpoint Kind = "checkpoint"
 
+	// KindCardKey is one seat's deck key for one hand, and KindShuffle and
+	// KindShare are the dealing itself.
+	//
+	// They are the bulk of what a table sends. A shuffle carries a whole
+	// masked deck and its proof, once per seat per hand; a share is small
+	// and there are many.
+	KindCardKey Kind = "cardkey"
+	KindShuffle Kind = "shuffle"
+	KindShare   Kind = "share"
+
 	// KindClaim proposes taking an absent player's bond, for the other
 	// seats to co-sign.
 	//

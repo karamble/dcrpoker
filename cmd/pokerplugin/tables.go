@@ -11,6 +11,8 @@ import (
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/client"
+	"github.com/vctt94/pokerbisonrelay/pkg/driver"
+	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
@@ -30,6 +32,17 @@ type table struct {
 	// the membership settles - because until then there is no roster to
 	// check signatures against.
 	watch *client.ChainWatch
+
+	// log is the key this seat signs entries and checkpoints with. Kept
+	// from the credentials the table was joined under, because it is needed
+	// long after joining and deriving it twice would risk deriving it
+	// differently.
+	log *forfeit.LogKey
+
+	// play is the hand in progress and the ones after it, once the table is
+	// seated and every stake is on the chain. Nil until then: dealing before
+	// the money is down would be dealing for nothing.
+	play *driver.Table
 
 	bound bool
 
@@ -269,7 +282,12 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	if err != nil {
 		return nil, err
 	}
-	tbl := &table{terms: terms, gcID: gcID, form: form, funded: map[uint32]string{}}
+	logKey, err := forfeit.LogKeyFrom(creds.Log, membership.MatchID(gcID, terms.SID))
+	if err != nil {
+		return nil, err
+	}
+	tbl := &table{terms: terms, gcID: gcID, form: form,
+		funded: map[uint32]string{}, log: logKey}
 
 	if rec != nil {
 		if err := tbl.resume(rec); err != nil {
@@ -609,8 +627,7 @@ func (t *tables) deliver(ctx context.Context, d transport.Delivery) []outgoing {
 	// is handled apart from the state machine rather than inside it: the
 	// lookup must not happen with the registry held.
 	if d.Msg.Kind == schema.KindFunded {
-		t.acceptFunding(ctx, d)
-		return nil
+		return t.acceptFunding(ctx, d)
 	}
 
 	t.mu.Lock()
@@ -702,7 +719,16 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 			// would imply it had been verified.
 			return nil, nil
 		}
+		if tbl.play != nil {
+			// Dealing, so the hand owns the log: it appends and folds
+			// the entry itself, and letting the watcher append it too
+			// would refuse the second of the two as a repeat.
+			return tbl.deal(msg), nil
+		}
 		return nil, tbl.watch.Apply(msg)
+
+	case schema.KindCardKey, schema.KindShuffle, schema.KindShare, schema.KindCheckpoint:
+		return tbl.deal(msg), nil
 
 	default:
 		// A kind this build does not know must not take the table down.
@@ -895,6 +921,9 @@ func (tbl *table) advance(beforeState membership.State, beforeJoins int) []outgo
 
 	case membership.Settled:
 		tbl.startWatching()
+		// Seating may be the last thing this table was waiting for, if the
+		// stakes were already down.
+		out = append(out, tbl.startPlaying()...)
 
 	case membership.Aborted:
 		if beforeState != membership.Aborted {
@@ -914,7 +943,11 @@ func (tbl *table) startWatching() {
 	if tbl.watch != nil {
 		return
 	}
-	seats, ok := tbl.form.Seats()
+	// The log roster, not the session keys. Entries are signed with per-match
+	// log keys - the ones that publish themselves if their owner equivocates -
+	// and checking them against the keys that hold the stakes would reject
+	// every entry a peer ever sent.
+	seats, ok := tbl.form.LogSeats()
 	if !ok {
 		// No seating yet, so no table to follow. It arrives with the
 		// block the seats are drawn from.

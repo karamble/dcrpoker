@@ -80,6 +80,23 @@ func (s *Server) chainFor(matchID string) (*gamelog.Chain, error) {
 		return nil, nil
 	}
 
+	// KNOWN BROKEN against current clients, and left so deliberately.
+	//
+	// These are the escrow's session keys. Clients now sign log entries with
+	// a separate per-match log key - the one that publishes itself if its
+	// owner equivocates, kept apart from the session key so that cheating
+	// forfeits a bond instead of handing out the escrow - so every entry a
+	// real client sends will fail to verify here.
+	//
+	// It is not fixed because it cannot be, cheaply: the referee protocol has
+	// no field carrying a log key, so this would need a regenerated protobuf
+	// for a component the peer-to-peer work removes. The peer-to-peer path
+	// (pkg/driver, cmd/pokerplugin) builds its chain from Formation.LogSeats
+	// and is correct.
+	//
+	// The tests in this package pass only because they use log keys in both
+	// roles, which is what hid this in the first place.
+
 	c, err := gamelog.NewChain(matchID, seats)
 	if err != nil {
 		return nil, fmt.Errorf("start action log: %w", err)

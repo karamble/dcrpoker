@@ -98,68 +98,71 @@ func checkStake(ctx context.Context, chain *transport.Bridge, outpoint, wantPkSc
 //
 // The chain lookup happens with the registry unlocked, like a bond's, because
 // one slow answer must not stall every other table.
-func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) {
+func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outgoing {
 	var body schema.Funded
 	if err := d.Msg.Into(&body); err != nil {
 		log.Printf("pokerplugin: table %s: funded: %v", d.SID, err)
-		return
+		return nil
 	}
 	fn, err := body.Into()
 	if err != nil {
 		log.Printf("pokerplugin: table %s: funded: %v", d.SID, err)
-		return
+		return nil
 	}
 
 	t.mu.Lock()
 	tbl := t.m[d.SID]
 	if tbl == nil || tbl.gcID != d.GCID {
 		t.mu.Unlock()
-		return
+		return nil
 	}
 	terms := tbl.terms
 	if err := fn.Verify(terms); err != nil {
 		t.mu.Unlock()
 		log.Printf("pokerplugin: table %s: funded: %v", d.SID, err)
-		return
+		return nil
 	}
 	seats, seated := tbl.form.Seats()
 	if !seated {
 		// No seating means no deposit scripts, so there is nothing this
 		// could be checked against yet.
 		t.mu.Unlock()
-		return
+		return nil
 	}
 	if key, ok := seats[fn.Seat]; !ok || hex.EncodeToString(key) != hex.EncodeToString(fn.Signer) {
 		t.mu.Unlock()
 		log.Printf("pokerplugin: table %s: a key that does not hold seat %d says it funded it", d.SID, fn.Seat)
-		return
+		return nil
 	}
 	if have := tbl.funded[fn.Seat]; have == fn.Outpoint {
 		t.mu.Unlock()
-		return
+		return nil
 	}
 	want, err := tbl.deposit(fn.Seat, t.params)
 	t.mu.Unlock()
 	if err != nil {
 		log.Printf("pokerplugin: table %s: %v", d.SID, err)
-		return
+		return nil
 	}
 
 	if err := checkStake(ctx, t.chain, fn.Outpoint, want.PkScriptHex, terms.BuyInAtoms); err != nil {
 		log.Printf("pokerplugin: table %s: seat %d: %v", d.SID, fn.Seat, err)
-		return
+		return nil
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	tbl = t.m[d.SID]
 	if tbl == nil {
-		return
+		return nil
 	}
 	tbl.funded[fn.Seat] = fn.Outpoint
 	t.persist(tbl)
 	log.Printf("pokerplugin: table %s: seat %d is funded at %s (%d of %d seats)",
 		d.SID, fn.Seat, fn.Outpoint, len(tbl.funded), tbl.terms.Seats)
+
+	// The last stake to arrive is what starts the dealing.
+	return tbl.startPlaying()
 }
 
 // handleFund pays this player's own stake into the table's escrow.

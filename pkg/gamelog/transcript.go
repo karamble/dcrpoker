@@ -154,3 +154,24 @@ func parseStreet(s string) (Street, error) {
 	}
 	return 0, fmt.Errorf("unknown street %q", s)
 }
+
+// Transcript renders one entry in the shape a transcript carries, so a message
+// and a stored history agree field for field.
+func (e *Entry) Transcript() TranscriptEntry {
+	return TranscriptEntry{
+		Version:  e.Version,
+		PrevHash: hex.EncodeToString(e.PrevHash[:]),
+		Seq:      e.Seq,
+		Hand:     e.Hand,
+		Street:   e.Street.String(),
+		Seat:     e.Seat,
+		Signer:   hex.EncodeToString(e.Signer),
+		Action:   string(e.Action),
+		Amount:   e.Amount,
+		Sig:      hex.EncodeToString(e.Sig),
+	}
+}
+
+// Entry rebuilds an entry from its transcript form. The signature is not
+// checked here; Chain.Append is where that belongs, because it needs the roster.
+func (te TranscriptEntry) Entry() (*Entry, error) { return te.entry() }
