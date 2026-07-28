@@ -32,7 +32,29 @@ type hub struct {
 	// pays which script. A join whose bond is not in here is a join with no
 	// deposit behind it, which is exactly what must be refused.
 	bonds map[string]string
-	srv   *httptest.Server
+	// muted is peers that have stopped, in both directions. A player who
+	// walks away does not announce it, and the protocol never learns it -
+	// it only ever infers it from an obligation that stands while the chain
+	// moves. So a test cannot ask a peer to stop; it takes it off the wire.
+	muted map[string]bool
+	// inflight counts deliveries that have not finished. A delivery usually
+	// produces a send, which produces more deliveries, so the count only
+	// reaches zero when the table has actually come to rest.
+	inflight sync.WaitGroup
+	srv      *httptest.Server
+}
+
+// silence takes a peer off the wire, the way a machine that was switched off
+// goes off it: no warning, and no way for anybody else to tell that from a
+// network that is merely slow.
+func (h *hub) silence(t *testing.T, token string) {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.peers[token]; !ok {
+		t.Fatalf("no peer %q to silence", token)
+	}
+	h.muted[token] = true
 }
 
 // bond gives a key a deposit and tells the chain about it.
@@ -97,7 +119,11 @@ var testParams = chaincfg.SimNetParams()
 
 func newHub(t *testing.T) *hub {
 	t.Helper()
-	h := &hub{peers: make(map[string]*plugin), bonds: make(map[string]string)}
+	h := &hub{
+		peers: make(map[string]*plugin),
+		bonds: make(map[string]string),
+		muted: make(map[string]bool),
+	}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/gaming/chain/outpoint" {
 			q := r.URL.Query()
@@ -130,9 +156,11 @@ func newHub(t *testing.T) *hub {
 
 		h.mu.Lock()
 		targets := make([]*plugin, 0, len(h.peers))
-		for tok, p := range h.peers {
-			if tok != token {
-				targets = append(targets, p)
+		if !h.muted[token] {
+			for tok, p := range h.peers {
+				if tok != token && !h.muted[tok] {
+					targets = append(targets, p)
+				}
 			}
 		}
 		h.mu.Unlock()
@@ -141,7 +169,11 @@ func newHub(t *testing.T) *hub {
 		// one of its own, and doing that on this call's stack would
 		// make the fan-out reentrant in a way the real host is not.
 		for _, p := range targets {
-			go p.router.HandleGCMessage(req.GCID, token, req.Frame, time.Now())
+			h.inflight.Add(1)
+			go func(p *plugin) {
+				defer h.inflight.Done()
+				p.router.HandleGCMessage(req.GCID, token, req.Frame, time.Now())
+			}(p)
 		}
 	}))
 	t.Cleanup(h.srv.Close)
@@ -151,6 +183,16 @@ func newHub(t *testing.T) *hub {
 func (h *hub) join(t *testing.T, name string) *plugin {
 	t.Helper()
 	dir := t.TempDir()
+	// Take this peer off the wire and let its deliveries finish before the
+	// directory it writes to is removed. Registered after TempDir so it runs
+	// before TempDir's own cleanup: a frame still in flight would otherwise
+	// recreate a file under a directory being deleted.
+	t.Cleanup(func() {
+		h.mu.Lock()
+		h.muted[name] = true
+		h.mu.Unlock()
+		h.inflight.Wait()
+	})
 	id, err := loadIdentity(dir)
 	if err != nil {
 		t.Fatalf("identity: %v", err)

@@ -1,0 +1,602 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/vctt94/pokerbisonrelay/pkg/driver"
+	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
+)
+
+// Two real peers, each holding only its own keys.
+//
+// Every other table in these tests is one peer with a stand-in for the other,
+// which is enough to check what one peer does and no use at all for checking
+// that two agree. A funded, bonded, dealing table needs both halves to be
+// separately convinced by the chain, and the things this file is about - a
+// bond that can be answered, a payout every seat has to name - are exactly
+// the things a test holding both sets of keys would prove by construction.
+
+// dealingTable brings two peers all the way to dealing: settled, seated, both
+// stakes and both bonds on the chain, as each peer checked for itself.
+func dealingTable(t *testing.T, h *hub) (*plugin, *plugin, membership.Terms) {
+	t.Helper()
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+	a, b := h.join(t, "tok-a"), h.join(t, "tok-b")
+
+	acceptInvite(t, a, inv)
+	acceptInvite(t, b, inv)
+	waitFor(t, membership.Settled, a, b)
+
+	// One block, drawn once, given to both. Two peers seating from different
+	// blocks are seating different tables under one match id, so a helper
+	// that let that happen would hide the fault it exists to avoid.
+	beacon := make([]byte, 32)
+	for i := range beacon {
+		beacon[i] = byte(i + 11)
+	}
+	a.tables.seat(terms.SID, beacon)
+	b.tables.seat(terms.SID, beacon)
+
+	for i, p := range []*plugin{a, b} {
+		payStake(t, h, p, terms, fmt.Sprintf("%02x", 0x40+i))
+		payBond(t, h, p, terms, fmt.Sprintf("%02x", 0x60+i))
+	}
+
+	waitDealing(t, terms.SID, a, b)
+	return a, b, terms
+}
+
+// payStake pays one peer's stake and tells the table, the way the funding
+// handler does once a spend has been approved.
+func payStake(t *testing.T, h *hub, p *plugin, terms membership.Terms, nonce string) {
+	t.Helper()
+	tbl := p.tables.m[terms.SID]
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		t.Fatal("no seat")
+	}
+	dep, err := tbl.deposit(seat, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	outpoint := payTo(h, dep.PkScriptHex, nonce)
+
+	out, err := p.recordOwnStake(terms.SID, seat, outpoint)
+	if err != nil {
+		t.Fatalf("record stake: %v", err)
+	}
+	p.publish(context.Background(), out)
+}
+
+// payBond posts one peer's forfeitable bond for the table.
+func payBond(t *testing.T, h *hub, p *plugin, terms membership.Terms, nonce string) {
+	t.Helper()
+	seat, bond, _, err := p.tables.ourBond(terms.SID)
+	if err != nil {
+		t.Fatalf("our bond: %v", err)
+	}
+	outpoint := payTo(h, bond.PkScriptHex, nonce)
+
+	out, err := p.recordOwnBond(terms.SID, seat, outpoint)
+	if err != nil {
+		t.Fatalf("record bond: %v", err)
+	}
+	p.publish(context.Background(), out)
+}
+
+// payTo puts an output on the hub's chain paying a script.
+func payTo(h *hub, pkScriptHex, nonce string) string {
+	outpoint := fmt.Sprintf("%s:0", strings.Repeat(nonce, 32))
+	h.mu.Lock()
+	h.bonds[outpoint] = pkScriptHex
+	h.mu.Unlock()
+	return outpoint
+}
+
+// waitDealing waits until every peer has started dealing, which each one
+// decides for itself once it has seen every stake and every bond.
+func waitDealing(t *testing.T, sid string, peers ...*plugin) {
+	t.Helper()
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		done := true
+		for _, p := range peers {
+			p.tables.mu.Lock()
+			tbl := p.tables.m[sid]
+			if tbl == nil || tbl.play == nil {
+				done = false
+			}
+			p.tables.mu.Unlock()
+		}
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			for i, p := range peers {
+				s := p.tables.snapshots()[0]
+				t.Logf("peer %d: state %s funded %d/%d bonded %d/%d dealing %v",
+					i, s.State, s.Funded, s.Seats, s.Bonded, s.Seats, s.Dealing)
+			}
+			t.Fatal("the table never started dealing")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Every seat gets a hand, not just the one that started first.
+//
+// The regression this pins is a deadlock that happened at every table. Each
+// seat starts dealing when it has seen the last bond confirmed, and each sees
+// that at a different moment; the first to start publishes its card key
+// straight away, to a table where nobody else is dealing. Those frames used to
+// be dropped on the grounds that "the sender repeats them", and nothing
+// repeated them - so the first seat collected everybody's keys and everybody
+// else was missing the first seat's, forever.
+//
+// It is invisible to a test with one real peer, because a stand-in does not
+// start dealing at its own moment. That is the whole reason this file exists.
+func TestEverySeatGetsTheHandAndNotJustTheFirst(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		dealt := 0
+		var phases []string
+		for _, p := range []*plugin{a, b} {
+			code, body := get(t, p, "/table/hand?sid="+terms.SID)
+			if code != http.StatusOK {
+				continue
+			}
+			var v handView
+			if err := json.Unmarshal([]byte(body), &v); err != nil {
+				t.Fatalf("decode hand: %v", err)
+			}
+			phases = append(phases, v.Phase)
+			if v.Hand > 0 {
+				dealt++
+			}
+		}
+		if dealt == 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of 2 seats ever got a hand; phases %v", dealt, phases)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func ledgerOf(t *testing.T, p *plugin, sid string) ledgerView {
+	t.Helper()
+	code, body := get(t, p, "/table/ledger?sid="+sid)
+	if code != http.StatusOK {
+		t.Fatalf("/table/ledger returned %d: %s", code, body)
+	}
+	var v ledgerView
+	if err := json.Unmarshal([]byte(body), &v); err != nil {
+		t.Fatalf("decode ledger: %v", err)
+	}
+	return v
+}
+
+// The money question has an answer long before the cards do.
+//
+// /table/hand refuses a table that is not dealing, and rightly: there is no
+// hand. But there are stakes, a deposit address, a funding deadline and a
+// roster, and somebody who has just paid into one wants to see exactly those.
+// A ledger that also refused would leave the whole funding period blank.
+func TestTheLedgerAnswersBeforeTheTableDeals(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	// The hand is not there, and says so.
+	if code, _ := get(t, p, "/table/hand?sid="+terms.SID); code != http.StatusBadRequest {
+		t.Fatalf("/table/hand returned %d for a table that is not dealing, want 400", code)
+	}
+	// The money is, and answers.
+	v := ledgerOf(t, p, terms.SID)
+	if v.SID != terms.SID {
+		t.Fatalf("ledger is for %q, want %q", v.SID, terms.SID)
+	}
+	if len(v.Roster) != int(terms.Seats) {
+		t.Fatalf("ledger names %d seats, want %d", len(v.Roster), terms.Seats)
+	}
+	if v.Settled != nil {
+		t.Fatal("a table that never dealt reports a settled boundary")
+	}
+}
+
+// Until every seat has said where to pay it, no claim at this table can be
+// built at all - and before this the only sign of that was a claim that never
+// appeared, or a co-signer that refused for reasons only its log recorded.
+func TestTheLedgerNamesTheSeatsHoldingUpEveryClaim(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	v := ledgerOf(t, p, terms.SID)
+	if len(v.PayoutsMissing) != int(terms.Seats) {
+		t.Fatalf("%d seats are missing a payout address, want all %d: %v",
+			len(v.PayoutsMissing), terms.Seats, v.PayoutsMissing)
+	}
+
+	// This player says where to pay it. That settles one seat and not the
+	// other, because a payout is signed by the seat that owns it: nobody can
+	// answer this on a neighbour's behalf.
+	addr := payoutAddress(t, p)
+	if code, body := post(t, p, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
+		t.Fatalf("/payout/set returned %d: %s", code, body)
+	}
+
+	ours, _ := p.tables.m[terms.SID].form.OurSeat()
+	v = ledgerOf(t, p, terms.SID)
+	if len(v.PayoutsMissing) != int(terms.Seats)-1 {
+		t.Fatalf("after one seat answered, %d are still missing, want %d: %v",
+			len(v.PayoutsMissing), terms.Seats-1, v.PayoutsMissing)
+	}
+	for _, seat := range v.PayoutsMissing {
+		if seat == ours {
+			t.Fatal("this seat set a payout address and is still reported as missing one")
+		}
+	}
+	for _, s := range v.Roster {
+		if s.Ours && s.Payout != addr {
+			t.Fatalf("our seat reports payout %q, want %q", s.Payout, addr)
+		}
+	}
+}
+
+// The reading is read back, so a caller can tell "not set" from "set to
+// something I cannot see".
+func TestThePayoutAddressCanBeReadBack(t *testing.T) {
+	h := newHub(t)
+	p := h.join(t, "tok")
+
+	code, body := get(t, p, "/payout")
+	if code != http.StatusOK {
+		t.Fatalf("GET /payout returned %d: %s", code, body)
+	}
+	var before struct {
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal([]byte(body), &before); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if before.Address != "" {
+		t.Fatalf("a fresh player already has a payout address: %q", before.Address)
+	}
+
+	addr := payoutAddress(t, p)
+	if code, body := post(t, p, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
+		t.Fatalf("/payout/set returned %d: %s", code, body)
+	}
+	code, body = get(t, p, "/payout")
+	if code != http.StatusOK {
+		t.Fatalf("GET /payout returned %d: %s", code, body)
+	}
+	var after struct {
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal([]byte(body), &after); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if after.Address != addr {
+		t.Fatalf("read back %q, want %q", after.Address, addr)
+	}
+}
+
+// payoutAddress mints an address on the test network for a player to be paid at.
+func payoutAddress(t *testing.T, p *plugin) string {
+	t.Helper()
+	key, err := p.id.sessionKey("payout-test")
+	if err != nil {
+		t.Fatalf("session key: %v", err)
+	}
+	addr, _, err := escrow.BondAddress(mustBondScript(t, key.PubKey().SerializeCompressed()), testParams)
+	if err != nil {
+		t.Fatalf("address: %v", err)
+	}
+	return addr.String()
+}
+
+func mustBondScript(t *testing.T, pub []byte) []byte {
+	t.Helper()
+	script, err := escrow.BondScript(pub, escrow.MinBondBlocks)
+	if err != nil {
+		t.Fatalf("bond script: %v", err)
+	}
+	return script
+}
+
+// A table that is dealing reports where the money is, and the difference
+// between what is agreed and what is merely current.
+func TestATableThatDealsReportsBothBalances(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	s := a.tables.snapshots()[0]
+	if !s.Dealing {
+		t.Fatal("a dealing table does not say it is dealing")
+	}
+	if s.Bonded != int(terms.Seats) {
+		t.Fatalf("a dealing table reports %d bonds, want %d", s.Bonded, terms.Seats)
+	}
+	if s.Funded != int(terms.Seats) {
+		t.Fatalf("a dealing table reports %d stakes, want %d", s.Funded, terms.Seats)
+	}
+	if len(s.Live) != int(terms.Seats) {
+		t.Fatalf("live stacks name %d seats, want %d", len(s.Live), terms.Seats)
+	}
+	if s.Settled == nil {
+		t.Fatal("a dealing table reports no settled boundary")
+	}
+	// Nothing has been agreed yet, which is not the same as nothing being
+	// there. Hand zero means "this table would pay out its buy-ins".
+	if s.Settled.Hand != 0 {
+		t.Fatalf("a table on its first hand has settled hand %d, want 0", s.Settled.Hand)
+	}
+
+	// Every seat's stake and bond is an outpoint this peer found itself.
+	for _, seat := range s.Roster {
+		if seat.Stake == "" {
+			t.Fatalf("seat %d is dealing with no stake this peer has seen", seat.Seat)
+		}
+		if seat.Bond == "" {
+			t.Fatalf("seat %d is dealing with no bond this peer has seen", seat.Seat)
+		}
+		if seat.Key == "" {
+			t.Fatalf("seat %d has no key", seat.Seat)
+		}
+	}
+}
+
+// The deck's provenance, hand by hand, and only what this process checked.
+func TestTheHandReportsWhoShuffledIt(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	// Shuffling is the first thing a hand does, and it runs in seat order,
+	// so give it a moment to get round the table.
+	var v handView
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		code, body := get(t, a, "/table/hand?sid="+terms.SID)
+		if code == http.StatusOK {
+			if err := json.Unmarshal([]byte(body), &v); err != nil {
+				t.Fatalf("decode hand: %v", err)
+			}
+			if len(v.Shuffles) == int(terms.Seats) {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the hand never reported %d shuffles: %+v", terms.Seats, v.Shuffles)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Our own turn with the deck is reported as ours, never merely as
+	// verified: "we permuted it" is a stronger claim than "we checked their
+	// proof" and the two must not read alike.
+	var ours, verified, awaited int
+	for _, s := range v.Shuffles {
+		switch s.State {
+		case shuffleOurs:
+			ours++
+			if s.Seat != uint32(v.Seat) {
+				t.Fatalf("seat %d's shuffle is reported as ours; we are seat %d", s.Seat, v.Seat)
+			}
+		case shuffleVerified:
+			verified++
+			if s.Seat == uint32(v.Seat) {
+				t.Fatal("our own shuffle is reported as merely verified")
+			}
+		case shuffleAwaited:
+			awaited++
+		default:
+			t.Fatalf("seat %d's shuffle is in unknown state %q", s.Seat, s.State)
+		}
+	}
+	if ours+verified+awaited != int(terms.Seats) {
+		t.Fatalf("shuffles do not account for every seat: %+v", v.Shuffles)
+	}
+}
+
+// The claim machinery reports what it did, rather than only writing it down.
+//
+// A peer that stops answering is claimed against once its obligation has stood
+// long enough. Until now the whole of that - proposing it, co-signing it,
+// sending it - happened inside log.Printf, in a container with no shell.
+func TestAClaimIsReportedAndNotOnlyLogged(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+
+	// Both seats say where to pay them, because a claim pays the seats that
+	// are still there and cannot be built until each has said where.
+	for _, p := range []*plugin{a, b} {
+		addr := payoutAddress(t, p)
+		if code, body := post(t, p, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
+			t.Fatalf("/payout/set returned %d: %s", code, body)
+		}
+	}
+	waitPayouts(t, terms.SID, a, b)
+
+	// One peer stops. Nothing announces that; it is only ever inferred from
+	// an obligation that stands while the chain moves.
+	h.silence(t, "tok-b")
+	_ = b
+
+	// Past the point where standing still stops looking like being slow.
+	deadline := time.Now().Add(30 * time.Second)
+	height := int64(terms.Until) + 2
+	for {
+		height += int64(claimAfter) + 1
+		a.publish(context.Background(), a.tables.tick(height))
+
+		v := ledgerOf(t, a, terms.SID)
+		if len(v.Claims) > 0 && hasEvent(v.Events, eventProposed) {
+			c := v.Claims[0]
+			if c.Says == "" {
+				t.Fatal("a claim is reported with no account of what it is for")
+			}
+			if c.Needs == 0 {
+				t.Fatal("a claim reports needing no signatures")
+			}
+			if c.Bond == "" {
+				t.Fatal("a claim names no bond to take")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			v := ledgerOf(t, a, terms.SID)
+			t.Fatalf("no claim was ever reported; events %+v roster %+v", v.Events, v.Roster)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func hasEvent(events []chainEvent, kind string) bool {
+	for _, e := range events {
+		if e.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// waitPayouts waits until every peer has heard where every seat wants paying.
+func waitPayouts(t *testing.T, sid string, peers ...*plugin) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		done := true
+		for _, p := range peers {
+			if len(ledgerOf(t, p, sid).PayoutsMissing) > 0 {
+				done = false
+			}
+		}
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the seats never agreed where to pay each other")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The JSON key set is pinned here, because a hand-written client reads these
+// names and nothing else would notice one being renamed.
+//
+// Not a schema check. It is a reminder: changing this list is changing a
+// published interface, and the test failing is the point at which somebody
+// decides that on purpose rather than by refactoring.
+func TestSnapshotNamesItsFields(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	// The chain has to have been read at least once, or the height is
+	// genuinely absent rather than merely zero - which is the distinction
+	// the omitted key is there to preserve.
+	a.publish(context.Background(), a.tables.tick(int64(terms.Until)+2))
+
+	blob, err := json.Marshal(a.tables.snapshots()[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	want := []string{
+		"sid", "gcid", "state", "seats", "buyinAtoms", "csvBlocks", "joined",
+		"matchId", "waiting", "funded", "seat", "depositAddr", "stake",
+		"fundingDeadline", "bonded", "dealing", "settled", "live", "height",
+		"payoutSet", "roster",
+	}
+	for _, key := range want {
+		if _, ok := got[key]; !ok {
+			t.Errorf("a dealing table's snapshot no longer carries %q", key)
+		}
+	}
+
+	seat, ok := got["roster"].([]any)
+	if !ok || len(seat) == 0 {
+		t.Fatal("a dealing table's snapshot has no roster")
+	}
+	first, _ := seat[0].(map[string]any)
+	for _, key := range []string{"seat", "key", "stake", "bond"} {
+		if _, ok := first[key]; !ok {
+			t.Errorf("a seat no longer carries %q", key)
+		}
+	}
+}
+
+// A block number on its own is not information. A funding deadline of 1101193
+// says nothing to somebody who cannot see how far away it is, and until the
+// height was carried alongside it there was nothing to measure it against.
+func TestTheHeightIsCarriedBesideTheDeadline(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	height := int64(terms.Until) + 2
+	p.publish(context.Background(), p.tables.tick(height))
+
+	s := p.tables.snapshots()[0]
+	if s.Height != height {
+		t.Fatalf("the table reports height %d, want %d", s.Height, height)
+	}
+	if s.FundingDeadline == 0 {
+		t.Fatal("a seated table has no funding deadline to measure")
+	}
+	if ledgerOf(t, p, terms.SID).Height != height {
+		t.Fatal("the ledger and the snapshot disagree about where the chain is")
+	}
+}
+
+// A refusal to co-sign is somebody else's claim being turned down, and the
+// player on either end of it should be able to see that happened.
+func TestARefusalToCoSignIsReported(t *testing.T) {
+	h := newHub(t)
+	p, _, terms := dealingTable(t, h)
+
+	tbl := p.tables.m[terms.SID]
+	// A claim naming a duty this peer's log knows nothing about. It is
+	// refused, and the refusal is the thing being tested: it used to be
+	// invisible from outside the process.
+	p.tables.mu.Lock()
+	tbl.acceptClaim(schema.Claim{
+		Seat:         theirSeat(t, tbl),
+		Duty:         dutyAgainst(t, tbl),
+		BondOutpoint: strings.Repeat("ab", 32) + ":0",
+		BondScript:   strings.Repeat("00", 32),
+		Tx:           strings.Repeat("00", 32),
+	}, testParams)
+	p.tables.mu.Unlock()
+
+	v := ledgerOf(t, p, terms.SID)
+	if !hasEvent(v.Events, eventRefused) {
+		t.Fatalf("a refused claim left no account of itself: %+v", v.Events)
+	}
+}
+
+func dutyAgainst(t *testing.T, tbl *table) driver.Duty {
+	t.Helper()
+	return driver.Duty{Seat: int(theirSeat(t, tbl)), Kind: driver.DutyAction, Hand: 1, At: 9}
+}
