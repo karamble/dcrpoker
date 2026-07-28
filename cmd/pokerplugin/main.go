@@ -388,9 +388,12 @@ func (p *plugin) handleLeave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Leaving stops admitting frames for the session, so this is also how
-	// a table stops costing anything.
-	writeJSON(w, map[string]any{"left": p.tables.leave(strings.TrimSpace(req.SID))})
+	// A table that is dealing settles at its next boundary rather than being
+	// dropped: leaving has to be something other than walking out, or the
+	// only exit is the one a bond claim answers.
+	out, left := p.tables.leave(strings.TrimSpace(req.SID))
+	p.publish(r.Context(), out)
+	writeJSON(w, map[string]any{"left": left})
 }
 
 func (p *plugin) handleTables(w http.ResponseWriter, r *http.Request) {

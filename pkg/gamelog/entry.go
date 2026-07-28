@@ -35,7 +35,9 @@ import (
 
 // Version is the entry format version. It is covered by the signature, so a
 // verifier can never be talked into reading one version's bytes as another's.
-const Version uint16 = 1
+//
+// Two since entries began carrying the block height their author saw.
+const Version uint16 = 2
 
 const (
 	// PubKeyLen is the length of a compressed secp256k1 public key.
@@ -126,7 +128,23 @@ type Entry struct {
 	Signer   []byte // 33-byte compressed session pubkey
 	Action   Action
 	Amount   int64
-	Sig      []byte // 64-byte Schnorr signature over Hash
+	// Height is the block height this entry's author saw when it acted.
+	//
+	// Recorded, not enforced, and the difference matters. A verifier can
+	// check that heights do not go backwards along the chain and nothing
+	// else: a peer that is genuinely behind and one that is lying about
+	// being behind look identical, and there is no construction that
+	// separates them. What it buys is a record of tempo - how long a table
+	// took over a hand, and which seat it waited on - which is what
+	// reputation needs and what a claim needs to judge how long an
+	// obligation has stood.
+	//
+	// It is emphatically not a turn timer. Blocks average five minutes and
+	// arrive in a Poisson process, so nothing derived from them is fast
+	// enough for poker, and money moving on a clock is money moving on one
+	// machine's opinion.
+	Height uint32
+	Sig    []byte // 64-byte Schnorr signature over Hash
 }
 
 // SigningBytes is the canonical encoding an entry's signature covers.
@@ -153,6 +171,7 @@ func (e *Entry) SigningBytes() ([]byte, error) {
 	b.WriteByte(byte(len(e.Action)))
 	b.WriteString(string(e.Action))
 	_ = binary.Write(&b, binary.BigEndian, e.Amount)
+	_ = binary.Write(&b, binary.BigEndian, e.Height)
 	return b.Bytes(), nil
 }
 

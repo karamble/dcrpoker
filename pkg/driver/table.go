@@ -66,6 +66,16 @@ type Table struct {
 	last      uint64
 	lastStack []int64
 
+	// leaving is the seats that have said they are getting up. A seat on its
+	// way out folds when its turn comes and the table dissolves at the next
+	// boundary.
+	leaving map[int]bool
+	// height is the last block height this peer was told about, stamped onto
+	// the entries it signs. Told rather than read: the sandbox has no node,
+	// and a height taken from a local clock would be one each machine read
+	// differently.
+	height uint32
+
 	over bool
 }
 
@@ -114,6 +124,7 @@ func NewTable(cfg TableConfig) (*Table, error) {
 		// be true. It is the checkpoint an abort settles on.
 		last:      0,
 		lastStack: append([]int64(nil), cfg.Stakes...),
+		leaving:   map[int]bool{},
 	}
 	return t, nil
 }
@@ -164,6 +175,26 @@ type OutCheckpoint struct{ Checkpoint *gamelog.Checkpoint }
 // InCheckpoint is another seat's.
 type InCheckpoint struct{ Checkpoint *gamelog.Checkpoint }
 
+// OutLeaving says this seat is getting up.
+//
+// Leaving used to be indistinguishable from walking out, which is what made a
+// staller's opponent unable to escape: stopping was the only exit and stopping
+// is what a bond claim is for. Saying so turns it into an ordinary thing a
+// player may do.
+type OutLeaving struct {
+	Seat int
+	Hand uint64
+}
+
+// InLeaving is another seat saying the same.
+type InLeaving struct {
+	Seat int
+	Hand uint64
+}
+
+func (OutLeaving) out() {}
+func (InLeaving) in()   {}
+
 func (OutCardKey) out()    {}
 func (OutCheckpoint) out() {}
 func (InCardKey) in()      {}
@@ -203,6 +234,8 @@ func (t *Table) Handle(in In) ([]Out, error) {
 		return t.onCardKey(m)
 	case InCheckpoint:
 		return t.onCheckpoint(m)
+	case InLeaving:
+		return t.onLeaving(m)
 	}
 	if t.hands == nil {
 		// Between hands, and this belongs to one. Almost always the tail of
@@ -217,7 +250,12 @@ func (t *Table) Handle(in In) ([]Out, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(out, done...), nil
+	out = append(out, done...)
+	folded, err := t.autoFold()
+	if err != nil {
+		return nil, err
+	}
+	return append(out, folded...), nil
 }
 
 func (t *Table) onCardKey(m InCardKey) ([]Out, error) {
@@ -276,12 +314,80 @@ func (t *Table) deal() ([]Out, error) {
 	return d.Start()
 }
 
+// Leave gets this player up from the table.
+//
+// Two rules, and they are the ones a live game already uses. Between hands it is
+// free: the boundary is signed, the table settles there and every bond releases.
+// Mid-hand it is a fold - the commitment already in the pot stays there, which
+// is what stops leaving being a way to un-bet a hand that is going badly.
+//
+// The fold happens now if it is this seat's turn and when its turn comes if not.
+// That is the only automatic fold anywhere in this design, and it is one the
+// player asked for: nothing here folds anybody on a timer, because a timer is
+// one machine's opinion and this one would be moving money.
+func (t *Table) Leave() ([]Out, error) {
+	if t.over {
+		return nil, nil
+	}
+	if t.leaving[t.cfg.Seat] {
+		return nil, nil
+	}
+	t.leaving[t.cfg.Seat] = true
+
+	out := []Out{OutLeaving{Seat: t.cfg.Seat, Hand: t.hand}}
+	folded, err := t.autoFold()
+	if err != nil {
+		return nil, err
+	}
+	return append(out, folded...), nil
+}
+
+// Leaving reports whether a seat has said it is getting up.
+func (t *Table) Leaving(seat int) bool { return t.leaving[seat] }
+
+func (t *Table) onLeaving(m InLeaving) ([]Out, error) {
+	if m.Seat < 0 || m.Seat >= t.seats {
+		return nil, fmt.Errorf("seat %d is not at this table", m.Seat)
+	}
+	if m.Seat == t.cfg.Seat {
+		return nil, fmt.Errorf("this peer's own leaving came back to it")
+	}
+	t.leaving[m.Seat] = true
+	// Nothing else happens now. The seat folds its own hand when its turn
+	// comes, and the table dissolves at the boundary - dissolving mid-hand
+	// would hand whoever was losing a way out of the pot.
+	return nil, nil
+}
+
+// autoFold folds this seat's hand if it is leaving and it is its turn.
+func (t *Table) autoFold() ([]Out, error) {
+	if !t.leaving[t.cfg.Seat] || t.hands == nil {
+		return nil, nil
+	}
+	if t.hands.Phase() != PhaseBetting || t.hands.State().ToAct != t.cfg.Seat {
+		return nil, nil
+	}
+	return t.Act(gamelog.ActionFold, 0)
+}
+
+// AtHeight tells this table where the chain is.
+//
+// Stamped onto the entries this peer signs from here on. It never goes
+// backwards, because a height that regressed would produce entries the chain
+// refuses - and being told an older height is a host problem, not a reason to
+// sign something nobody will accept.
+func (t *Table) AtHeight(height uint32) {
+	if height > t.height {
+		t.height = height
+	}
+}
+
 // Act takes this peer's decision in the hand in progress.
 func (t *Table) Act(action gamelog.Action, amount int64) ([]Out, error) {
 	if t.hands == nil {
 		return nil, fmt.Errorf("no hand is in progress")
 	}
-	out, err := t.hands.Act(action, amount)
+	out, err := t.hands.Act(action, amount, t.height)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +525,12 @@ func (t *Table) maybeAdvance(hand uint64) ([]Out, error) {
 			live++
 		}
 	}
-	if live <= 1 {
+	if live <= 1 || len(t.leaving) > 0 {
+		// Somebody is getting up, so the table ends here rather than
+		// dealing on short-handed. Continuing without them would mean
+		// re-forming the escrow, the bond and the roster, all of which
+		// name the full membership - a new table with carried-over
+		// stacks, not this one with a gap in it.
 		t.over = true
 		t.hands = nil
 		return nil, nil

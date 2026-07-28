@@ -163,3 +163,103 @@ func TestACheckpointAndAnEntryAtTheSameNumberLeakNothing(t *testing.T) {
 		t.Fatal("signing an entry and a checkpoint at one number exposed the key")
 	}
 }
+
+// Heights record when a table did things. The only thing about a self-reported
+// height that can be checked is that it does not go backwards - a peer that is
+// genuinely behind and one lying about it are indistinguishable - so that is
+// what is checked, and nothing is claimed beyond it.
+func TestHeightsDoNotGoBackwards(t *testing.T) {
+	privs, roster := testSeats(t, 2)
+	c, err := NewChain(testMatch, roster)
+	if err != nil {
+		t.Fatalf("new chain: %v", err)
+	}
+
+	at := func(seat uint32, height uint32) *Entry {
+		t.Helper()
+		e := c.Next(seat, 1, StreetPreFlop, ActionCheck, 0)
+		e.Height = height
+		if err := e.Sign(privs[seat]); err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		return e
+	}
+
+	if err := c.Append(at(0, 1_100_000)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// Standing still is ordinary - several actions inside one block is the
+	// normal case, not a fault.
+	if err := c.Append(at(1, 1_100_000)); err != nil {
+		t.Fatalf("two entries in one block were refused: %v", err)
+	}
+	if err := c.Append(at(0, 1_100_003)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// Going backwards is not.
+	if err := c.Append(at(1, 1_100_002)); err == nil {
+		t.Fatal("an entry claiming an earlier height than the one before it was accepted")
+	}
+}
+
+// The height is covered by the signature, so it cannot be adjusted in flight to
+// make a table look faster or slower than it was.
+func TestAHeightCannotBeChangedInFlight(t *testing.T) {
+	privs, roster := testSeats(t, 2)
+	c, err := NewChain(testMatch, roster)
+	if err != nil {
+		t.Fatalf("new chain: %v", err)
+	}
+	e := c.Next(0, 1, StreetPreFlop, ActionCheck, 0)
+	e.Height = 1_100_000
+	if err := e.Sign(privs[0]); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if err := e.Verify(); err != nil {
+		t.Fatalf("an honest entry did not verify: %v", err)
+	}
+	e.Height = 1_100_500
+	if err := e.Verify(); err == nil {
+		t.Fatal("an entry with its height altered still verified")
+	}
+}
+
+// And carrying a height must not weaken the signing itself: a seat playing a
+// whole hand at rising heights still leaks nothing.
+func TestHeightsDoNotLeakTheKey(t *testing.T) {
+	privs, roster := testSeats(t, 2)
+	c, err := NewChain(testMatch, roster)
+	if err != nil {
+		t.Fatalf("new chain: %v", err)
+	}
+	type sig struct{ hash, sig []byte }
+	var seen []sig
+
+	for i := range 12 {
+		seat := uint32(i % 2)
+		e := c.Next(seat, 1, StreetPreFlop, ActionCheck, 0)
+		e.Height = uint32(1_100_000 + i)
+		if err := e.Sign(privs[seat]); err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		if err := c.Append(e); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+		if seat != 0 {
+			continue
+		}
+		h, err := e.Hash()
+		if err != nil {
+			t.Fatalf("hash: %v", err)
+		}
+		for _, s := range seen {
+			if string(s.sig[:32]) == string(e.Sig[:32]) {
+				t.Fatal("a hand played at rising heights reused a nonce")
+			}
+			if _, err := forfeit.Recover(privs[0].Public(), s.hash, s.sig, h[:], e.Sig); err == nil {
+				t.Fatal("a hand played at rising heights exposed the key")
+			}
+		}
+		seen = append(seen, sig{hash: h[:], sig: e.Sig})
+	}
+}

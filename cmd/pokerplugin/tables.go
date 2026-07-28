@@ -381,14 +381,36 @@ func (tbl *table) resume(rec *record) error {
 }
 
 // leave forgets a table, which also stops admitting frames for it.
-func (t *tables) leave(sid string) bool {
+// leave gets this player up from a table.
+//
+// It used to delete the table from a map and say nothing, which meant the only
+// way out of a table was the one that looks exactly like walking out on it - and
+// walking out is what a bond claim is for. A player who simply wanted to stop
+// had no move that was not also the thing they could be punished for.
+//
+// So a table that is dealing is told, and settles at its next boundary: the seat
+// folds the hand it is in and the table ends there. One that never got as far as
+// dealing is dropped as before, because there is nothing to settle and nobody
+// waiting on it.
+func (t *tables) leave(sid string) ([]outgoing, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.m[sid]; !ok {
-		return false
+
+	tbl, ok := t.m[sid]
+	if !ok {
+		return nil, false
 	}
-	delete(t.m, sid)
-	return true
+	if tbl.play == nil || tbl.play.Over() {
+		delete(t.m, sid)
+		return nil, true
+	}
+	out, err := tbl.play.Leave()
+	if err != nil {
+		log.Printf("pokerplugin: table %s: %v", sid, err)
+		delete(t.m, sid)
+		return nil, true
+	}
+	return tbl.publish(out), true
 }
 
 // tick tells every table where the chain is, which is how a deadline passes.
@@ -401,6 +423,11 @@ func (t *tables) tick(height int64) []outgoing {
 
 	var out []outgoing
 	for _, tbl := range t.m {
+		if tbl.play != nil && height > 0 {
+			// The entries this peer signs are stamped with where the chain
+			// is, and the host is the only thing here that knows.
+			tbl.play.AtHeight(uint32(height))
+		}
 		before, beforeJoins := tbl.form.State(), len(tbl.form.Joins())
 		if tbl.deadlinePassed(height) {
 			out = append(out, tbl.advance(before, beforeJoins)...)
@@ -727,7 +754,8 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 		}
 		return nil, tbl.watch.Apply(msg)
 
-	case schema.KindCardKey, schema.KindShuffle, schema.KindShare, schema.KindCheckpoint:
+	case schema.KindCardKey, schema.KindShuffle, schema.KindShare, schema.KindCheckpoint,
+		schema.KindLeaving:
 		return tbl.deal(msg), nil
 
 	default:

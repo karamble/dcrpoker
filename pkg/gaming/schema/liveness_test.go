@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/driver"
 	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
 )
@@ -105,6 +106,7 @@ func TestATamperedCheckpointIsRejected(t *testing.T) {
 func TestAClaimIsCheckedForShapeOnly(t *testing.T) {
 	good := Claim{
 		Seat:         1,
+		Duty:         driver.Duty{Seat: 1, Kind: driver.DutyAction, Hand: 3, At: 9},
 		BondOutpoint: "beef:0",
 		BondScript:   hex.EncodeToString([]byte{0x51}),
 		Tx:           hex.EncodeToString([]byte{0x01, 0x02}),
@@ -122,6 +124,10 @@ func TestAClaimIsCheckedForShapeOnly(t *testing.T) {
 		{"no transaction", func(c *Claim) { c.Tx = "" }},
 		{"a signature with no signer", func(c *Claim) { c.Sig = "aa" }},
 		{"a signer with no signature", func(c *Claim) { c.Signer = "aa" }},
+		// A claim that names no obligation is the one that could be opened
+		// against anybody, which is what the whole design turns on.
+		{"no obligation", func(c *Claim) { c.Duty = driver.Duty{} }},
+		{"an obligation of another seat", func(c *Claim) { c.Duty.Seat = 2 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := good

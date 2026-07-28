@@ -347,7 +347,7 @@ func TestOnlyJoinedSessionsAreAdmitted(t *testing.T) {
 	}
 
 	// Leaving revokes it, so a table stops costing anything.
-	if !p.tables.leave("0123456789abcdef") {
+	if _, left := p.tables.leave("0123456789abcdef"); !left {
 		t.Fatal("leaving a joined table reported nothing to leave")
 	}
 	if p.tables.authorized("0123456789abcdef", "somebody") {

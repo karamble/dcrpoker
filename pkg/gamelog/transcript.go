@@ -39,13 +39,14 @@ type TranscriptEntry struct {
 	Signer   string `json:"signer"`
 	Action   string `json:"action"`
 	Amount   int64  `json:"amount"`
+	Height   uint32 `json:"height"`
 	Sig      string `json:"sig"`
 }
 
 // Marshal renders the chain as a transcript.
 func (c *Chain) Marshal() ([]byte, error) {
 	t := Transcript{
-		Version: 1,
+		Version: 2,
 		MatchID: c.matchID,
 		Roster:  make(map[uint32]string, len(c.roster)),
 		Entries: make([]TranscriptEntry, 0, len(c.entries)),
@@ -64,6 +65,7 @@ func (c *Chain) Marshal() ([]byte, error) {
 			Signer:   hex.EncodeToString(e.Signer),
 			Action:   string(e.Action),
 			Amount:   e.Amount,
+			Height:   e.Height,
 			Sig:      hex.EncodeToString(e.Sig),
 		})
 	}
@@ -77,8 +79,8 @@ func Unmarshal(blob []byte) (*Chain, error) {
 	if err := json.Unmarshal(blob, &t); err != nil {
 		return nil, fmt.Errorf("decode transcript: %w", err)
 	}
-	if t.Version != 1 {
-		return nil, fmt.Errorf("transcript version %d, want 1", t.Version)
+	if t.Version != 2 {
+		return nil, fmt.Errorf("transcript version %d, want 2", t.Version)
 	}
 
 	roster := make(Roster, len(t.Roster))
@@ -135,6 +137,7 @@ func (te TranscriptEntry) entry() (*Entry, error) {
 		Signer:  signer,
 		Action:  Action(te.Action),
 		Amount:  te.Amount,
+		Height:  te.Height,
 		Sig:     sig,
 	}
 	copy(e.PrevHash[:], prev)
@@ -168,6 +171,7 @@ func (e *Entry) Transcript() TranscriptEntry {
 		Signer:   hex.EncodeToString(e.Signer),
 		Action:   string(e.Action),
 		Amount:   e.Amount,
+		Height:   e.Height,
 		Sig:      hex.EncodeToString(e.Sig),
 	}
 }

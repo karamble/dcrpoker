@@ -83,6 +83,8 @@ func tableInbound(o Out) In {
 		return InCardKey{Seat: m.Seat, Hand: m.Hand, Key: m.Key}
 	case OutCheckpoint:
 		return InCheckpoint{Checkpoint: m.Checkpoint}
+	case OutLeaving:
+		return InLeaving{Seat: m.Seat, Hand: m.Hand}
 	}
 	return inbound(o)
 }

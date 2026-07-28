@@ -13,6 +13,10 @@ import (
 
 const testMatch = "9bbccbcc99e2421852775868835efd6926eab532fb3286f1051f79f7572bb9b9"
 
+// testHeight is the block height the per-hand tests stamp on entries. A
+// constant, because these are about the hand and not about tempo.
+const testHeight uint32 = 1_100_000
+
 // A table of drivers, wired to each other in memory. No server, no network, no
 // clock - every peer is fed exactly what the others sent and nothing else.
 type net struct {
@@ -132,7 +136,7 @@ func (n *net) act(a gamelog.Action, amount int64) {
 	if turn < 0 {
 		n.t.Fatalf("nobody is to act")
 	}
-	out, err := n.peers[turn].Act(a, amount)
+	out, err := n.peers[turn].Act(a, amount, testHeight)
 	if err != nil {
 		n.t.Fatalf("seat %d could not %s: %v", turn, a, err)
 	}
@@ -350,14 +354,14 @@ func TestActingOutOfTurnIsRefusedBeforeSigning(t *testing.T) {
 
 	turn := n.peers[0].State().ToAct
 	other := 1 - turn
-	if _, err := n.peers[other].Act(gamelog.ActionCall, 0); err == nil {
+	if _, err := n.peers[other].Act(gamelog.ActionCall, 0, testHeight); err == nil {
 		t.Fatal("a peer acted out of turn")
 	}
 	// And an illegal action from the seat whose turn it is.
-	if _, err := n.peers[turn].Act(gamelog.ActionCheck, 0); err == nil {
+	if _, err := n.peers[turn].Act(gamelog.ActionCheck, 0, testHeight); err == nil {
 		t.Fatal("a peer checked with a bet to call")
 	}
-	if _, err := n.peers[turn].Act(gamelog.ActionRaise, 25); err == nil {
+	if _, err := n.peers[turn].Act(gamelog.ActionRaise, 25, testHeight); err == nil {
 		t.Fatal("a peer raised under the minimum")
 	}
 	// The log must be untouched by any of that.
@@ -426,7 +430,7 @@ func TestSharesThatArriveEarlyAreNotLost(t *testing.T) {
 
 	act := func(a gamelog.Action, amount int64) {
 		turn := n.peers[0].State().ToAct
-		out, err := n.peers[turn].Act(a, amount)
+		out, err := n.peers[turn].Act(a, amount, testHeight)
 		if err != nil {
 			t.Fatalf("seat %d could not %s: %v", turn, a, err)
 		}

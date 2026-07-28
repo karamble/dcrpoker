@@ -112,6 +112,13 @@ func (c *Chain) Append(e *Entry) error {
 	if e.PrevHash != c.head {
 		return fmt.Errorf("entry does not chain to the current head")
 	}
+	// Heights may stand still - several actions inside one block is the
+	// normal case - but they may not go backwards, which is the only thing
+	// about a self-reported height that can be checked at all.
+	if n := len(c.entries); n > 0 && e.Height < c.entries[n-1].Height {
+		return fmt.Errorf("entry is at height %d, behind the %d the entry before it recorded",
+			e.Height, c.entries[n-1].Height)
+	}
 	if err := e.Verify(); err != nil {
 		return err
 	}

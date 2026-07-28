@@ -132,6 +132,15 @@ type Driver struct {
 	// This channel loses messages and reorders them; a driver that assumed
 	// otherwise would work in a test and hang at a table.
 	held map[int][]heldShare
+	// seen records which seats have published a share for which slot,
+	// whether or not this peer is collecting that slot.
+	//
+	// Tracked for slots this peer will never open, which is the point: a seat
+	// that has not published its share for somebody else's hole card owes one,
+	// and knowing that is what lets a claim name an obligation rather than a
+	// person. Without it a peer could only say "you are gone", which is the
+	// accusation nobody can check.
+	seen map[int]map[int]bool
 }
 
 type heldShare struct {
@@ -199,6 +208,7 @@ func New(cfg Config) (*Driver, error) {
 		cards:    map[int]deck.Card{},
 		shared:   map[int]bool{},
 		held:     map[int][]heldShare{},
+		seen:     map[int]map[int]bool{},
 	}, nil
 }
 
@@ -458,6 +468,8 @@ func (d *Driver) onShare(m InShare) ([]Out, error) {
 	if m.Seat == d.cfg.Seat {
 		return nil, fmt.Errorf("this peer's own share came back to it")
 	}
+	d.note(m.Slot, m.Seat)
+
 	o, ok := d.openings[m.Slot]
 	if !ok {
 		// Not opening this slot yet. That is usually somebody else's hole
@@ -480,6 +492,23 @@ func (d *Driver) onShare(m InShare) ([]Out, error) {
 	return nil, d.tryOpen(m.Slot)
 }
 
+// note records that a seat has published its share for a slot.
+func (d *Driver) note(slot, seat int) {
+	if d.seen[slot] == nil {
+		d.seen[slot] = map[int]bool{}
+	}
+	d.seen[slot][seat] = true
+}
+
+// shared reports whether a seat has published its share for a slot. This peer's
+// own shares count as published the moment it sends them.
+func (d *Driver) sharedBy(slot, seat int) bool {
+	if seat == d.cfg.Seat {
+		return d.shared[slot]
+	}
+	return d.seen[slot][seat]
+}
+
 func (d *Driver) onAction(m InAction) ([]Out, error) {
 	if d.phase != PhaseBetting {
 		return nil, fmt.Errorf("an action arrived while %s", d.phase)
@@ -495,7 +524,7 @@ func (d *Driver) onAction(m InAction) ([]Out, error) {
 // The rules are checked before anything is signed, so a peer cannot put its
 // name to a move the table would refuse - and because the same check runs on
 // arrival everywhere, an entry that survives here survives at every seat.
-func (d *Driver) Act(action gamelog.Action, amount int64) ([]Out, error) {
+func (d *Driver) Act(action gamelog.Action, amount int64, height uint32) ([]Out, error) {
 	if d.phase != PhaseBetting {
 		return nil, fmt.Errorf("cannot act while %s", d.phase)
 	}
@@ -503,6 +532,7 @@ func (d *Driver) Act(action gamelog.Action, amount int64) ([]Out, error) {
 		return nil, fmt.Errorf("it is seat %d's turn, not this peer's", d.state.ToAct)
 	}
 	e := d.cfg.Chain.Next(uint32(d.cfg.Seat), d.cfg.Hand, d.state.Street, action, amount)
+	e.Height = height
 	if _, err := replay.Apply(d.state, e); err != nil {
 		return nil, err
 	}

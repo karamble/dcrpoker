@@ -101,6 +101,14 @@ const (
 	KindShuffle Kind = "shuffle"
 	KindShare   Kind = "share"
 
+	// KindLeaving is a seat saying it is getting up.
+	//
+	// Not the same as going quiet, which is the whole reason it exists: a
+	// player who says so folds the hand they are in and the table settles at
+	// its next boundary, where one who simply stops is answered by a claim
+	// on their bond.
+	KindLeaving Kind = "leaving"
+
 	// KindClaim proposes taking an absent player's bond, for the other
 	// seats to co-sign.
 	//
