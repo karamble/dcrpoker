@@ -29,8 +29,36 @@ import (
 // are wrong* - the audit recomputes rather than verifies, so it shares no code
 // path and no assumption with the thing it is checking.
 //
-// What it does not do is decide anything. Detection is here; the punishment
-// that makes detection matter is the forfeitable bond, which is still unbuilt.
+// # Read the paragraphs above as a design, not as a description
+//
+// They are written in the present tense and nothing calls any of this. Audit has
+// no caller outside this package, the ShuffleSecret is discarded at the only
+// deck.Shuffle call site, and there is no message kind to publish secrets in - so
+// a hand does *not* currently end this way. This is a tested library with no
+// producer and no transport, which is a more flattering position than it sounds:
+// the hard part is decided below, not here.
+//
+// Two things have to be settled before it is wired, and the first is the reason
+// it should not simply be switched on:
+//
+// Publishing shuffle secrets publishes the muck, permanently. Fresh masks with
+// zero randomness so that every peer agrees the starting deck, which makes the
+// card at each initial slot public - so composing the published permutations maps
+// public starting cards to final slots whether or not the card keys are given
+// away too. Revealing every hand therefore makes every folded hand public
+// forever, and folding ranges exact for anybody who keeps their log. Real poker
+// never shows the muck, and that is not a detail of etiquette: it is most of what
+// makes the game the game.
+//
+// So the shape to build is audit *on challenge*. Honest play reveals nothing; any
+// player may challenge a hand inside the dispute window; refusing to reveal then
+// is a forfeit. Detection becomes deterrence, which the bonds already make sound,
+// and it fixes the second problem at the same time - a player who has already
+// been paid has no reason to publish secrets unless declining costs them.
+//
+// What this file does not do is decide anything. Detection is here; the
+// punishment that makes detection matter is the forfeitable bond,
+// escrow.TableBondScript.
 
 // Step is one shuffle as the log recorded it.
 type Step struct {
