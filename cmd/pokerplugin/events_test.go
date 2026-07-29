@@ -236,25 +236,33 @@ func settled(t *testing.T, p *plugin) (<-chan sse, func()) {
 // quiet for a moment during them is not a table that has stopped. It stops when
 // it is waiting for a person, and a person is what this test is standing in
 // for.
-func waitBetting(t *testing.T, p *plugin) {
+// It keeps the chain moving while it waits, and that is not a detail. Every
+// repair in this protocol is gated to once a block, so a helper that stops
+// ticking and then waits on the wall has stopped paying for the repair it is
+// waiting for: if anything was lost on the way into this hand, nothing will fix
+// it and the wait can only expire. That is what it did, and it read for weeks as
+// a flaky test that moved between tests.
+//
+// Every peer that could owe something has to be ticked, not only the one being
+// watched, because the frame this seat is missing is one another seat has to say
+// again.
+func waitBetting(t *testing.T, peers ...*plugin) {
 	t.Helper()
 	deadline := time.Now().Add(45 * time.Second)
 	for {
-		var reached bool
-		for _, s := range p.tables.snapshots() {
-			if !s.Dealing {
-				continue
-			}
-			if v, err := p.tables.HandView(s.SID); err == nil && v.Phase == "betting" && v.ToAct >= 0 {
-				reached = true
+		ready := true
+		for _, p := range peers {
+			if !atSomebodysTurn(p) {
+				ready = false
 			}
 		}
-		if reached {
+		if ready {
 			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the hand never reached anybody's turn")
 		}
+		tickAll(peers...)
 		time.Sleep(20 * time.Millisecond)
 	}
 }

@@ -17,8 +17,7 @@ import (
 func TestAHandIsPlayedToShowdown(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	before := agreeOnTheMoney(t, terms.SID, a, b)
 	playHand(t, h, terms.SID, checkOrCall, a, b)
@@ -43,8 +42,7 @@ func TestAHandIsPlayedToShowdown(t *testing.T) {
 func TestSeveralHandsKeepTheChipsAndMoveTheButton(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	start := total(agreeOnTheMoney(t, terms.SID, a, b))
 	var buttons []int
@@ -61,8 +59,7 @@ func TestSeveralHandsKeepTheChipsAndMoveTheButton(t *testing.T) {
 		if over(t, a, terms.SID) {
 			break
 		}
-		waitBetting(t, a)
-		waitBetting(t, b)
+		waitBetting(t, a, b)
 	}
 	if len(buttons) < 2 {
 		t.Fatalf("only %d hands were played", len(buttons))
@@ -79,8 +76,7 @@ func TestSeveralHandsKeepTheChipsAndMoveTheButton(t *testing.T) {
 func TestAFoldedHandEndsAndOpensNoCard(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	playHand(t, h, terms.SID, foldAt("preflop"), a, b)
 	waitSettled(t, terms.SID, 1, a, b)
@@ -155,8 +151,7 @@ func TestAHandSurvivesALostFrameOfEveryKind(t *testing.T) {
 func TestATableThatEndsPaysTheWinner(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	addrs := sayWhereToPay(t, h, a, b)
 	playHand(t, h, terms.SID, checkOrCall, a, b)
@@ -226,8 +221,7 @@ func TestATableThatEndsPaysTheWinner(t *testing.T) {
 func TestTheTableCannotBePaidOutTwice(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	sayWhereToPay(t, h, a, b)
 	playHand(t, h, terms.SID, checkOrCall, a, b)

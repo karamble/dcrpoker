@@ -434,6 +434,15 @@ func TestAClaimIsReportedAndNotOnlyLogged(t *testing.T) {
 	}
 	waitPayouts(t, terms.SID, a, b)
 
+	// Wait until this seat owes nothing before taking the other off the wire.
+	//
+	// Otherwise the hand can be at a point where *we* are the one holding it
+	// up, and a peer that owes something is not entitled to accuse anybody -
+	// so no claim is proposed and the test blames the claim machinery for its
+	// own timing. The whole scenario is "we have done everything and the other
+	// seat has not", and it has to be arranged rather than hoped for.
+	waitOwesNothing(t, h, terms.SID, a, b)
+
 	// One peer stops. Nothing announces that; it is only ever inferred from
 	// an obligation that stands while the chain moves.
 	h.silence(t, "tok-b")
@@ -805,8 +814,7 @@ func TestABetReachesTheOtherSeat(t *testing.T) {
 
 	// Dealing is not yet betting: the deck has to be shuffled and the hole
 	// cards handed out before anybody can act.
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	actor, waiter := a, b
 	if !toActIsOurs(t, a, terms.SID) {
@@ -862,4 +870,39 @@ func logLen(t *testing.T, p *plugin, sid string) uint64 {
 	}
 	_, seq := tbl.play.Chain().Head()
 	return seq
+}
+
+// waitOwesNothing waits until this peer's own seat is not what the table is
+// waiting on.
+//
+// The distinction a claim turns on. A seat that owes something is the reason the
+// hand is not moving, and it cannot accuse anybody of stopping while it is
+// itself the one stopped - so a test that wants to watch a claim has to reach
+// that state first rather than assume it.
+func waitOwesNothing(t *testing.T, h *hub, sid string, p *plugin, peers ...*plugin) {
+	t.Helper()
+	all := append([]*plugin{p}, peers...)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		clear := true
+		for _, s := range p.tables.snapshots() {
+			if s.SID != sid {
+				continue
+			}
+			for _, seat := range s.Roster {
+				if seat.Ours && seat.Owes != nil {
+					clear = false
+				}
+			}
+		}
+		if clear {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("this seat never finished what the hand asked of it")
+		}
+		tickAll(all...)
+		h.inflight.Wait()
+		time.Sleep(10 * time.Millisecond)
+	}
 }

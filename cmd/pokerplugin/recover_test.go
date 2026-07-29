@@ -21,8 +21,7 @@ import (
 func TestALostBetIsRecovered(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	actor, waiter := a, b
 	if !toActIsOurs(t, a, terms.SID) {
@@ -63,8 +62,7 @@ func TestALostShuffleIsRecovered(t *testing.T) {
 	a, b, terms := dealingTable(t, h)
 	waitDropped(t, h, schema.KindShuffle)
 	settle(t, h, a, b)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	if a.tables.m[terms.SID].play.Hand() == nil {
 		t.Fatal("no hand")
@@ -79,8 +77,7 @@ func TestALostShareIsRecovered(t *testing.T) {
 	a, b, terms := dealingTable(t, h)
 	waitDropped(t, h, schema.KindShare)
 	settle(t, h, a, b)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	// Reaching a bet is not enough. A seat's hole cards are readable only
 	// because every other seat published a share for them, so the lost one
@@ -105,8 +102,7 @@ func TestALostShareIsRecovered(t *testing.T) {
 func TestAHealthyTableIsSentNothing(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	waitBetting(t, a, b)
 
 	tblA := a.tables.m[terms.SID]
 	tblB := b.tables.m[terms.SID]
