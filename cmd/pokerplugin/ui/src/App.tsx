@@ -215,9 +215,27 @@ function Done({
   left?: number
 }) {
   const awards = hand.awards ?? []
-  const mine = awards.find((a) => a.seat === hand.seat)?.atoms ?? 0
   const paid = hand.chairs?.find((c) => c.seat === hand.seat)?.total ?? 0
-  const net = mine - paid
+  const net = (awards.find((a) => a.seat === hand.seat)?.atoms ?? 0) - paid
+
+  // No awards means the result is not known here yet, which is not the same as
+  // having won nothing - and reading it as nothing told both seats they had
+  // lost, which cannot be true of the same hand.
+  //
+  // They are absent while a showdown is still short a card: Settle refuses to
+  // guess and the plugin sends no awards rather than wrong ones. So this waits
+  // for them instead of doing the arithmetic on a missing number.
+  if (awards.length === 0) {
+    return (
+      <div className="rows">
+        <p className="headline">The hand is over</p>
+        <p className="lede">
+          What it came to is still being worked out - a showdown settles when the last
+          card everybody is owed has arrived, and nothing here guesses at it before then.
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="rows">
