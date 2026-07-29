@@ -5,7 +5,6 @@ import (
 	"sort"
 
 	"github.com/chehsunliu/poker"
-	"github.com/vctt94/pokerbisonrelay/pkg/rpc/grpc/pokerrpc"
 )
 
 // HandRank represents the rank of a poker hand
@@ -30,7 +29,6 @@ type HandValue struct {
 	RankValue       int    // Value of the primary cards (pair, trips, etc.)
 	Kickers         []int  // Values of kicker cards in descending order
 	BestHand        []Card // The 5 cards that make up the best hand
-	HandRank        pokerrpc.HandRank
 	HandDescription string
 }
 
@@ -185,32 +183,6 @@ func convertRankClassToHandRank(rankClass int32) HandRank {
 	}
 }
 
-// convertRankClassToGRPCHandRank converts chehsunliu rank class to gRPC HandRank
-func convertRankClassToGRPCHandRank(rankClass int32) pokerrpc.HandRank {
-	switch rankClass {
-	case 1: // Straight flush
-		return pokerrpc.HandRank_STRAIGHT_FLUSH
-	case 2: // Four of a kind
-		return pokerrpc.HandRank_FOUR_OF_A_KIND
-	case 3: // Full house
-		return pokerrpc.HandRank_FULL_HOUSE
-	case 4: // Flush
-		return pokerrpc.HandRank_FLUSH
-	case 5: // Straight
-		return pokerrpc.HandRank_STRAIGHT
-	case 6: // Three of a kind
-		return pokerrpc.HandRank_THREE_OF_A_KIND
-	case 7: // Two pair
-		return pokerrpc.HandRank_TWO_PAIR
-	case 8: // Pair
-		return pokerrpc.HandRank_PAIR
-	case 9: // High card
-		return pokerrpc.HandRank_HIGH_CARD
-	default:
-		return pokerrpc.HandRank_HIGH_CARD
-	}
-}
-
 // EvaluateHand evaluates a player's best 5-card hand from their 2 hole cards and the 5 community cards
 func EvaluateHand(holeCards []Card, communityCards []Card) (HandValue, error) {
 	// Combine hole cards and community cards
@@ -244,7 +216,6 @@ func EvaluateHand(holeCards []Card, communityCards []Card) (HandValue, error) {
 		RankValue:       int(rank), // Use the actual rank value for comparison
 		Kickers:         []int{},   // Simplified - chehsunliu handles this internally
 		BestHand:        bestCards, // Get best 5 cards
-		HandRank:        convertRankClassToGRPCHandRank(rankClass),
 		HandDescription: rankString,
 	}
 
@@ -435,17 +406,4 @@ func CompareHands(handA, handB HandValue) int {
 	// If rank values are the same, it's a tie
 	// (chehsunliu handles all tiebreakers internally in the rank value)
 	return 0
-}
-
-// CreateHandFromCards creates a Card slice from a slice of Card objects for gRPC
-func CreateHandFromCards(cards []Card) []*pokerrpc.Card {
-	pbCards := make([]*pokerrpc.Card, len(cards))
-	for i, card := range cards {
-		pbCards[i] = &pokerrpc.Card{
-			Suit:  card.GetSuit(),
-			Value: card.GetValue(),
-		}
-	}
-
-	return pbCards
 }

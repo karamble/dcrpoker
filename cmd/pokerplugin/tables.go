@@ -12,7 +12,7 @@ import (
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
-	"github.com/vctt94/pokerbisonrelay/pkg/client"
+	"github.com/vctt94/pokerbisonrelay/pkg/chainwatch"
 	"github.com/vctt94/pokerbisonrelay/pkg/driver"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
@@ -32,7 +32,7 @@ type table struct {
 	// watch is this player's own copy of the table's history, built once
 	// the membership settles - because until then there is no roster to
 	// check signatures against.
-	watch *client.ChainWatch
+	watch *chainwatch.ChainWatch
 
 	// logPriv is the key this seat signs entries and checkpoints with. Kept
 	// from the credentials the table was joined under, because it is needed
@@ -1563,7 +1563,7 @@ func (tbl *table) startWatching() {
 	if !ok {
 		return
 	}
-	w, err := client.NewChainWatch(matchID, seats)
+	w, err := chainwatch.New(matchID, seats)
 	if err != nil {
 		log.Printf("pokerplugin: table %s: cannot follow the history: %v", tbl.terms.SID, err)
 		return

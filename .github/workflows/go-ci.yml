@@ -38,8 +38,8 @@ jobs:
             exit 1
           fi
 
-      - name: Go tests (lockcheck, race, repeated)
-        run: go test -tags=lockcheck -v -race ./... -count=3 -timeout 600s
+      - name: Go tests (race, repeated)
+        run: go test -v -race ./... -count=3 -timeout 600s
 
   # The interface that ships inside pokerplugin.
   #
@@ -47,6 +47,9 @@ jobs:
   # alone: it runs against the committed placeholder, and its continuing to pass
   # is the proof that the Go side still builds and tests without a JavaScript
   # toolchain anywhere near it.
+  #
+  # Both jobs now cover the whole repository, since there is only one
+  # implementation in it.
   ui:
     runs-on: ubuntu-latest
 

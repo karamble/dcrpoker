@@ -1,9 +1,6 @@
-cmd/pokerd/pokerd
-cmd/client/client
 CLAUDE.md
 bin
 AGENTS.md
-grpc/generated
 .gobuildcache
 .gocache
 .gomodcache

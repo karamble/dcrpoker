@@ -91,10 +91,10 @@ func TestARefundRefusesAnotherMembersKey(t *testing.T) {
 // The check before returning has to run with the sequence rule enabled.
 //
 // Without it OP_CHECKSEQUENCEVERIFY degrades to a no-op and the verification
-// proves only that the signature is well formed - which is precisely what the
-// older builder in pkg/client does, and why it will hand back a transaction the
-// network then refuses. Build one whose sequence is under the script's lock and
-// require it to be caught here rather than at broadcast.
+// proves only that the signature is well formed - so a builder that checks
+// without the rule hands back a transaction the network then refuses. Build one
+// whose sequence is under the script's lock and require it to be caught here
+// rather than at broadcast.
 func TestASpendShortOfTheLockIsCaughtBeforeBroadcast(t *testing.T) {
 	privs, pubs := memberKeys(t, 2)
 	owner := pubs[0]

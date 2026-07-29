@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
-	"github.com/vctt94/pokerbisonrelay/pokerui/golib"
 )
 
 const testToken = "tok"
@@ -63,66 +62,6 @@ func TestHealthReportsTheGameAndVersion(t *testing.T) {
 		t.Fatalf("health says %+v", body)
 	}
 }
-
-// The command surface is golib's, reached over HTTP. A command that needs no
-// client proves the wiring without standing a table up.
-func TestCmdReachesTheCommandSurface(t *testing.T) {
-	payload, err := json.Marshal(map[string]any{
-		"handle":  0,
-		"type":    golib.CTHello,
-		"payload": json.RawMessage(`"world"`),
-	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	rec := httptest.NewRecorder()
-	testPlugin(t).routes().ServeHTTP(rec, authed(http.MethodPost, "/cmd", string(payload)))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("cmd returned %d: %s", rec.Code, rec.Body.String())
-	}
-	var greeting string
-	if err := json.Unmarshal(rec.Body.Bytes(), &greeting); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if greeting != "hello world" {
-		t.Fatalf("got %q", greeting)
-	}
-}
-
-// A failing command is a 4xx with the reason, not a 200 the caller has to
-// inspect for an error field.
-func TestFailingCommandIsAnError(t *testing.T) {
-	payload, _ := json.Marshal(map[string]any{
-		"handle":  99,
-		"type":    golib.CTGetEscrowStatus,
-		"payload": json.RawMessage(`{"escrow_id":"x"}`),
-	})
-	rec := httptest.NewRecorder()
-	testPlugin(t).routes().ServeHTTP(rec, authed(http.MethodPost, "/cmd", string(payload)))
-
-	if rec.Code == http.StatusOK {
-		t.Fatalf("a command against an unknown client should not succeed: %s", rec.Body.String())
-	}
-	var body struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error == "" {
-		t.Fatalf("the failure should carry a reason: %s", rec.Body.String())
-	}
-}
-
-func TestCmdRequiresPost(t *testing.T) {
-	rec := httptest.NewRecorder()
-	testPlugin(t).routes().ServeHTTP(rec, authed(http.MethodGet, "/cmd", ""))
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET /cmd returned %d", rec.Code)
-	}
-}
-
-// A plugin with no way to reach the table, or no identity to reach it as,
-// should refuse to start rather than run unable to play.
 func TestPluginRequiresBridgeAndToken(t *testing.T) {
 	dir := t.TempDir()
 	id, err := loadIdentity(dir)

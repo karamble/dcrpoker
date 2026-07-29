@@ -10,9 +10,9 @@ purpose. And **the numbers are named, not written out**: constants are referred 
 by name (`escrow.MinBondBlocks`, `schema.Version`) because a document that repeats
 a number is a document that will contradict the code within a month.
 
-Scope: the peer-to-peer design, which is what this project is. A separate
-client/server path still exists in the tree and is on its way out; it is described
-last, and nothing else here concerns it.
+Scope: all of it. There is one implementation in this repository and it is the one
+described here — no server, no referee, no party with a seat at the table that is
+not a player.
 
 ---
 
@@ -574,26 +574,31 @@ checkpoint: the combinatorics disappear (section 2).
 
 ---
 
-## 10. The old server path
+## 10. How this gets verified, and how verification lies
 
-`cmd/pokerd` and its gRPC services still exist in the tree and are **on their way
-out**. Nothing in sections 1–9 is on their path: the peer-to-peer client
-reaches the chain and Bison Relay through its host, and speaks to other players
-over a group chat.
+The most portable thing in this document is not about poker.
 
-For as long as it is here: the server sees every hole card, runs the state machine,
-decides the winner, and holds the adaptor secret. No player action is signed.
-`pkg/server/actionlog.go` is knowingly incompatible with current clients — it
-builds its chain from escrow session keys while clients sign with a separate
-per-match log key, so every entry a real client sends is refused. Its own tests
-pass because they use log keys in both roles, which is exactly what hid the
-incompatibility.
+**A test that derives both sides of a check from one source is testing the
+derivation, not the agreement.** Green then means only "consistent with itself",
+which is the one thing a distributed protocol may never assume. Every serious
+defect this design has had was of that shape and had passing tests over it: a
+roster built from one kind of key while entries were signed with another; a bond
+branch whose answer needed signatures its holder could not obtain; a stand-in peer
+that had no clock of its own and so could not be late; and a whole message class
+whose sender nothing ever checked, because no test had occasion to ask who sent
+one.
 
-That last sentence is the most portable thing in this document. **A test that
-derives both sides of a check from the same source is testing the derivation, not
-the agreement**, and green means only "consistent with itself" — which is the one
-thing a distributed protocol may never assume. The same fault, in four other
-disguises, hid every serious bug this project has had: a roster built from the
-wrong key type, an answer branch that needed signatures its holder could not get,
-a stand-in peer with no independent clock, and 681 tests that never once asked who
-sent a frame.
+Three habits follow, and they are cheap:
+
+- **Give a test only what one real participant would hold.** If it holds every
+  key, it cannot discover that a real seat holds one.
+- **Prove a refusal by mutation.** Break the check, watch the test fail, restore
+  it. A refusal that has never been seen to fail is indistinguishable from a test
+  of nothing.
+- **Attack a primitive before trusting it.** Reading a library does not find an
+  unsound proof; trying to forge against it does.
+
+And one about the harness itself: **a hand-written stand-in for the wire is a
+claim about the wire, and it can be wrong.** One that silently drops a field
+models traffic nobody sends, and every test above it keeps passing against a
+protocol that does not exist.

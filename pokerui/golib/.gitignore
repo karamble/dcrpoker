@@ -1,7 +1,0 @@
-golib.h
-golib.so
-*.jar
-*.aar
-*.framework/
-*.xcframework/
-*.dll

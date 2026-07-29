@@ -7,10 +7,11 @@
 // token, which is its identity rather than a password - the host resolves it to
 // decide which game is calling, so this process never states which game it is.
 //
-// The command surface is the one pokerui/golib already had for the Flutter
-// client, served over HTTP instead of FFI. One entry point, a typed command, a
-// JSON payload: the shape was already right, so the host drives the same
-// vocabulary rather than a second one written to drift from it.
+// The surface it serves is one route per thing the host can ask for, each of
+// them narrow: the host decides what a person wants and this decides whether the
+// protocol allows it. There is no general-purpose entry point, deliberately - a
+// route that forwards an arbitrary named command is a surface nobody can audit,
+// because its shape is whatever the other side happens to send.
 package main
 
 import (
@@ -34,7 +35,6 @@ import (
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
-	"github.com/vctt94/pokerbisonrelay/pokerui/golib"
 )
 
 func main() {
@@ -323,10 +323,6 @@ func (p *plugin) routes() http.Handler {
 	// The interface itself, unguarded and framed by the host. See ui.go.
 	mux.HandleFunc("/ui/", p.handleUI)
 
-	// One entry point for the whole command vocabulary, mirroring the FFI
-	// the Flutter client used. Adding a command to golib adds it here.
-	mux.HandleFunc("/cmd", p.guard(p.handleCmd))
-
 	// Tables. Accepting an invitation is a user's decision, taken in the
 	// host's interface, so the host is what drives this.
 	mux.HandleFunc("/table/join", p.guard(p.handleJoin))
@@ -579,34 +575,4 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-}
-
-func (p *plugin) handleCmd(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		Handle  int32           `json:"handle"`
-		Type    uint32          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	out, err := golib.Call(req.Handle, golib.CmdType(req.Type), req.Payload)
-	w.Header().Set("Content-Type", "application/json")
-	if err != nil {
-		// The command failed, not the transport. A 200 with an error
-		// field would make every caller check two places.
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-	if len(out) == 0 {
-		out = []byte("null")
-	}
-	_, _ = w.Write(out)
 }

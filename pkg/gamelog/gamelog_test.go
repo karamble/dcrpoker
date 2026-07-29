@@ -36,16 +36,16 @@ func signed(t *testing.T, c *Chain, privs []*forfeit.LogKey, seat uint32, action
 	return e
 }
 
-// The package has to outlive the gRPC transport it sits behind today, so it
-// must not depend on the generated types. A test enforces it, because an import
-// added in passing would be invisible otherwise.
+// The log is the account of the game and must not depend on any transport that
+// happens to carry it, generated types least of all. A test enforces it, because
+// an import added in passing would be invisible otherwise.
 func TestNoTransportDependency(t *testing.T) {
 	pkg, err := build.ImportDir(".", 0)
 	if err != nil {
 		t.Fatalf("inspect package: %v", err)
 	}
 	for _, imp := range pkg.Imports {
-		if strings.Contains(imp, "pokerrpc") || strings.Contains(imp, "grpc") {
+		if strings.Contains(imp, "grpc") || strings.Contains(imp, "protobuf") {
 			t.Errorf("gamelog imports %q; it must stay independent of the transport", imp)
 		}
 	}
