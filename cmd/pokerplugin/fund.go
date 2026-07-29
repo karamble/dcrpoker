@@ -148,6 +148,10 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 
 	if err := checkStake(ctx, t.chain, fn.Outpoint, want.PkScriptHex, terms.BuyInAtoms); err != nil {
 		log.Printf("pokerplugin: table %s: seat %d: %v", d.SID, fn.Seat, err)
+		// Refused, which is usually only "not yet". Say which, so the wait
+		// is legible as a wait rather than as an absence.
+		t.noteWaiting(d.SID, fn.Seat, false,
+			look(ctx, t.chain, fn.Outpoint, int64(escrow.StakeConfirmations)))
 		return nil
 	}
 
@@ -158,6 +162,7 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 		return nil
 	}
 	tbl.funded[fn.Seat] = fn.Outpoint
+	delete(tbl.stakeWaiting, fn.Seat)
 	t.persist(tbl)
 	log.Printf("pokerplugin: table %s: seat %d is funded at %s (%d of %d seats)",
 		d.SID, fn.Seat, fn.Outpoint, len(tbl.funded), tbl.terms.Seats)
@@ -392,4 +397,61 @@ func (p *plugin) findDepositOutput(ctx context.Context, txid, wantPkScript strin
 		}
 	}
 	return "", fmt.Errorf("none of the first %d outputs of %s pay this seat's deposit", maxFundingVout, txid)
+}
+
+// waiting is an announcement this peer has not accepted yet, and how far off it
+// is.
+//
+// It exists because "not seen by this peer" was one sentence covering three
+// different situations - never announced, sitting in the mempool, and confirmed
+// but short of the confirmations required - and only one of them is a fault. A
+// person watching a table fund saw the same words for two minutes whether their
+// money was on its way or had never been sent.
+type waiting struct {
+	Outpoint      string `json:"outpoint"`
+	Confirmations int64  `json:"confirmations"`
+	Needs         int64  `json:"needs"`
+	// Where is absent, mempool or confirming.
+	Where string `json:"where"`
+}
+
+// look reports where an announced output has got to. **For display only.**
+//
+// It asks about unconfirmed transactions, which nothing that decides anything is
+// allowed to do: Bridge.UnconfirmedOutpoint says so itself, and the reason is
+// that an unconfirmed output can still be replaced. Whether a stake or a bond is
+// good is decided by checkStake and checkTableBond against confirmed coin, and
+// this does not participate in that at all. It only turns a refusal that already
+// happened into something a person can read.
+func look(ctx context.Context, chain *transport.Bridge, outpoint string, needs int64) *waiting {
+	w := &waiting{Outpoint: outpoint, Needs: needs, Where: "absent"}
+	txid, vout, err := splitOutpoint(outpoint)
+	if err != nil || chain == nil {
+		return w
+	}
+	if out, err := chain.Outpoint(ctx, txid, vout); err == nil && out.Found {
+		w.Confirmations = out.Confirmations
+		w.Where = "confirming"
+		return w
+	}
+	if out, err := chain.UnconfirmedOutpoint(ctx, txid, vout); err == nil && out.Found {
+		w.Where = "mempool"
+	}
+	return w
+}
+
+// noteWaiting records what a seat announced and why it is not accepted yet.
+func (t *tables) noteWaiting(sid string, seat uint32, bond bool, w *waiting) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tbl := t.m[sid]
+	if tbl == nil {
+		return
+	}
+	if bond {
+		tbl.bondWaiting[seat] = w
+		return
+	}
+	tbl.stakeWaiting[seat] = w
 }

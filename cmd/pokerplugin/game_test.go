@@ -59,7 +59,9 @@ func TestSeveralHandsKeepTheChipsAndMoveTheButton(t *testing.T) {
 		if over(t, a, terms.SID) {
 			break
 		}
-		waitBetting(t, a, b)
+		// The chain has to keep moving between hands: anything lost opening
+		// the next one is repaired once a block and never otherwise.
+		advanceUntilBetting(t, h, 60, a, b)
 	}
 	if len(buttons) < 2 {
 		t.Fatalf("only %d hands were played", len(buttons))

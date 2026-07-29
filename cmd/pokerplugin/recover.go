@@ -193,16 +193,31 @@ func (t *tables) republishStalled(tbl *table, height int64) []outgoing {
 	if !ok {
 		return nil
 	}
-	if _, owes := tbl.play.Owes(int(seat)); owes {
-		// Ours to move. Nobody is waiting on a message.
-		tbl.stalledAt = ""
-		return nil
-	}
 	at := tbl.progress()
-	if at == tbl.stalledAt && height > 0 && height < tbl.stalledSaidAt+stallEvery {
+	moved := at != tbl.stalledAt
+	if !moved && height > 0 && height < tbl.stalledSaidAt+stallEvery {
 		// Said recently, and nothing has moved since. A table where
 		// somebody is genuinely just slow hears from us every stallEvery
 		// blocks and no more often.
+		return nil
+	}
+	if _, owes := tbl.play.Owes(int(seat)); owes && moved {
+		// Ours to move, and the hand is moving. The others are rightly
+		// waiting on us and our next message is the one they want.
+		//
+		// Only *and moved*, which is the whole correction. Owing something
+		// now says nothing about what anybody received earlier, and the two
+		// are not even about the same phase: a seat that has verified every
+		// shuffle and gone on to dealing owes a share, while the seat behind
+		// it is still waiting on the shuffle that seat sent long ago. Bailing
+		// out here on "we owe something" made that peer silent about the one
+		// message that would have unstuck the table, permanently, and left
+		// two seats each convinced the other was the holdup.
+		//
+		// It killed a real table on 2026-07-29 and reproduces in this suite
+		// about one run in ten. So while we owe, we stay quiet only for as
+		// long as the hand is actually progressing.
+		tbl.stalledAt = at
 		return nil
 	}
 	tbl.stalledAt = at

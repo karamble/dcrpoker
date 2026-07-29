@@ -26,6 +26,11 @@ export type SeatView = {
   stake?: string
   bond?: string
   bondAt?: string
+  /** What this seat announced that this peer has not accepted, and how far off
+   *  it is. An absent outpoint with one of these is money on its way; an absent
+   *  outpoint with neither is money nobody here has heard of. */
+  stakeWait?: Waiting
+  bondWait?: Waiting
   payout?: string
   leaving?: boolean
   owes?: Duty
@@ -64,6 +69,13 @@ export type Snapshot = {
   /** This player has left and the table is kept only as a record of coin still
    *  on the chain. Nothing is dealt at it and nobody is seated again. */
   finished?: boolean
+}
+
+export type Waiting = {
+  outpoint: string
+  confirmations: number
+  needs: number
+  where: 'absent' | 'mempool' | 'confirming'
 }
 
 export type Shuffle = { seat: number; state: 'ours' | 'verified' | 'awaited' }

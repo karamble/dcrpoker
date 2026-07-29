@@ -413,3 +413,71 @@ func TestFundingWaitsForTheTableToSettle(t *testing.T) {
 		t.Fatal("derived a deposit for a table that has not been seated")
 	}
 }
+
+// A stake on its way must not read the same as a stake nobody sent.
+//
+// "Not seen by this peer" covered three situations and only one of them is a
+// fault. During the first real funding both seats showed it for minutes while
+// the money was plainly in the mempool - which is exactly the state in which
+// somebody pays a second time.
+func TestAnAnnouncedStakeSaysWhyItIsNotAcceptedYet(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	seats, ok := p.tables.m[terms.SID].form.Seats()
+	if !ok {
+		t.Fatal("not seated")
+	}
+	var theirs uint32
+	mine, _ := p.tables.m[terms.SID].form.OurSeat()
+	for seat := range seats {
+		if seat != mine {
+			theirs = seat
+		}
+	}
+
+	// An announcement for an outpoint this chain has never heard of. It is
+	// refused, which is right, and the refusal has to be legible.
+	outpoint := strings.Repeat("ab", 32) + ":0"
+	fn, err := membership.SignFunding(terms, theirs, outpoint, other.Session)
+	if err != nil {
+		t.Fatalf("sign funding: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindFunded, schema.FundedFrom(fn))
+
+	var seen *waiting
+	for _, s := range p.tables.snapshots() {
+		for _, v := range s.Roster {
+			if v.Seat == theirs {
+				seen = v.StakeWait
+			}
+		}
+	}
+	if seen == nil {
+		t.Fatal("a refused stake left nothing to tell a person, so it reads as never announced")
+	}
+	if seen.Outpoint != outpoint {
+		t.Fatalf("reported %s waiting, want %s", seen.Outpoint, outpoint)
+	}
+	if seen.Where != "absent" {
+		t.Fatalf("an outpoint this chain never had is %q, want absent", seen.Where)
+	}
+	if seen.Needs != int64(escrow.StakeConfirmations) {
+		t.Fatalf("says it needs %d confirmations, and a stake needs %d",
+			seen.Needs, escrow.StakeConfirmations)
+	}
+
+	// And a seat whose stake this peer has accepted reports nothing waiting,
+	// because a stale "still coming" beside accepted money is worse than
+	// saying nothing at all.
+	for _, s := range p.tables.snapshots() {
+		for _, v := range s.Roster {
+			if v.Stake != "" && v.StakeWait != nil {
+				t.Fatalf("seat %d is funded at %s and still says it is waiting",
+					v.Seat, v.Stake)
+			}
+		}
+	}
+}

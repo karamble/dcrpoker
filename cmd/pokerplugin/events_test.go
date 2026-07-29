@@ -236,16 +236,15 @@ func settled(t *testing.T, p *plugin) (<-chan sse, func()) {
 // quiet for a moment during them is not a table that has stopped. It stops when
 // it is waiting for a person, and a person is what this test is standing in
 // for.
-// It keeps the chain moving while it waits, and that is not a detail. Every
-// repair in this protocol is gated to once a block, so a helper that stops
-// ticking and then waits on the wall has stopped paying for the repair it is
-// waiting for: if anything was lost on the way into this hand, nothing will fix
-// it and the wait can only expire. That is what it did, and it read for weeks as
-// a flaky test that moved between tests.
+// Deliberately without ticking the chain, which is a real choice and the
+// opposite of what advanceUntilBetting does.
 //
-// Every peer that could owe something has to be ticked, not only the one being
-// watched, because the frame this seat is missing is one another seat has to say
-// again.
+// Ticking runs the repair machinery, and the repair machinery sends log entries.
+// A test that drops a frame and then asks what the other seat holds needs the
+// wire quiet until it looks, so a wait that quietly exchanged heads would hand
+// it the very entry it was checking had gone missing. Use this where the hand
+// should arrive on its own, and advanceUntilBetting where a repair is the thing
+// being tested - the difference is which one the test is about.
 func waitBetting(t *testing.T, peers ...*plugin) {
 	t.Helper()
 	deadline := time.Now().Add(45 * time.Second)
@@ -260,10 +259,37 @@ func waitBetting(t *testing.T, peers ...*plugin) {
 			return
 		}
 		if time.Now().After(deadline) {
+			reportStall(t, peers...)
 			t.Fatal("the hand never reached anybody's turn")
 		}
-		tickAll(peers...)
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// reportStall says what each seat was holding when a wait gave up, because "it
+// did not happen" is the same sentence whatever caused it.
+func reportStall(t *testing.T, peers ...*plugin) {
+	t.Helper()
+	for i, p := range peers {
+		for _, s := range p.tables.snapshots() {
+			if !s.Dealing {
+				t.Logf("peer %d: table %s is not dealing (state %s, funded %d/%d, bonded %d/%d)",
+					i, s.SID[:8], s.State, s.Funded, s.Seats, s.Bonded, s.Seats)
+				continue
+			}
+			v, err := p.tables.HandView(s.SID)
+			if err != nil {
+				t.Logf("peer %d: hand view: %v", i, err)
+				continue
+			}
+			t.Logf("peer %d: hand %d phase %s toAct %d shuffles %+v",
+				i, v.Hand, v.Phase, v.ToAct, v.Shuffles)
+			for _, seat := range s.Roster {
+				if seat.Says != "" {
+					t.Logf("peer %d: %s", i, seat.Says)
+				}
+			}
+		}
 	}
 }
 

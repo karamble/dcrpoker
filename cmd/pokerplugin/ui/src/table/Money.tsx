@@ -1,4 +1,4 @@
-import type { LedgerView, Snapshot } from '../api'
+import type { LedgerView, Snapshot, Waiting } from '../api'
 import { dcr, delta, short } from '../format'
 
 // Where the money is.
@@ -116,7 +116,7 @@ function Chain({ roster }: { roster: LedgerView['roster'] }) {
                     {short(s.stake)}
                   </span>
                 ) : (
-                  <span className="muted">not seen by this peer</span>
+                  <Awaited on={s.stakeWait} />
                 )}
               </td>
               <td>
@@ -126,7 +126,7 @@ function Chain({ roster }: { roster: LedgerView['roster'] }) {
                     {s.bondAt && <span className="muted"> · moved</span>}
                   </span>
                 ) : (
-                  <span className="muted">not seen by this peer</span>
+                  <Awaited on={s.bondWait} />
                 )}
               </td>
             </tr>
@@ -139,5 +139,38 @@ function Chain({ roster }: { roster: LedgerView['roster'] }) {
         money not being there.
       </p>
     </>
+  )
+}
+
+/** Awaited says what became of an announcement this peer has not accepted.
+ *
+ *  "Not seen by this peer" used to cover three different situations and only one
+ *  of them is a fault: nothing was ever announced, it is in the mempool, or it is
+ *  confirmed but short of the confirmations this seat requires. During a real
+ *  funding both seats read "not seen" for minutes while the money was plainly on
+ *  its way, which is the sort of thing that makes somebody pay twice.
+ *
+ *  None of this decides anything. The peer accepts a stake or a bond only on
+ *  confirmed coin; this is the reason for a wait, rendered after the fact. */
+function Awaited({ on }: { on?: Waiting }) {
+  if (!on) return <span className="muted">not seen by this peer</span>
+  if (on.where === 'mempool') {
+    return (
+      <span className="muted" title={on.outpoint}>
+        in the mempool, waiting for a block
+      </span>
+    )
+  }
+  if (on.where === 'confirming') {
+    return (
+      <span className="muted" title={on.outpoint}>
+        {on.confirmations} of {on.needs} confirmations
+      </span>
+    )
+  }
+  return (
+    <span className="muted" title={on.outpoint}>
+      announced, and no coin there yet
+    </span>
   )
 }

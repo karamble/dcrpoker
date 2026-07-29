@@ -101,6 +101,13 @@ type table struct {
 	// player can lose at cards, a bond is what they lose for not playing.
 	bonded map[uint32]string
 
+	// stakeWaiting and bondWaiting are announcements not accepted yet, and how
+	// far off they are. Kept only so a person can be told the difference
+	// between money on its way and money that was never sent; nothing here
+	// decides anything. See waiting.
+	stakeWaiting map[uint32]*waiting
+	bondWaiting  map[uint32]*waiting
+
 	// announcedAt is the height this table last said where our stake is, so
 	// it is repeated once a block rather than once a poll.
 	announcedAt int64
@@ -464,6 +471,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	}
 	tbl := &table{terms: terms, gcID: gcID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
+		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain, logPriv: creds.Log}
@@ -756,6 +764,7 @@ func (t *tables) receipt(rec *record, id *identity) (*table, error) {
 	done := rec.Finished || rec.Aborted || everDealt(rec)
 	tbl := &table{terms: terms, gcID: rec.GCID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
+		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain,
@@ -1648,6 +1657,13 @@ type seatView struct {
 
 	Stake string `json:"stake,omitempty"`
 	Bond  string `json:"bond,omitempty"`
+
+	// StakeWait and BondWait are what this seat announced that has not been
+	// accepted, and how far off it is. An empty Stake with a StakeWait is
+	// money on its way; an empty Stake with neither is money nobody here has
+	// heard of, and telling a person those apart is the whole point.
+	StakeWait *waiting `json:"stakeWait,omitempty"`
+	BondWait  *waiting `json:"bondWait,omitempty"`
 	// BondAt is where this seat's bond sits now, if it has answered a claim
 	// and moved it. Later claims are against this and not Bond.
 	BondAt string `json:"bondAt,omitempty"`
@@ -1766,6 +1782,12 @@ func (tbl *table) seatViews() []seatView {
 			Bond:   tbl.bonded[seat],
 			BondAt: tbl.bondedAt[seat],
 			Payout: tbl.payouts[seat],
+		}
+		if v.Stake == "" {
+			v.StakeWait = tbl.stakeWaiting[seat]
+		}
+		if v.Bond == "" {
+			v.BondWait = tbl.bondWaiting[seat]
 		}
 		if tbl.play != nil {
 			v.Leaving = tbl.play.Leaving(int(seat))

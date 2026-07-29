@@ -130,6 +130,11 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 
 	if err := checkTableBond(ctx, t.chain, bn.Outpoint, want.PkScriptHex); err != nil {
 		log.Printf("pokerplugin: table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
+		// A bond needs two confirmations, so the first telling is always
+		// refused and a person is owed the difference between "waiting" and
+		// "never arrived".
+		t.noteWaiting(d.SID, bn.Seat, true,
+			look(ctx, t.chain, bn.Outpoint, int64(escrow.BondConfirmations)))
 		return nil
 	}
 
@@ -140,6 +145,7 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 		return nil
 	}
 	tbl.bonded[bn.Seat] = bn.Outpoint
+	delete(tbl.bondWaiting, bn.Seat)
 	t.persist(tbl)
 	log.Printf("pokerplugin: table %s: seat %d is bonded at %s (%d of %d seats)",
 		d.SID, bn.Seat, bn.Outpoint, len(tbl.bonded), tbl.terms.Seats)
