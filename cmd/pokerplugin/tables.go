@@ -106,6 +106,13 @@ type table struct {
 	// player can lose at cards, a bond is what they lose for not playing.
 	bonded map[uint32]string
 
+	// uids is which Bison Relay identity spoke for each seat, learned from
+	// the seat's own funding and bond announcements - the two messages only
+	// ever sent by their owner. It exists so the interface can put a name on
+	// a chair, and for nothing else: names are labels, not identity, and
+	// nothing that decides anything reads this map.
+	uids map[uint32]string
+
 	// stakeWaiting and bondWaiting are announcements not accepted yet, and how
 	// far off they are. Kept only so a person can be told the difference
 	// between money on its way and money that was never sent; nothing here
@@ -270,6 +277,12 @@ type tables struct {
 	// never have accepted.
 	signBonded func(terms membership.Terms, seat uint32, outpoint string) (*membership.Bonded, error)
 
+	// names is what the host says each Bison Relay identity is called,
+	// pushed at panel-session mint and consulted only to label seats. The
+	// host resolves them because this process cannot ask Bison Relay
+	// anything; they are display strings and never identity.
+	names map[string]string
+
 	// now is the clock the repair timers read. Injected so a test can drive it:
 	// the dealing repair answers to seconds rather than to blocks, and a test
 	// that ticks forty times in a second would otherwise see one repair and
@@ -290,7 +303,7 @@ type tables struct {
 }
 
 func newTables(st *store) *tables {
-	return &tables{m: make(map[string]*table), store: st, now: time.Now}
+	return &tables{m: make(map[string]*table), store: st, now: time.Now, names: map[string]string{}}
 }
 
 // termsFor reports a table's terms, if this is a session and a conversation
@@ -396,6 +409,12 @@ func (tbl *table) record() *record {
 			rec.Funded[seat] = outpoint
 		}
 	}
+	if len(tbl.uids) > 0 {
+		rec.UIDs = make(map[uint32]string, len(tbl.uids))
+		for seat, uid := range tbl.uids {
+			rec.UIDs[seat] = uid
+		}
+	}
 	if h, ok := tbl.form.RosterHash(); ok && tbl.bound {
 		rec.Roster = hex.EncodeToString(h[:])
 	}
@@ -486,6 +505,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	tbl := &table{terms: terms, gcID: gcID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
+		uids:     map[uint32]string{},
 		releases: map[uint32]*release{}, bondValue: map[uint32]int64{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
@@ -576,6 +596,9 @@ func (tbl *table) resume(rec *record) error {
 	}
 	for seat, outpoint := range rec.Bonded {
 		tbl.bonded[seat] = outpoint
+	}
+	for seat, uid := range rec.UIDs {
+		tbl.uids[seat] = uid
 	}
 
 	// A resumed table takes its own history back up rather than waiting for
@@ -780,6 +803,7 @@ func (t *tables) receipt(rec *record, id *identity) (*table, error) {
 	tbl := &table{terms: terms, gcID: rec.GCID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
+		uids:     map[uint32]string{},
 		releases: map[uint32]*release{}, bondValue: map[uint32]int64{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
@@ -1686,6 +1710,12 @@ type seatView struct {
 	Ours bool   `json:"ours,omitempty"`
 	Key  string `json:"key,omitempty"`
 
+	// Name is what the host calls the identity that spoke for this seat, or
+	// empty when nobody knows. A label for a chair and nothing stronger: a
+	// caller must fall back to the seat number, and nothing anywhere decides
+	// anything by name.
+	Name string `json:"name,omitempty"`
+
 	Stake string `json:"stake,omitempty"`
 	Bond  string `json:"bond,omitempty"`
 
@@ -1753,7 +1783,7 @@ func (t *tables) snapshots() []snapshot {
 		s.Bonded = len(tbl.bonded)
 		s.Height = t.height
 		s.Finished = tbl.finished
-		s.Roster = tbl.seatViews()
+		s.Roster = tbl.seatViews(t.names)
 		if seat, ok := tbl.form.OurSeat(); ok {
 			s.Seat = &seat
 			s.Stake = tbl.funded[seat]
@@ -1797,7 +1827,7 @@ func (t *tables) snapshots() []snapshot {
 // not agreed to.
 //
 // Requires the registry lock.
-func (tbl *table) seatViews() []seatView {
+func (tbl *table) seatViews(names map[string]string) []seatView {
 	seats, ok := tbl.form.Seats()
 	if !ok {
 		return nil
@@ -1814,6 +1844,7 @@ func (tbl *table) seatViews() []seatView {
 			Bond:   tbl.bonded[seat],
 			BondAt: tbl.bondedAt[seat],
 			Payout: tbl.payouts[seat],
+			Name:   names[tbl.uids[seat]],
 		}
 		if v.Stake == "" {
 			v.StakeWait = tbl.stakeWaiting[seat]

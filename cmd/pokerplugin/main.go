@@ -346,6 +346,10 @@ func (p *plugin) routes() http.Handler {
 	// share of somebody's forfeited bond, and settlement later. This process
 	// holds no wallet, so it has to be told.
 	mux.HandleFunc("/payout/set", p.guard(p.handlePayoutSet))
+	// What identities are called, said by the host at panel mint. Host-only
+	// for the same reason /payout/set is: it is the host's knowledge, and a
+	// page must not get to rewrite it.
+	mux.HandleFunc("/names/set", p.guard(p.handleNamesSet))
 	mux.HandleFunc("/payout", p.guard(p.handlePayoutSet))
 
 	// Playing. /table/hand is what a caller polls to know whose turn it is

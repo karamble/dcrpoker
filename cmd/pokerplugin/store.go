@@ -60,6 +60,11 @@ type record struct {
 	// Funded. Both are needed to answer "does this table still hold any of
 	// my money", which is the question that decides whether it is kept.
 	Bonded map[uint32]string `json:"bonded,omitempty"`
+	// UIDs is which Bison Relay identity delivered each seat's own funding
+	// announcement. Display only - it labels seats with names, and nothing
+	// that moves money ever reads it - but it is kept because the message
+	// that taught it arrives once and a restart should not cost the labels.
+	UIDs map[uint32]string `json:"uids,omitempty"`
 }
 
 // sidRe is the shape a session id takes, repeated here because this builds a

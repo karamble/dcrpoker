@@ -21,6 +21,10 @@ export type SeatView = {
   seat: number
   ours?: boolean
   key?: string
+  /** What the host calls the identity that spoke for this seat. A label for a
+   *  chair, never identity: fall back to the seat number, and nothing anywhere
+   *  decides anything by name. */
+  name?: string
   /** An outpoint this peer found on the chain. Absent means it has not seen
    *  the money, which is not the same as the money not being there. */
   stake?: string
@@ -86,6 +90,19 @@ export type Waiting = {
  *  here and the felt has nothing to draw for it. */
 export type Shown = { seat: number; cards: string[] }
 
+export type Chair = {
+  seat: number
+  stack: number
+  committed: number
+  total: number
+  folded?: boolean
+  allIn?: boolean
+  /** The most recent action this seat took in the hand, read from the signed
+   *  log rather than inferred, with its amount when the action carries one. */
+  last?: string
+  lastAmount?: number
+}
+
 export type Shuffle = { seat: number; state: 'ours' | 'verified' | 'awaited' }
 
 export type Award = { seat: number; atoms: number }
@@ -94,15 +111,6 @@ export type Award = { seat: number; atoms: number }
  *  stack it has signed for at the last boundary. `committed` is the chips in
  *  front of the seat on this street — still theirs until the street ends,
  *  because an uncalled bet has to be returnable. */
-export type Chair = {
-  seat: number
-  stack: number
-  committed: number
-  total: number
-  folded?: boolean
-  allIn?: boolean
-}
-
 export type HandView = {
   sid: string
   match: string
@@ -123,6 +131,8 @@ export type HandView = {
   stacks: number[]
   shuffles?: Shuffle[]
   done: boolean
+  /** The seat holding the dealer button this hand. */
+  button?: number
   awards?: Award[]
   settled?: Boundary
 }

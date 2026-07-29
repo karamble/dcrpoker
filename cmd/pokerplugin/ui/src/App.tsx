@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useReducer, useState } from 'react'
 import { api, type Bond as BondInfo, type HandView, type Snapshot } from './api'
-import { dcr } from './format'
 import { useHost } from './host'
 import { useTableState } from './state'
 import { Bond } from './table/Bond'
@@ -9,32 +8,30 @@ import { Money } from './table/Money'
 import { Progress } from './table/Progress'
 import { OnChain } from './table/OnChain'
 import { Provenance } from './table/Provenance'
-import { Actions } from './felt/Actions'
-import { Felt } from './felt/Felt'
+import { Verify } from './table/Verify'
+import { ActionBar } from './felt/ActionBar'
+import { Status } from './felt/Status'
+import { Table } from './felt/Table'
 
-// Two views of one table.
+// One table, two ways of standing at it.
 //
-// The table view is first and is the default, because it answers the questions
-// that decide whether somebody should trust this at all: where the deck came
-// from, where the money is, what happened on the chain. The felt is second.
-// That ordering is the argument the whole interface is making.
+// While a table is being formed and funded, the scrolling view leads: the step
+// rail says what to do next and the cards under it are the full account. Once
+// it deals, the stage takes over - the table filling the window, the verify
+// rail at its elbow, one status line and one action bar that never move. The
+// detail view stays a click away as Details, because the money cards and the
+// Leave button live there and hiding them would trade the wrong thing.
 
-type Tab = 'table' | 'felt'
+type Tab = 'play' | 'details'
 
-/** readTab picks the opening tab from the fragment, so a particular view can be
- *  linked to and reloaded back into. The dashboard's own sections do the same
- *  thing with the same mechanism. */
 /** holdFor is how long a finished hand stays on screen after it ends.
  *
  *  A showdown was over in about a second: the cards opened, the next hand's
  *  preparations were already running, and the screen moved on before anybody
- *  could read what they had just been shown. The one moment the interface has
- *  to display its working was the one moment it did not.
- *
- *  Nothing is paused to do this. The table goes on shuffling and dealing behind
- *  it - a hand that has ended cannot be affected by looking at it - so this is
- *  a fifteen second hold on what is *rendered*, and no delay at all to what is
- *  played. */
+ *  could read what they had just been shown. Nothing is paused to fix that -
+ *  the table goes on shuffling behind the held picture, since a hand that has
+ *  ended cannot be affected by being looked at. A hold on what is rendered,
+ *  not a delay to anything played. */
 const holdFor = 15_000
 
 /** useShowdownHold keeps the hand that just finished on screen for a while. */
@@ -59,7 +56,7 @@ function useShowdownHold(hand?: HandView): { view: HandView; left: number } | un
 }
 
 function readTab(): Tab {
-  return window.location.hash.replace('#', '') === 'felt' ? 'felt' : 'table'
+  return window.location.hash.replace('#', '') === 'details' ? 'details' : 'play'
 }
 
 export function App() {
@@ -68,8 +65,8 @@ export function App() {
   const [tab, setTab] = useState<Tab>(readTab)
   const [chosen, setChosen] = useState<string>()
   // Held here because two things need it: the step rail, which asks whether
-  // this player can join anything at all, and the card at the bottom that says
-  // when it comes back. Asking twice would be two answers on two clocks.
+  // this player can join anything at all, and the card that says when it comes
+  // back. Asking twice would be two answers on two clocks.
   const [bond, setBond] = useState<BondInfo>()
 
   useEffect(() => {
@@ -80,8 +77,8 @@ export function App() {
 
   const show = (next: Tab) => {
     setTab(next)
-    // replaceState rather than assigning the hash, so switching tabs does not
-    // fill the history of a panel somebody cannot press Back in anyway.
+    // replaceState rather than assigning the hash, so switching views does
+    // not fill the history of a panel nobody can press Back in.
     window.history.replaceState(null, '', `#${next}`)
   }
 
@@ -95,8 +92,8 @@ export function App() {
   }, [state.tables, chosen, host.tableId])
 
   const table = state.tables.find((t) => t.sid === sid)
-  const hand = sid ? state.hands[sid] : undefined
-  const holding = useShowdownHold(hand)
+  const liveHand = sid ? state.hands[sid] : undefined
+  const holding = useShowdownHold(liveHand)
   const ledger = sid ? state.ledgers[sid] : undefined
 
   useEffect(() => {
@@ -104,15 +101,67 @@ export function App() {
     host.title(table.dealing ? `hand ${table.hand ?? 0}` : table.state)
   }, [table, host])
 
+  const roster = ledger?.roster ?? table?.roster ?? []
+  const names = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const s of roster) if (s.name) m.set(s.seat, s.name)
+    return m
+  }, [roster])
+
+  // The stage leads whenever there is a game to stand at; the held showdown
+  // counts, because that is the moment worth looking at.
+  const hand = holding?.view ?? liveHand
+  const stageOn = Boolean(table && !table.finished && (table.dealing || holding))
+
+  if (stageOn && table && tab !== 'details') {
+    const winners =
+      holding && (holding.view.awards?.length ?? 0) > 0
+        ? (holding.view.awards ?? [])
+            .filter((a) => {
+              const paid = holding.view.chairs?.find((c) => c.seat === a.seat)?.total ?? 0
+              return a.atoms > paid
+            })
+            .map((a) => a.seat)
+        : undefined
+
+    return (
+      <div className="stage">
+        <Verify table={table} ledger={ledger} hand={hand} names={names} />
+        <div className="arena">
+          <header className="topbar">
+            <span className="hand-no">hand {hand?.hand ?? table.hand ?? '—'}</span>
+            {hand?.street && hand.phase === 'betting' && <span>{hand.street}</span>}
+            <span className="spacer" />
+            <span className="live">
+              <span className={`dot ${state.live ? 'on' : 'off'}`} />
+              {state.live ? 'live' : 'polling'}
+            </span>
+            <button className="link" onClick={() => show('details')}>
+              Details
+            </button>
+          </header>
+          <Table
+            hand={hand}
+            roster={roster}
+            ourSeat={table.seat}
+            stacks={table.live ?? table.settled?.stacks}
+            won={winners}
+          />
+          <Status table={table} hand={hand} holdingLeft={holding?.left} names={names} />
+          <ActionBar hand={holding ? undefined : liveHand} />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="app">
       <nav className="bar">
-        <button className="tab" role="tab" aria-selected={tab === 'table'} onClick={() => show('table')}>
-          The table
-        </button>
-        <button className="tab" role="tab" aria-selected={tab === 'felt'} onClick={() => show('felt')}>
-          The felt
-        </button>
+        {stageOn && (
+          <button className="tab" onClick={() => show('play')}>
+            ← Back to the table
+          </button>
+        )}
         <span className="bar-spacer" />
         <span className="live">
           <span className={`dot ${state.live ? 'on' : 'off'}`} />
@@ -143,11 +192,11 @@ export function App() {
             <Nothing ready={host.ready} error={state.error} />
             {host.ready && <Bond />}
           </>
-        ) : tab === 'table' ? (
+        ) : (
           <>
             {table.finished && <Finished table={table} />}
             {!table.finished && (
-              <Progress table={table} ledger={ledger} bond={bond} onFelt={() => show('felt')} />
+              <Progress table={table} ledger={ledger} bond={bond} onFelt={() => show('play')} />
             )}
             <Provenance hand={hand} />
             <Money table={table} ledger={ledger} />
@@ -155,115 +204,8 @@ export function App() {
             <Lifecycle table={table} />
             <Bond onLoad={setBond} />
           </>
-        ) : holding ? (
-          // The hand that just ended, kept up long enough to read. The table is
-          // not waiting for this - it is already shuffling the next one.
-          <section className="card">
-            <div className="felt-wrap">
-              <Felt hand={holding.view} roster={ledger?.roster ?? table.roster ?? []} />
-              <Done hand={holding.view} left={holding.left} />
-            </div>
-          </section>
-        ) : !table.dealing || !hand ? (
-          // The plugin answers 400 on /table/hand until the table deals, which
-          // is a state and not a failure - so this asks the snapshot instead
-          // and never calls that route at all.
-          <section className="card">
-            <h2>The felt</h2>
-            <p className="lede">
-              {table.dealing
-                ? 'The last hand is over and the seats are signing the result. The next hand ' +
-                  'starts when they agree - nothing here is final until they do.'
-                : `Nothing is being dealt yet. ${table.funded} of ${table.seats} stakes and ` +
-                  `${table.bonded} of ${table.seats} bonds are on the chain, and the table ` +
-                  'deals when both are complete.'}
-            </p>
-            <p className="lede muted">
-              The buy-in is {dcr(table.buyinAtoms)} DCR a seat. Everything outstanding is
-              on the table view.
-            </p>
-          </section>
-        ) : (
-          <section className="card">
-            <div className="felt-wrap">
-              <Felt hand={hand} roster={ledger?.roster ?? table.roster ?? []} />
-              {hand.done ? (
-                <Done hand={hand} />
-              ) : (
-                <Actions hand={hand} />
-              )}
-            </div>
-          </section>
         )}
       </main>
-    </div>
-  )
-}
-
-/** Done says what the hand did to this player, in those words.
- *
- *  It used to say "the hand is over" and then list what each seat was awarded,
- *  which is the reducer's vocabulary rather than a person's: an award is not a
- *  result. A seat that put in 1000 and is awarded 1000 won nothing, and the old
- *  screen showed it the same way it showed a seat that was awarded 1000 having
- *  put in nothing. What somebody wants is the difference. */
-function Done({
-  hand,
-  left,
-}: {
-  hand: ReturnType<typeof useTableState>['hands'][string]
-  left?: number
-}) {
-  const awards = hand.awards ?? []
-  const paid = hand.chairs?.find((c) => c.seat === hand.seat)?.total ?? 0
-  const net = (awards.find((a) => a.seat === hand.seat)?.atoms ?? 0) - paid
-
-  // No awards means the result is not known here yet, which is not the same as
-  // having won nothing - and reading it as nothing told both seats they had
-  // lost, which cannot be true of the same hand.
-  //
-  // They are absent while a showdown is still short a card: Settle refuses to
-  // guess and the plugin sends no awards rather than wrong ones. So this waits
-  // for them instead of doing the arithmetic on a missing number.
-  if (awards.length === 0) {
-    return (
-      <div className="rows">
-        <p className="headline">The hand is over</p>
-        <p className="lede">
-          What it came to is still being worked out - a showdown settles when the last
-          card everybody is owed has arrived, and nothing here guesses at it before then.
-        </p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="rows">
-      <p className="headline">
-        {net > 0 ? `You won ${dcr(net)} DCR` : net < 0 ? `You lost ${dcr(-net)} DCR` : 'You broke even'}
-      </p>
-      {awards.map((a) => {
-        const seatPaid = hand.chairs?.find((c) => c.seat === a.seat)?.total ?? 0
-        const seatNet = a.atoms - seatPaid
-        return (
-          <div className="row" key={a.seat}>
-            <span>
-              seat {a.seat}
-              {a.seat === hand.seat ? ' · you' : ''}
-            </span>
-            <span className={seatNet > 0 ? 'good' : seatNet < 0 ? 'muted' : undefined}>
-              {seatNet > 0 ? `+${dcr(seatNet)}` : seatNet < 0 ? `-${dcr(-seatNet)}` : '±0'} DCR
-            </span>
-          </div>
-        )
-      })}
-      <p className="lede muted">
-        The seats are signing this result now. Nothing is final until they all have, and
-        the next hand starts when they agree.
-        {left !== undefined
-          ? ` The next hand is already being shuffled; this stays up for ${left}s.`
-          : ''}
-      </p>
     </div>
   )
 }

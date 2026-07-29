@@ -114,15 +114,15 @@ func (t *tables) Ledger(sid string) (*ledgerView, error) {
 	if tbl == nil {
 		return nil, fmt.Errorf("not at a table under session %s", sid)
 	}
-	return tbl.ledger(t.height), nil
+	return tbl.ledger(t.height, t.names), nil
 }
 
 // ledger is the report itself. Requires the registry lock.
-func (tbl *table) ledger(height int64) *ledgerView {
+func (tbl *table) ledger(height int64, names map[string]string) *ledgerView {
 	v := &ledgerView{
 		SID:       tbl.terms.SID,
 		Height:    height,
-		Roster:    tbl.seatViews(),
+		Roster:    tbl.seatViews(names),
 		Refreshed: tbl.refreshed,
 		Events:    append([]chainEvent(nil), tbl.events...),
 	}

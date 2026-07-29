@@ -150,6 +150,7 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 	}
 	tbl.bonded[bn.Seat] = bn.Outpoint
 	tbl.bondValue[bn.Seat] = value
+	tbl.uids[bn.Seat] = d.Sender
 	delete(tbl.bondWaiting, bn.Seat)
 	t.persist(tbl)
 	log.Printf("pokerplugin: table %s: seat %d is bonded at %s (%d of %d seats)",

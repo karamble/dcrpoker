@@ -93,6 +93,9 @@ type handView struct {
 	Phase  string `json:"phase"`
 	Street string `json:"street"`
 
+	// Button is the seat holding the dealer button this hand.
+	Button int `json:"button"`
+
 	// ToAct is the seat whose turn it is, or -1 when nobody is to act.
 	// Ours says whether that is this player, which is the one thing a
 	// caller always needs and should not have to work out.
@@ -168,6 +171,12 @@ type chair struct {
 	Total  int64 `json:"total"`
 	Folded bool  `json:"folded,omitempty"`
 	AllIn  bool  `json:"allIn,omitempty"`
+	// Last is the most recent action this seat took in the hand being
+	// played, with its amount when the action carries one. Read from the
+	// signed log entries rather than inferred, so what the badge says is
+	// what the seat put its name to.
+	Last       string `json:"last,omitempty"`
+	LastAmount int64  `json:"lastAmount,omitempty"`
 }
 
 // shuffleView is one seat's turn with the deck, and what this peer can say
@@ -270,13 +279,29 @@ func (t *tables) HandView(sid string) (*handView, error) {
 			v.Legal = legalActions(st, int(seat))
 		}
 	}
+	v.Button = st.Button
 	v.Shuffles = shuffles(h, len(tbl.play.Stacks()), seat)
+	// Each seat's most recent move, read from the signed log for this hand.
+	type lastMove struct {
+		action gamelog.Action
+		amount int64
+	}
+	last := map[uint32]lastMove{}
+	for _, e := range tbl.play.Chain().Entries() {
+		if e.Hand == st.Hand {
+			last[e.Seat] = lastMove{action: e.Action, amount: e.Amount}
+		}
+	}
 	for i := range st.Seats {
 		s := st.Seats[i]
-		v.Chairs = append(v.Chairs, chair{
+		c := chair{
 			Seat: i, Stack: s.Stack, Committed: s.Committed,
 			Total: s.Total, Folded: s.Folded, AllIn: s.AllIn,
-		})
+		}
+		if m, ok := last[uint32(i)]; ok {
+			c.Last, c.LastAmount = string(m.action), m.amount
+		}
+		v.Chairs = append(v.Chairs, c)
 	}
 
 	if hole, ok := h.Hole(); ok {

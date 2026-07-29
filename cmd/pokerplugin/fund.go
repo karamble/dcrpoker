@@ -162,6 +162,10 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 		return nil
 	}
 	tbl.funded[fn.Seat] = fn.Outpoint
+	// The sender of a verified funding announcement is the identity that
+	// owns the seat: only owners ever send these, and the repeats resend
+	// only their own. Kept purely to put a name on the chair.
+	tbl.uids[fn.Seat] = d.Sender
 	delete(tbl.stakeWaiting, fn.Seat)
 	t.persist(tbl)
 	log.Printf("pokerplugin: table %s: seat %d is funded at %s (%d of %d seats)",

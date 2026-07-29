@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -477,6 +478,75 @@ func TestAnAnnouncedStakeSaysWhyItIsNotAcceptedYet(t *testing.T) {
 			if v.Stake != "" && v.StakeWait != nil {
 				t.Fatalf("seat %d is funded at %s and still says it is waiting",
 					v.Seat, v.Stake)
+			}
+		}
+	}
+}
+
+// A chair gets a name, from the two halves that have to meet.
+//
+// The plugin learns which identity spoke for a seat - the sender of that seat's
+// own funding announcement, a message only its owner ever sends - and the host
+// says what identities are called, because the plugin cannot ask Bison Relay
+// anything. Neither half is worth anything alone, and the joined result is a
+// label: nothing that moves money reads it, and a seat nobody can resolve is
+// shown by its number.
+func TestASeatIsNamedByItsOwnAnnouncementAndTheHost(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	// The host says what "them" is called, before the seat has even funded:
+	// order must not matter, since the mint and the funding race in life.
+	if code, body := post(t, p, "/names/set",
+		map[string]any{"names": map[string]string{"them": "alice"}}); code != http.StatusOK {
+		t.Fatalf("/names/set returned %d: %s", code, body)
+	}
+
+	seats, ok := p.tables.m[terms.SID].form.Seats()
+	if !ok {
+		t.Fatal("not seated")
+	}
+	var theirs uint32
+	mine, _ := p.tables.m[terms.SID].form.OurSeat()
+	for seat := range seats {
+		if seat != mine {
+			theirs = seat
+		}
+	}
+
+	// A funding announcement that verifies: the outpoint really pays the
+	// seat's deposit script on this chain.
+	dep, err := p.tables.m[terms.SID].deposit(theirs, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	outpoint := payTo(h, dep.PkScriptHex, "cd")
+	fn, err := membership.SignFunding(terms, theirs, outpoint, other.Session)
+	if err != nil {
+		t.Fatalf("sign funding: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindFunded, schema.FundedFrom(fn))
+
+	var name string
+	for _, s := range p.tables.snapshots() {
+		for _, v := range s.Roster {
+			if v.Seat == theirs {
+				name = v.Name
+			}
+		}
+	}
+	if name != "alice" {
+		t.Fatalf("seat %d is named %q, want %q", theirs, name, "alice")
+	}
+
+	// And our own seat, which announced nothing through the transport, stays
+	// a number rather than borrowing anybody's name.
+	for _, s := range p.tables.snapshots() {
+		for _, v := range s.Roster {
+			if v.Seat == mine && v.Name != "" {
+				t.Fatalf("our own seat borrowed the name %q", v.Name)
 			}
 		}
 	}
