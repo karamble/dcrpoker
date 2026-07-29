@@ -380,6 +380,8 @@ func (p *plugin) routes() http.Handler {
 	// this table's CSV, the standing bond by the identity's bond key for the
 	// minimum, and this by the session key for a week.
 	mux.HandleFunc("/table/bond/sweep", p.guard(p.handleTableBondSweep))
+	// What is still locked at tables, and when each of it comes back.
+	mux.HandleFunc("/table/bonds", p.guard(p.handleTableBonds))
 
 	// The seed nothing can regenerate, and the one way to put it back.
 	mux.HandleFunc("/identity/backup", p.guard(p.handleIdentityBackup))

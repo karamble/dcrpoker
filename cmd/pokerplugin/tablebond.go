@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
@@ -416,4 +417,104 @@ func (t *tables) forgetTableBond(sid string, seat uint32) {
 	delete(tbl.bonded, seat)
 	delete(tbl.bondedAt, seat)
 	t.persist(tbl)
+}
+
+// handleTableBonds reports every table bond this player holds and when each
+// comes back.
+//
+// A list rather than a field on the table, because these outlive the table by a
+// week: the lock has to outlast the game by enough that nobody can sit out their
+// own claim window, so by the time one matures the table it belonged to is long
+// finished and would not be the place anybody looks. This is what the host's
+// Bonds screen is built from.
+func (p *plugin) handleTableBonds(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	type held struct {
+		SID       string `json:"sid"`
+		Seat      uint32 `json:"seat"`
+		Outpoint  string `json:"outpoint"`
+		Address   string `json:"address,omitempty"`
+		Atoms     int64  `json:"atoms,omitempty"`
+		MinBlocks uint32 `json:"minBlocks"`
+
+		Confirmations int64  `json:"confirmations,omitempty"`
+		Height        int64  `json:"height,omitempty"`
+		MaturesAt     int64  `json:"maturesAt,omitempty"`
+		BlocksLeft    int64  `json:"blocksLeft,omitempty"`
+		Spendable     bool   `json:"spendable,omitempty"`
+		Spent         bool   `json:"spent,omitempty"`
+		ChainErr      string `json:"chainErr,omitempty"`
+	}
+
+	// The outpoints first, under the lock, then the chain without it: one slow
+	// lookup must not stall every table.
+	type want struct {
+		sid      string
+		seat     uint32
+		outpoint string
+		address  string
+	}
+	var wants []want
+	p.tables.mu.Lock()
+	for sid, tbl := range p.tables.m {
+		seat, ok := tbl.form.OurSeat()
+		if !ok {
+			continue
+		}
+		outpoint := tbl.bondedAt[seat]
+		if outpoint == "" {
+			outpoint = tbl.bonded[seat]
+		}
+		if outpoint == "" {
+			continue
+		}
+		w := want{sid: sid, seat: seat, outpoint: outpoint}
+		if b, err := tbl.bond(seat, p.tables.params); err == nil {
+			w.address = b.Address
+		}
+		wants = append(wants, w)
+	}
+	p.tables.mu.Unlock()
+
+	sort.Slice(wants, func(i, j int) bool { return wants[i].sid < wants[j].sid })
+
+	ctx := r.Context()
+	tip, tipErr := p.bridge.ChainTip(ctx)
+	out := make([]held, 0, len(wants))
+	for _, w := range wants {
+		h := held{SID: w.sid, Seat: w.seat, Outpoint: w.outpoint, Address: w.address,
+			MinBlocks: membership.TableBondBlocks}
+		txid, vout, err := splitOutpoint(w.outpoint)
+		if err != nil {
+			h.ChainErr = err.Error()
+			out = append(out, h)
+			continue
+		}
+		found, err := p.bridge.Outpoint(ctx, txid, vout)
+		switch {
+		case err != nil:
+			h.ChainErr = err.Error()
+		case !found.Found:
+			// Never confirmed, or already taken back. Both mean the same
+			// thing to somebody asking what is still locked up.
+			h.Spent = true
+		default:
+			h.Atoms = found.ValueAtoms
+			h.Confirmations = found.Confirmations
+			if tipErr == nil {
+				h.Height = tip.Height
+				h.MaturesAt = tip.Height - found.Confirmations + 1 + int64(membership.TableBondBlocks)
+			}
+			if left := int64(membership.TableBondBlocks) - found.Confirmations; left > 0 {
+				h.BlocksLeft = left
+			} else {
+				h.Spendable = true
+			}
+		}
+		out = append(out, h)
+	}
+	writeJSON(w, map[string]any{"bonds": out})
 }
