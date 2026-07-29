@@ -12,6 +12,7 @@ import { Verify } from './table/Verify'
 import { ActionBar } from './felt/ActionBar'
 import { Status } from './felt/Status'
 import { Table } from './felt/Table'
+import { TableOver } from './felt/TableOver'
 
 // One table, two ways of standing at it.
 //
@@ -140,13 +141,26 @@ export function App() {
               Details
             </button>
           </header>
-          <Table
-            hand={hand}
-            roster={roster}
-            ourSeat={table.seat}
-            stacks={table.live ?? table.settled?.stacks}
-            won={winners}
-          />
+          <div className="table-zone">
+            <Table
+              hand={hand}
+              roster={roster}
+              ourSeat={table.seat}
+              stacks={table.live ?? table.settled?.stacks}
+              won={winners}
+            />
+            {/* The end of the table, after the last hand has had its fifteen
+              * seconds. It covers the felt rather than the whole stage, so the
+              * verify rail keeps saying what the payout below is made of. */}
+            {table.over && !holding && (
+              <TableOver
+                table={table}
+                ledger={ledger}
+                onDetails={() => show('details')}
+                onClose={host.close}
+              />
+            )}
+          </div>
           <Status table={table} hand={hand} holdingLeft={holding?.left} names={names} />
           <ActionBar hand={holding ? undefined : liveHand} />
         </div>

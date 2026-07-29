@@ -28,6 +28,19 @@ export function Status({
 }) {
   const who = (seat: number) => names.get(seat) || `seat ${seat}`
 
+  // A table that is over serves a between-hands view with done=true and no
+  // awards forever, which is not a showdown short a card - it is the end. The
+  // overlay above carries the full account; this line only has to not lie.
+  // During the showdown hold the result line below still runs, because the
+  // last hand's outcome is exactly what those fifteen seconds are for.
+  if (table.over && holdingLeft === undefined) {
+    return (
+      <div className="status">
+        <span>The table has ended — the payout is on its way to the chain.</span>
+      </div>
+    )
+  }
+
   if (hand?.done) {
     const awards = hand.awards ?? []
     if (awards.length === 0) {

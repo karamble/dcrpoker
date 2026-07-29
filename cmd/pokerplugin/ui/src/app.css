@@ -357,6 +357,38 @@ button.act.fold { color: var(--bad); }
 /* a keyless wrapper that adds no box, so seats position against the table */
 .contents { display: contents; }
 
+/* the table plus whatever must sit over it, filling the arena's middle row */
+.table-zone { position: relative; min-height: 0; display: flex; }
+.table-zone > .table-wrap { flex: 1; }
+
+/* the end of the table, over the felt and under nothing */
+.stage-over {
+  position: absolute; inset: 0; z-index: 5;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+.endcard {
+  width: min(440px, calc(100% - 32px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 18px 50px rgb(0 0 0 / .5);
+  padding: 18px 20px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.endcard h2 {
+  margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.end-result { margin: 0; font-size: 24px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.end-result.won { color: var(--good); }
+.end-result.lost { color: var(--bad); }
+.end-rows { display: flex; flex-direction: column; gap: 5px; }
+.end-row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.end-row > span { color: var(--ink-2); }
+.end-row > b { font-weight: 650; font-variant-numeric: tabular-nums; }
+.end-note { margin: 0; font-size: 13px; color: var(--ink-3); }
+.end-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
 /* -- status line: always present, fixed height, only the words change -- */
 .status {
   display: flex; align-items: center; justify-content: center; gap: 10px;
