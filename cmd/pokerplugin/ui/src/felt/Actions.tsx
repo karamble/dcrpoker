@@ -59,7 +59,20 @@ export function Actions({ hand }: { hand: HandView }) {
   const send = (action: string) => {
     setBusy(true)
     setRefused(undefined)
-    const value = action === 'bet' || action === 'raise' ? atoms(typed) : 0
+    // Every aggressive action names a total for the street, all-in included -
+    // the reducer reads Amount the same way for bet, raise and all-in, and
+    // refuses an all-in that does not come to everything the seat has.
+    //
+    // It used to send zero, having been lumped in with fold, check and call
+    // where the size is forced and the field ignored. The button therefore
+    // announced an all-in of nothing, which is not a smaller bet but an
+    // impossible one.
+    const value =
+      action === 'bet' || action === 'raise'
+        ? atoms(typed)
+        : action === 'allin'
+          ? (ceiling ?? 0)
+          : 0
     api
       .act(hand.sid, action, value)
       .catch((e) => setRefused(String(e instanceof Error ? e.message : e)))
@@ -93,6 +106,10 @@ export function Actions({ hand }: { hand: HandView }) {
           >
             {labels[action] ?? action}
             {action === 'call' && hand.toCall > 0 ? ` ${dcr(hand.toCall)}` : ''}
+            {/* What it costs, on the two buttons whose size is forced. Somebody
+              * about to put their whole stack in should be told the number
+              * before they press, not after. */}
+            {action === 'allin' && ceiling ? ` ${dcr(ceiling)}` : ''}
           </button>
         ))}
       </div>
