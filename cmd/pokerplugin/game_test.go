@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 )
@@ -117,9 +118,7 @@ func TestAHandSurvivesALostFrameOfEveryKind(t *testing.T) {
 	// ever produced to lose. Each tick recovers one thing and lets the next
 	// be lost, which is the point: these are not three independent failures,
 	// they are one after another in the same hand.
-	advance(t, h, 12, a, b)
-	waitBetting(t, a)
-	waitBetting(t, b)
+	advanceUntilBetting(t, h, 40, a, b)
 	for _, kind := range []schema.Kind{schema.KindCardKey, schema.KindShuffle, schema.KindShare} {
 		if h.dropped(kind) != 1 {
 			t.Fatalf("no %s was lost, so that leg proves nothing", kind)
@@ -248,4 +247,72 @@ func TestTheTableCannotBePaidOutTwice(t *testing.T) {
 			t.Fatalf("%s was paid out of and is still spendable", in.PreviousOutPoint)
 		}
 	}
+}
+
+// advanceUntilBetting keeps the chain moving until every seat is at somebody's
+// turn, and gives up after a budget measured in blocks.
+//
+// Every repair in this protocol is gated to once a block: a stake, a bond, a
+// payout and a stalled hand are all repeated at most once per height, because a
+// peer that resent on every poll would flood a channel that is already lossy. So
+// a test that stops the clock and then waits on the wall has stopped paying for
+// the repair it is waiting for - and waitBetting does exactly that, which is why
+// three lost frames sometimes recovered inside the twelve blocks it used to be
+// given and sometimes did not. The failure looked like a flake and was really a
+// budget denominated in the wrong unit.
+//
+// Blocks rather than seconds, then, and enough of them that a genuine stall is
+// still a failure rather than a slow pass.
+func advanceUntilBetting(t *testing.T, h *hub, blocks int, peers ...*plugin) {
+	t.Helper()
+	for range blocks {
+		ready := true
+		for _, p := range peers {
+			if !atSomebodysTurn(p) {
+				ready = false
+			}
+		}
+		if ready {
+			return
+		}
+		tickAll(peers...)
+		h.inflight.Wait()
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Say what each seat was waiting for. A stall reported as "it did not
+	// happen" is the same report whatever caused it, and these are exactly the
+	// faults where the difference between "nobody resent it" and "somebody
+	// resent it and it was refused" is the whole diagnosis.
+	for i, p := range peers {
+		for _, s := range p.tables.snapshots() {
+			if !s.Dealing {
+				continue
+			}
+			v, err := p.tables.HandView(s.SID)
+			if err != nil {
+				t.Logf("peer %d: hand view: %v", i, err)
+				continue
+			}
+			t.Logf("peer %d: hand %d phase %s toAct %d shuffles %+v",
+				i, v.Hand, v.Phase, v.ToAct, v.Shuffles)
+			for _, seat := range s.Roster {
+				if seat.Says != "" {
+					t.Logf("peer %d: %s", i, seat.Says)
+				}
+			}
+		}
+	}
+	t.Fatalf("the hand never reached anybody's turn in %d blocks", blocks)
+}
+
+func atSomebodysTurn(p *plugin) bool {
+	for _, s := range p.tables.snapshots() {
+		if !s.Dealing {
+			continue
+		}
+		if v, err := p.tables.HandView(s.SID); err == nil && v.Phase == "betting" && v.ToAct >= 0 {
+			return true
+		}
+	}
+	return false
 }

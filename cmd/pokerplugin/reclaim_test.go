@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
@@ -92,7 +93,10 @@ func TestATableNobodyCanFinishStillPaysOut(t *testing.T) {
 	// never starts. Dropping them before that hand rather than after is the
 	// whole trick, because a boundary opens its successor immediately - wait
 	// until a hand has visibly finished and the next has already shuffled.
-	h.drop(schema.KindShuffle, 8)
+	// Generously, so the strand holds: republication now repeats on a timer,
+	// so a small budget would be eaten by the repairs and let a later copy
+	// through - which would un-strand the hand this test needs stranded.
+	h.drop(schema.KindShuffle, 500)
 
 	// A real result to fall back to, rather than the buy-ins.
 	playHand(t, h, terms.SID, foldAt("preflop"), a, b)
@@ -100,11 +104,22 @@ func TestATableNobodyCanFinishStillPaysOut(t *testing.T) {
 	if at == 0 {
 		t.Fatal("no hand was ever signed, so there is no boundary to fall back to")
 	}
-	if h.dropped(schema.KindShuffle) == 0 {
-		t.Fatal("no shuffle was ever lost, so nothing is stranded")
+
+	// Wait for the next hand to actually reach for a shuffle, rather than
+	// assuming it has. A boundary opens its successor, but not instantly.
+	stranded := false
+	for range 20 {
+		if h.dropped(schema.KindShuffle) > 0 && handNumber(t, a, terms.SID) > at {
+			stranded = true
+			break
+		}
+		tickAll(a, b)
+		h.inflight.Wait()
+		time.Sleep(10 * time.Millisecond)
 	}
-	if n := handNumber(t, a, terms.SID); n <= at {
-		t.Fatalf("hand %d is the newest and %d is signed, so nothing is in progress to strand", n, at)
+	if !stranded {
+		t.Fatalf("no hand was left stranded: %d shuffles lost, newest hand %d, signed %d",
+			h.dropped(schema.KindShuffle), handNumber(t, a, terms.SID), at)
 	}
 
 	// One seat leaving is not enough, and must not be: it cannot fold its way

@@ -157,6 +157,11 @@ func (tbl *table) noteFork(theirs *gamelog.HeadAttestation, ourHead [32]byte, se
 	return nil
 }
 
+// stallEvery is how many blocks a stuck hand waits before saying its messages
+// again. Slow, because the common reason a table is quiet is that somebody is
+// thinking; not never, because the uncommon reason is that a repair was lost.
+const stallEvery = 4
+
 // republishStalled says again what this seat has already sent.
 //
 // Only when this seat owes nothing. A seat that still owes something is a seat
@@ -164,9 +169,23 @@ func (tbl *table) noteFork(theirs *gamelog.HeadAttestation, ourHead [32]byte, se
 // anybody. A seat that owes nothing and is still not being asked for anything is
 // in the one situation this exists for.
 //
-// Bounded by progress rather than by a count: it fires once per stall, not once
-// per tick, so a table where somebody is simply thinking sends nothing at all.
-func (t *tables) republishStalled(tbl *table) []outgoing {
+// Said again when the hand moves, and again every stallEvery blocks while it
+// does not.
+//
+// The second half is the one that matters, and leaving it out cost a stuck hand
+// roughly one run in ten. Bounding this by progress alone looks right - a table
+// where somebody is merely thinking should not be shouted at - but it stops on
+// exactly the wrong condition. If the repeat is itself lost, nothing moves, so
+// the fingerprint does not change, so it is never said again: the one message
+// that would have unstuck the table is the one message the rule now forbids.
+// Our own view has not changed *because* the peer never got it.
+//
+// It is the fault this codebase has been bitten by four times over, in a new
+// dress. Anything that must arrive is repeated on a clock and stopped by a
+// deadline, never by our own state looking settled - so this now does both:
+// immediately when the hand moves, because that is new information, and
+// otherwise on a slow timer for as long as the hand is stuck.
+func (t *tables) republishStalled(tbl *table, height int64) []outgoing {
 	if tbl.play == nil || tbl.finished || tbl.play.Over() {
 		return nil
 	}
@@ -180,13 +199,14 @@ func (t *tables) republishStalled(tbl *table) []outgoing {
 		return nil
 	}
 	at := tbl.progress()
-	if at == tbl.stalledAt {
-		// Said already, and nothing has moved since. Saying it every
-		// thirty seconds would be a peer shouting at a table that is
-		// genuinely just slow.
+	if at == tbl.stalledAt && height > 0 && height < tbl.stalledSaidAt+stallEvery {
+		// Said recently, and nothing has moved since. A table where
+		// somebody is genuinely just slow hears from us every stallEvery
+		// blocks and no more often.
 		return nil
 	}
 	tbl.stalledAt = at
+	tbl.stalledSaidAt = height
 
 	held := tbl.play.Republish()
 	if len(held) == 0 {

@@ -117,8 +117,12 @@ type table struct {
 	payoutAnnouncedAt int64
 
 	// stalledAt is how far the hand had got when this seat last said its
-	// messages again, so a stall is answered once rather than every tick.
-	stalledAt string
+	// messages again, so a stall is answered once rather than every tick, and
+	// stalledSaidAt is the height it said them at - because a repeat that was
+	// itself lost has to be tried again, and nothing about our own state will
+	// ever say that it was.
+	stalledAt     string
+	stalledSaidAt int64
 
 	// finished says this player has got up from the table and it is kept
 	// only because it still holds their money. See tables.drop.
@@ -802,7 +806,7 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, t.announceBondAgain(tbl, height)...)
 		out = append(out, t.announcePayoutAgain(tbl, height)...)
 		out = append(out, t.exchangeHeads(tbl)...)
-		out = append(out, t.republishStalled(tbl)...)
+		out = append(out, t.republishStalled(tbl, height)...)
 		if tbl.fundingLapsed(height) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)
