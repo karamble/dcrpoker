@@ -25,7 +25,7 @@ The gaming sandbox is on a Docker network with no route off the host. That is
 what makes it safe to run an untrusted game beside a wallet, and it means a
 browser cannot reach the game directly. The dashboard is on both networks, so it
 is the only possible door, and Umbrel's `app_proxy` knows exactly one
-destination — which settles it: one entry, one origin, everything under it.
+destination - which settles it: one entry, one origin, everything under it.
 
 ### Three kinds of authentication, on three subtrees
 
@@ -37,7 +37,7 @@ destination — which settles it: one entry, one origin, everything under it.
 
 They are separate because they cannot be merged. `/api` refuses `Origin: null`
 and wants a cookie a sandboxed frame will never send. `/gaming` authenticates a
-game and points the other way — the game calls the host, not the reverse.
+game and points the other way - the game calls the host, not the reverse.
 
 **The panel token is not the game token, and that is the load-bearing
 distinction.** A game's own token authorizes `/gaming/spend`, `/gaming/send` and
@@ -54,15 +54,15 @@ the first.
 
 ### The allowlist is the access control
 
-Not defence in depth — the control itself. A plugin accepts one bearer token for
+Not defence in depth - the control itself. A plugin accepts one bearer token for
 every route it has, including `/identity/backup`, which returns the seed every
 key is derived from. It cannot do better: the proxy authenticates as the game,
 so a browser request and a host request arrive identical.
 
 `internal/services/gaming_uiroutes.go` lists what a page may reach and carries
 the reasons the rest is absent. It must fail closed, and a test asserts each
-exclusion by name. The plugin adds a second lock on the seed —
-`X-Poker-Confirm: seed`, a header no proxy forwards — precisely because the real
+exclusion by name. The plugin adds a second lock on the seed -
+`X-Poker-Confirm: seed`, a header no proxy forwards - precisely because the real
 one lives in another repository.
 
 ### The opaque origin, and what it costs
@@ -79,14 +79,14 @@ without knowing why:
 - **`'self'` matches nothing** in an opaque origin. A CSP copied from the
   dashboard's produces a page that can fetch nothing and cannot even be framed.
   The proxy therefore synthesizes the policy per response and names the origin
-  literally — it knows the external origin, and a signed binary cannot be
+  literally - it knows the external origin, and a signed binary cannot be
   parameterised per install.
 - **Every fetch is cross-origin**, so every call preflights. The preflight is
   answered before any token is looked at, because it carries none, and
   identically for any well-formed path, so it cannot be used to enumerate
   installed games.
 - **`Access-Control-Allow-Origin` is `*` and credentials are never allowed.** A
-  browser refuses `*` with credentials but accepts `null` with them — and any
+  browser refuses `*` with credentials but accepts `null` with them - and any
   page can produce a null origin by opening a sandboxed frame of its own.
   Choosing `*` makes that mistake unrepresentable. The consequence, stated
   plainly: the bearer token is the entire authority on that subtree, which is
@@ -119,17 +119,17 @@ The contract is deliberately tiny, and two absences are the point:
 Ranked by how much each changes whether somebody should trust this, which is not
 the order anybody expects:
 
-1. **Where the deck came from** — per hand, per seat: *you shuffled it*, *proof
+1. **Where the deck came from** - per hand, per seat: *you shuffled it*, *proof
    checked here*, *waiting*. Three states and not two: "we permuted it" is a
    stronger claim than "we checked their proof", and neither is "the network
    verified it", which no single process can know and this page never says.
-2. **Where the money is** — the last boundary every seat signed, against what
+2. **Where the money is** - the last boundary every seat signed, against what
    the table currently thinks. The first is a fact; the second is a promise, and
    a hand that never finishes voids back to the first. Per seat, a stake or bond
-   is an outpoint this peer found or it is *not seen by this peer* — never
+   is an outpoint this peer found or it is *not seen by this peer* - never
    "unfunded", because that would turn this peer's own limited view into a claim
    about somebody else.
-3. **What happened on chain** — claims, answers, refusals, the payout. A claim
+3. **What happened on chain** - claims, answers, refusals, the payout. A claim
    is **reported, never prompted**: the answer was agreed in advance and is
    broadcast without asking, so there is no dialog to build and no countdown.
    The one line allowed to alarm is *claimed against, holding no answer*.
@@ -143,7 +143,7 @@ the order anybody expects:
 it and the binary around it, then **asks the binary** whether its interface is
 really baked in. A committed placeholder at `cmd/pokerplugin/ui/placeholder.html`
 keeps `go build ./...` and `go test ./...` working without a JavaScript
-toolchain — the Go side is the part with money in it and should not need npm to
-be worked on — and `/health` reports `built` or `placeholder` so a release that
+toolchain - the Go side is the part with money in it and should not need npm to
+be worked on - and `/health` reports `built` or `placeholder` so a release that
 shipped the placeholder is caught by the thing that signs it rather than by a
 player looking at a page that explains itself through a proxy inside a frame.

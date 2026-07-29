@@ -4,7 +4,7 @@ Texas hold'em between two to six people with no server, no dealer and nobody
 holding the pot.
 
 Every player's buy-in sits in its own escrow that needs every seat's signature to
-move, so nobody can be paid without the whole table agreeing — and each player can
+move, so nobody can be paid without the whole table agreeing - and each player can
 always recover their own stake alone after a timelock. The deck is dealt by mental
 poker: it is masked to a key that is the sum of every seat's, so reading any card
 takes a share from every player, and nothing anybody is not entitled to is
@@ -22,11 +22,11 @@ chats.
 
 ## Reading it
 
-- `docs/trust-model.md` — what you have to trust, what you do not, where the gaps
+- `docs/trust-model.md` - what you have to trust, what you do not, where the gaps
   are, and which obvious alternatives were rejected and why. Start here.
-- `docs/interface.md` — how a person looks at a table, and what stops the page they
+- `docs/interface.md` - how a person looks at a table, and what stops the page they
   are looking at from being able to take their money.
-- `docs/dev.md` — building and testing.
+- `docs/dev.md` - building and testing.
 
 The packages read best in this order: `pkg/deck` (the mental poker), `pkg/forfeit`
 (why cheating publishes your key), `pkg/escrow` (the money), then `pkg/replay` and
@@ -37,9 +37,9 @@ the reasoning, and they are long deliberately.
 
 The protocol plays hands and pays winners on mainnet between two machines. It has
 not been played by three or more seats and has never met a hostile participant.
-`docs/trust-model.md` keeps an honest list of what is still open — read it before
+`docs/trust-model.md` keeps an honest list of what is still open - read it before
 putting money on a table.
 
 ## License
 
-MIT — see the LICENSE file.
+MIT - see the LICENSE file.

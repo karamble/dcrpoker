@@ -25,7 +25,7 @@ go test ./...          # everything; there is no slow path to skip
 The suite is hermetic: every peer-to-peer property is proven between objects in
 one process, against a stand-in chain, with no network and no clock. Where a test
 needs time to pass it spends injected time rather than waiting, because a test
-that sleeps is a test that fails on a busy machine — see the open item about
+that sleeps is a test that fails on a busy machine - see the open item about
 wall-clock starvation in `trust-model.md`.
 
 Two habits worth keeping when adding tests, both learned expensively:
@@ -52,5 +52,5 @@ result lands in `releases/`, which is gitignored.
 
 The plugin does not run on its own. It runs inside dcrpulse's gaming sandbox,
 which supplies its bearer token and is its only route to the chain and to Bison
-Relay — see `interface.md` for how the two repositories fit together, and
+Relay - see `interface.md` for how the two repositories fit together, and
 `trust-model.md` for what the arrangement is trying to guarantee.
