@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { api, type Bond as BondInfo, type Snapshot } from './api'
+import { useEffect, useMemo, useReducer, useState } from 'react'
+import { api, type Bond as BondInfo, type HandView, type Snapshot } from './api'
 import { dcr } from './format'
 import { useHost } from './host'
 import { useTableState } from './state'
@@ -24,6 +24,40 @@ type Tab = 'table' | 'felt'
 /** readTab picks the opening tab from the fragment, so a particular view can be
  *  linked to and reloaded back into. The dashboard's own sections do the same
  *  thing with the same mechanism. */
+/** holdFor is how long a finished hand stays on screen after it ends.
+ *
+ *  A showdown was over in about a second: the cards opened, the next hand's
+ *  preparations were already running, and the screen moved on before anybody
+ *  could read what they had just been shown. The one moment the interface has
+ *  to display its working was the one moment it did not.
+ *
+ *  Nothing is paused to do this. The table goes on shuffling and dealing behind
+ *  it - a hand that has ended cannot be affected by looking at it - so this is
+ *  a fifteen second hold on what is *rendered*, and no delay at all to what is
+ *  played. */
+const holdFor = 15_000
+
+/** useShowdownHold keeps the hand that just finished on screen for a while. */
+function useShowdownHold(hand?: HandView): { view: HandView; left: number } | undefined {
+  const [held, setHeld] = useState<{ view: HandView; until: number }>()
+  const [, tick] = useReducer((n: number) => n + 1, 0)
+
+  useEffect(() => {
+    if (hand?.done) setHeld({ view: hand, until: Date.now() + holdFor })
+  }, [hand])
+
+  useEffect(() => {
+    if (!held) return
+    const id = window.setInterval(tick, 250)
+    return () => window.clearInterval(id)
+  }, [held])
+
+  if (!held) return undefined
+  const left = held.until - Date.now()
+  if (left <= 0) return undefined
+  return { view: held.view, left: Math.ceil(left / 1000) }
+}
+
 function readTab(): Tab {
   return window.location.hash.replace('#', '') === 'felt' ? 'felt' : 'table'
 }
@@ -62,6 +96,7 @@ export function App() {
 
   const table = state.tables.find((t) => t.sid === sid)
   const hand = sid ? state.hands[sid] : undefined
+  const holding = useShowdownHold(hand)
   const ledger = sid ? state.ledgers[sid] : undefined
 
   useEffect(() => {
@@ -120,6 +155,15 @@ export function App() {
             <Lifecycle table={table} />
             <Bond onLoad={setBond} />
           </>
+        ) : holding ? (
+          // The hand that just ended, kept up long enough to read. The table is
+          // not waiting for this - it is already shuffling the next one.
+          <section className="card">
+            <div className="felt-wrap">
+              <Felt hand={holding.view} roster={ledger?.roster ?? table.roster ?? []} />
+              <Done hand={holding.view} left={holding.left} />
+            </div>
+          </section>
         ) : !table.dealing || !hand ? (
           // The plugin answers 400 on /table/hand until the table deals, which
           // is a state and not a failure - so this asks the snapshot instead
@@ -163,7 +207,13 @@ export function App() {
  *  result. A seat that put in 1000 and is awarded 1000 won nothing, and the old
  *  screen showed it the same way it showed a seat that was awarded 1000 having
  *  put in nothing. What somebody wants is the difference. */
-function Done({ hand }: { hand: ReturnType<typeof useTableState>['hands'][string] }) {
+function Done({
+  hand,
+  left,
+}: {
+  hand: ReturnType<typeof useTableState>['hands'][string]
+  left?: number
+}) {
   const awards = hand.awards ?? []
   const mine = awards.find((a) => a.seat === hand.seat)?.atoms ?? 0
   const paid = hand.chairs?.find((c) => c.seat === hand.seat)?.total ?? 0
@@ -192,6 +242,9 @@ function Done({ hand }: { hand: ReturnType<typeof useTableState>['hands'][string
       <p className="lede muted">
         The seats are signing this result now. Nothing is final until they all have, and
         the next hand starts when they agree.
+        {left !== undefined
+          ? ` The next hand is already being shuffled; this stays up for ${left}s.`
+          : ''}
       </p>
     </div>
   )

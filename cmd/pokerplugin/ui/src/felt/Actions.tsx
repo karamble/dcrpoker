@@ -61,6 +61,16 @@ export function Actions({ hand }: { hand: HandView }) {
     )
   }
 
+  // Nor before this seat can see what it is betting on.
+  //
+  // The phase can reach betting a moment before our own cards open - the shares
+  // that open them are somebody else's to send, and they arrive when they
+  // arrive. Offering call and raise then asks somebody to bet on a hand they
+  // cannot read, which is worse than making them wait a second.
+  if ((hand.hole ?? []).length < 2) {
+    return <p className="waiting">Waiting for your cards.</p>
+  }
+
   if (!hand.ours) {
     return (
       <p className="waiting">
