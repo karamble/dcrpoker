@@ -261,6 +261,9 @@ func (p *plugin) watchChain(ctx context.Context) {
 			// Before the tick, because the tick is what proposes a bond
 			// release and it cannot build one without the amount.
 			p.learnBondValues(ctx)
+			// Before the tick as well: a claim in the mempool is a
+			// thing to answer now, not next poll.
+			p.watchOwnBond(ctx)
 			p.publish(ctx, p.tables.tick(tip.Height))
 			p.drawSeats(ctx, tip.Height)
 		}

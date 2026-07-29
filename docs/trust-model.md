@@ -136,9 +136,15 @@ flowchart LR
     backstop --> back2["owner recovers<br/>if the table simply died"]
 ```
 
-**An answer beats a claim because it carries no timelock.** That is the whole
-mechanism: the accused does not have to be believed, or heard, or fast - they only
-have to still be there, and being there is cheaper than the claim is.
+**An answer is meant to beat a claim because it carries no timelock**, so that the
+accused need not be believed, or heard, or fast - only still there. That is the
+design, and the implementation does not have it yet: the claim's lock is relative to
+the bond output, which is confirmed before the table deals, so by the time anybody
+abandons it is long satisfied and both branches are spendable at once. Whoever
+broadcasts first wins and the claimant picks the moment. Closing it means the delay
+running from the accusation - the claim spending into an intermediate output that
+its owner can take immediately with an answer and the claimant only after the
+window. See section 8.
 
 The trap in that shape: the alive branch needs the *accusers'* signatures, and they
 will not sign once they have started claiming. So an answer assembled at the time
@@ -334,9 +340,9 @@ sequenceDiagram
     Note over P: the log says seat Q owes the entry at seq 9
     P->>P: wait the window, then wait it again
     P->>Chain: broadcast a claim on Q's table bond
-    Q->>Chain: spend the same output - the answer, no timelock
-    Note over Chain: the answer confirms first, being untimelocked
-    Note over P,Q: nobody adjudicated - presence decided it
+    Q->>Chain: spend the same output - the answer
+    Note over Chain: intended: the answer wins, being untimelocked
+    Note over P,Q: as built: both are spendable, so it is a race
 ```
 
 A claim names an **obligation the log says a seat owes**, which every peer derives
@@ -515,6 +521,25 @@ Ordered by what would bite first.
   - a reset and an abandonment are deliberately indistinguishable, which is why
   the accused holds an answer in advance. **Exercise the answer path before the
   claim path.**
+
+- **A claim is not actually delayed, so an answer does not actually win.** The
+  claim branch carries `<ClaimBlocks> OP_CHECKSEQUENCEVERIFY`, which is relative to
+  the bond output. That output is confirmed before the table will deal, so the lock
+  is satisfied long before anybody abandons: both branches are immediately
+  spendable and the first broadcast wins, timed by the claimant. The fix is a lock
+  that runs from the accusation, which means the claim spending into an intermediate
+  output with claimant-after-the-window and owner-immediately-with-an-answer
+  branches - the Lightning `to_local` shape. It changes the bond script, so it is a
+  format change.
+
+  The trigger was the other half and is now closed. `answerClaim` ran only when a
+  claim frame arrived over the group chat, so an opponent who sent nothing accused
+  in silence - which is exactly the KX-reset case this document says to exercise
+  first. The chain is asked instead: an output that a mempool transaction is
+  spending is still in the confirmed set, so the confirmed-only view finds it while
+  the mempool-aware view does not, and that disagreement is somebody's claim waiting
+  to be mined. It makes an unannounced claim contested rather than free; it cannot
+  make it lost, since a claim mined directly is seen too late.
 
 - **Some tests wait on the wall clock, and starve.** Repairs are paced in blocks
   where the thing being waited on is on-chain and in wall-clock where it is not

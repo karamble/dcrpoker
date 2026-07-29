@@ -31,9 +31,17 @@ const ClaimBlocks uint32 = 3
 //
 // **Alive** needs every member's signature, the owner included, and has no
 // timelock. It does two jobs: it releases the bond when a table ends normally,
-// and it is how an accused player answers a claim. Because it is immediate and
-// the claim is delayed, an answer always beats an accusation. Because it needs
-// everyone, the owner cannot use it to walk off with their own bond mid-table.
+// and it is how an accused player answers a claim. Because it needs everyone, the
+// owner cannot use it to walk off with their own bond mid-table.
+//
+// It does *not* currently beat an accusation, and this is the gap to close. The
+// claim's timelock is relative to the bond output, which is confirmed before the
+// table deals - so by the time anybody abandons, the lock is long satisfied and
+// both branches are spendable at once. Whoever broadcasts first wins, and the
+// claimant chooses when to start. For the answer to have the priority described
+// below, the delay has to run from the accusation rather than from the bond: the
+// claim would spend into an intermediate output carrying the lock, which its
+// owner can take at once with an answer and the claimant only after the window.
 //
 // **Claim** needs every member except the owner, after ClaimBlocks. That is the
 // forfeiture: the others take the bond and divide it. Requiring all of them is
@@ -51,10 +59,18 @@ const ClaimBlocks uint32 = 3
 //
 // So it is not adjudicated. Abandonment is *defined* as failing to answer on
 // chain inside the window, which is a fact rather than a claim: the accused
-// answers to Decred, not to their opponent, and an opponent who withholds every
-// message still cannot withhold a block. Collusion buys nothing for the same
+// answers to Decred, not to their opponent. Collusion buys nothing for the same
 // reason - a table full of liars can open a claim, and one uncensorable answer
 // kills it.
+//
+// Two things have to be true for that, and one is not yet. The window has to give
+// the accused time, which needs the intermediate output described above. And the
+// accused has to learn it is accused: answerClaim runs only when a claim frame
+// arrives over the group chat, so an opponent who withholds every message does in
+// fact withhold the accusation. Watching the chain instead does not close it,
+// since the host reports an outpoint as absent whether it is spent, unconfirmed
+// or never existed, and reveals nothing about a spend waiting in the mempool - by
+// the time a claim is visible it has confirmed.
 //
 // # Why this is not the forfeiture in forfeit.go
 //
