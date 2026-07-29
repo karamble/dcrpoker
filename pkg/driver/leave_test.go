@@ -207,3 +207,61 @@ func TestLeavingIsAnnouncedAndSeenByEverybody(t *testing.T) {
 		t.Fatal("a peer accepted its own leaving coming back")
 	}
 }
+
+// A hand that cannot finish must not strand the table.
+//
+// The ordinary rule is that a table ends at a hand boundary, and it has a hole
+// in it: a hand that never completes never reaches one, so the table never ends,
+// so it can never be paid out. A live table fell through it - two peers ended up
+// holding different decks for one hand, each waiting on the other, and every
+// seat asking to leave changed nothing because leaving only set a flag and
+// waited for the boundary that was not coming. The coin was left reachable only
+// by each player waiting out their own refund timelock.
+//
+// Nobody here folds and nobody plays on. The hand in progress is simply voided,
+// which is what the interface has said all along it would be.
+func TestATableEveryoneLeavesEndsEvenIfTheHandCannotFinish(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+
+	// One whole hand, so there is a signed boundary to fall back to and it is
+	// not merely the buy-ins.
+	n.playOut()
+	at, want := n.peers[0].Settled()
+	if at != 1 {
+		t.Fatalf("settled at hand %d before anybody left, want hand 1", at)
+	}
+
+	// Now a hand nothing will ever complete. Nobody acts on it.
+	if n.peers[0].Hand() == nil {
+		t.Fatal("no second hand was opened to strand")
+	}
+
+	// One seat leaving is not enough, and must not be: a player losing the
+	// hand in progress would otherwise void it by getting up.
+	n.leave(0)
+	if n.peers[0].Over() {
+		t.Fatal("one seat leaving ended the table, so leaving can un-bet a hand")
+	}
+
+	// Both is enough, because then there is nobody left to rob.
+	n.leave(1)
+
+	for i, p := range n.peers {
+		if !p.Over() {
+			t.Fatalf("peer %d is still at a table every seat has left", i)
+		}
+		if p.Hand() != nil {
+			t.Fatalf("peer %d is still holding a hand nobody will finish", i)
+		}
+		got, stacks := p.Settled()
+		if got != at {
+			t.Fatalf("peer %d settled at hand %d, want the last signed boundary %d", i, got, at)
+		}
+		for j := range stacks {
+			if stacks[j] != want[j] {
+				t.Fatalf("peer %d settled at %v, want the signed %v", i, stacks, want)
+			}
+		}
+	}
+}

@@ -402,6 +402,13 @@ func (t *Table) leave() ([]Out, error) {
 	t.leaving[t.cfg.Seat] = true
 
 	out := []Out{OutLeaving{Seat: t.cfg.Seat, Hand: t.hand}}
+	if t.everybodyLeaving() {
+		// The last seat to ask. There is nobody left to fold to and
+		// nothing left to play for, so the table stops here instead of
+		// waiting for a boundary it may never reach.
+		t.stopIfEverybodyLeft()
+		return out, nil
+	}
 	folded, err := t.autoFold()
 	if err != nil {
 		return nil, err
@@ -423,7 +430,46 @@ func (t *Table) onLeaving(m InLeaving) ([]Out, error) {
 	// Nothing else happens now. The seat folds its own hand when its turn
 	// comes, and the table dissolves at the boundary - dissolving mid-hand
 	// would hand whoever was losing a way out of the pot.
+	//
+	// Unless every seat has asked to go, which is the one case where nobody
+	// can be robbed by stopping. See everybodyLeaving.
+	t.stopIfEverybodyLeft()
 	return nil, nil
+}
+
+// everybodyLeaving reports that no seat still wants to play.
+func (t *Table) everybodyLeaving() bool { return len(t.leaving) >= t.seats }
+
+// stopIfEverybodyLeft ends a table that every seat has asked to leave, at the
+// last result they all signed.
+//
+// The ordinary rule is that a table ends at a hand boundary, because voiding a
+// hand in progress hands whoever is losing it a way out of the pot. That rule
+// has a hole in it, and a live table fell straight through: a hand that cannot
+// complete never reaches a boundary, so the table never ends, so it can never be
+// paid out - and every seat asking to leave did not help, because leaving only
+// set a flag and waited for the boundary that was never coming. The coin was
+// then reachable only by each player waiting out their own refund timelock,
+// which is the outcome this whole design exists to avoid.
+//
+// Unanimity is what makes stopping safe rather than exploitable. A player who is
+// losing the hand in progress cannot void it by leaving, because leaving alone
+// changes nothing; it takes everybody, and a seat that would rather have the pot
+// than the boundary simply does not agree. The seat facing a peer that has
+// genuinely stopped is not forced to agree either - it can claim the bond
+// instead, which is what the bond is for. This only adds the option of both
+// sides calling it a day.
+//
+// What it settles at is what Settled() already reported all along: the newest
+// result every seat put their name to. Nothing in progress is invented or
+// guessed at - it is voided, exactly as the interface has been saying it would
+// be.
+func (t *Table) stopIfEverybodyLeft() {
+	if t.over || !t.everybodyLeaving() {
+		return
+	}
+	t.over = true
+	t.hands = nil
 }
 
 // autoFold folds this seat's hand if it is leaving and it is its turn.

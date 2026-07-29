@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
 
@@ -63,5 +64,73 @@ func TestATableBondComesBackOnItsOwnOnceTheLockMatures(t *testing.T) {
 	// untrue about the chain.
 	if _, _, still, err := a.tables.ourTableBond(terms.SID); err == nil {
 		t.Fatalf("the table still says its bond is at %s after sweeping it", still)
+	}
+}
+
+// The table that could not be paid out, which is what this is really about.
+//
+// A hand that cannot complete never reaches a boundary, and a table that never
+// reaches a boundary never ends - so it can never build a settlement, because
+// one is only proposed once the table is over. Every seat asking to leave did
+// not help: leaving set a flag and waited for the boundary that was not coming.
+//
+// It happened for real, on the first table these two boxes ever played: two
+// peers held different decks for hand 2, each waiting on the other, both seats
+// asked to leave, and nothing moved. The 0.001 DCR a side was then reachable
+// only by each player waiting out their own refund timelock - the slow unilateral
+// path this whole design exists so that nobody has to use.
+//
+// So: every seat leaving pays the table out at the last result they all signed,
+// whatever the hand in progress was doing.
+func TestATableNobodyCanFinishStillPaysOut(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	sayWhereToPay(t, h, a, b)
+
+	// Lose every shuffle from here on. The hand already being dealt is past
+	// shuffling and plays out normally; the one that opens behind its boundary
+	// never starts. Dropping them before that hand rather than after is the
+	// whole trick, because a boundary opens its successor immediately - wait
+	// until a hand has visibly finished and the next has already shuffled.
+	h.drop(schema.KindShuffle, 8)
+
+	// A real result to fall back to, rather than the buy-ins.
+	playHand(t, h, terms.SID, foldAt("preflop"), a, b)
+	at, want := settledStacks(t, a, terms.SID)
+	if at == 0 {
+		t.Fatal("no hand was ever signed, so there is no boundary to fall back to")
+	}
+	if h.dropped(schema.KindShuffle) == 0 {
+		t.Fatal("no shuffle was ever lost, so nothing is stranded")
+	}
+	if n := handNumber(t, a, terms.SID); n <= at {
+		t.Fatalf("hand %d is the newest and %d is signed, so nothing is in progress to strand", n, at)
+	}
+
+	// One seat leaving is not enough, and must not be: it cannot fold its way
+	// out either, because betting never began.
+	getUp(t, h, terms.SID, a)
+	if over(t, a, terms.SID) {
+		t.Fatal("one seat leaving ended the table, so leaving can un-bet a hand")
+	}
+
+	// The second is, because unanimity means nobody is being stopped on.
+	getUp(t, h, terms.SID, b)
+
+	waitOver(t, h, terms.SID, a, b)
+	paid := waitPaid(t, h, a, b)
+
+	// And it pays the boundary, not a guess at the hand it voided.
+	got, stacks := settledStacks(t, a, terms.SID)
+	if got != at {
+		t.Fatalf("paid out at hand %d, want the last signed boundary %d", got, at)
+	}
+	for i := range stacks {
+		if stacks[i] != want[i] {
+			t.Fatalf("paid out at %v, want the signed %v", stacks, want)
+		}
+	}
+	if len(paid.TxOut) == 0 {
+		t.Fatal("the settlement pays nobody")
 	}
 }
