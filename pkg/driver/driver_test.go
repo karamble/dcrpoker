@@ -467,3 +467,77 @@ func TestSharesThatArriveEarlyAreNotLost(t *testing.T) {
 		}
 	}
 }
+
+// A share that does not verify must not count as delivered.
+//
+// The fault that stranded a live table twice. A share was recorded as published
+// the moment it arrived, before it had been checked - so when it failed to
+// verify the seat still looked like it had published: Owes stopped naming it and
+// the duplicate check dropped every later copy, the good one included. A hand
+// stuck that way cannot recover by any means, because the peer has nothing left
+// to say and this peer has nothing left to ask.
+//
+// The bad share is reached in practice by the previous hand's shares being
+// republished against this hand's deck, which Republish now avoids. A peer must
+// survive one arriving anyway.
+func TestABadShareLeavesTheDutyStanding(t *testing.T) {
+	n := seat(t, 2, 1000)
+	for i, p := range n.peers {
+		out, err := p.Start()
+		if err != nil {
+			t.Fatalf("peer %d start: %v", i, err)
+		}
+		n.send(i, out)
+	}
+
+	// Pump by hand, keeping the first share seat 1 sends rather than letting
+	// it through, so there is a slot still owed to work with.
+	var held *OutShare
+	for len(n.pending) > 0 {
+		next := n.pending[0]
+		n.pending = n.pending[1:]
+		if s, ok := next.msg.(OutShare); ok && next.from == 1 && held == nil {
+			held = &s
+			continue
+		}
+		for i, p := range n.peers {
+			if i == next.from {
+				continue
+			}
+			out, err := p.Handle(inbound(next.msg))
+			if err != nil {
+				continue // another seat's straggler; not what is under test
+			}
+			n.send(i, out)
+		}
+	}
+	if held == nil {
+		t.Skip("no share from seat 1 was produced to withhold")
+	}
+
+	us := n.peers[0]
+	if us.sharedBy(held.Slot, 1) {
+		t.Fatalf("slot %d already counts seat 1 as having shared", held.Slot)
+	}
+
+	// Shaped like a share and not one, which is what a share from the wrong
+	// deck looks like from here.
+	bad := *held.Share
+	bad.Proof = append([]byte(nil), bad.Proof...)
+	bad.Proof[0] ^= 0xff
+
+	if _, err := us.onShare(InShare{Seat: 1, Slot: held.Slot, Share: &bad}); err == nil {
+		t.Fatal("a share with a broken proof was accepted")
+	}
+	if us.sharedBy(held.Slot, 1) {
+		t.Fatal("a share that failed to verify was recorded as delivered, so nothing will ever ask again")
+	}
+
+	// And the good one behind it is not mistaken for a duplicate.
+	if _, err := us.onShare(InShare{Seat: 1, Slot: held.Slot, Share: held.Share}); err != nil {
+		t.Fatalf("the good share was refused after a bad one: %v", err)
+	}
+	if !us.sharedBy(held.Slot, 1) {
+		t.Fatal("the good share did not count, so the card is stranded")
+	}
+}

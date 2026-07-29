@@ -488,7 +488,6 @@ func (d *Driver) onShare(m InShare) ([]Out, error) {
 		// and a retransmission must not look like a fault.
 		return nil, nil
 	}
-	d.note(m.Slot, m.Seat)
 
 	o, ok := d.openings[m.Slot]
 	if !ok {
@@ -504,11 +503,26 @@ func (d *Driver) onShare(m InShare) ([]Out, error) {
 			}
 		}
 		d.held[m.Slot] = append(d.held[m.Slot], heldShare{seat: m.Seat, share: m.Share})
+		d.note(m.Slot, m.Seat)
 		return nil, nil
 	}
 	if err := o.Add(d.cfg.CardKeys[m.Seat], m.Share); err != nil {
 		return nil, fmt.Errorf("seat %d's share for slot %d: %w", m.Seat, m.Slot, err)
 	}
+	// Noted only now that it is known to be good, which is the whole point of
+	// where this line sits.
+	//
+	// It used to be noted on arrival, before o.Add had judged it, and that turned
+	// one bad share into a permanently stranded card: the seat was recorded as
+	// having published, so Owes stopped naming it and every retransmission was
+	// dropped by the duplicate check above - including the good copy that would
+	// have fixed it. A hand stuck that way cannot recover by any means, because
+	// the peer has nothing left to say and this peer has nothing left to ask.
+	//
+	// It was reached in practice by the previous hand's shares being republished
+	// against this hand's deck, which fail exactly this way. Both halves are
+	// fixed; either alone would have been enough to strand a table.
+	d.note(m.Slot, m.Seat)
 	return nil, d.tryOpen(m.Slot)
 }
 

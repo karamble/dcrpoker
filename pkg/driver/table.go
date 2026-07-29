@@ -251,16 +251,43 @@ func (t *Table) keep(out []Out, err error) ([]Out, error) {
 	return out, err
 }
 
-// Republish returns everything this peer has sent for the hand in progress.
+// Republish returns everything this peer has sent that is still worth hearing.
 //
 // For a seat that owes nothing and is still waiting: from its own side it has
 // done everything the hand asks of it, so if the hand is not moving then
 // somebody else is missing something of ours. Owes reports the first half of
 // that and this is the answer to it.
+//
+// The previous hand is included, but only the part of it that outlives its hand.
+// A checkpoint does: a peer that missed one is stuck at a boundary and needs it
+// to move at all. A card key, a shuffle and a share do not - they are answers
+// about one deck, and against the next deck they are not merely useless but
+// actively harmful, because a share that fails to verify used to mark its slot
+// as delivered and strand the card for good. That is fixed in onShare, and this
+// is the other end of it: do not send what cannot be right.
 func (t *Table) Republish() []HandOut {
 	out := make([]HandOut, 0, len(t.prior)+len(t.produced))
-	out = append(out, t.prior...)
+	for _, m := range t.prior {
+		if outlivesItsHand(m.Out) {
+			out = append(out, m)
+		}
+	}
 	return append(out, t.produced...)
+}
+
+// outlivesItsHand reports whether a message is still worth saying once the hand
+// it belonged to is over.
+func outlivesItsHand(o Out) bool {
+	switch o.(type) {
+	case OutCheckpoint, OutAction, OutLeaving:
+		// The log, and the fact somebody is getting up. Both are about the
+		// table rather than about a deck, and a peer behind on either cannot
+		// catch up without them.
+		return true
+	default:
+		// OutCardKey, OutShuffle, OutShare: this hand's deck and nothing else.
+		return false
+	}
 }
 
 func (t *Table) Start() ([]Out, error) {
