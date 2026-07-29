@@ -7,6 +7,7 @@ import (
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -261,4 +262,79 @@ func TestEveryPeerBuildsTheSameSettlement(t *testing.T) {
 			t.Fatal("two builds of one draft produced different settlements")
 		}
 	}
+}
+
+// The host counts signatures to decide what a spend may pay.
+//
+// dcrpulse relays a game's transactions and will not let one pay anybody but
+// its owner unless every input needed more than one signature. It works that
+// out generically - the pushes before the redeem script that are the size of a
+// signature - because the bridge deliberately knows nothing about poker.
+//
+// That makes the shape of these two scripts a contract across two repositories
+// that no compiler checks. Changing it silently turns every settlement into a
+// refusal at the host, on the one path where coin moves without anybody being
+// asked, so it is asserted here where the change would be made.
+func TestTheHostCanTellWhoHadToSign(t *testing.T) {
+	members := make([][]byte, 3)
+	for i := range members {
+		priv, err := secp256k1.GeneratePrivateKey()
+		if err != nil {
+			t.Fatalf("key: %v", err)
+		}
+		members[i] = priv.PubKey().SerializeCompressed()
+	}
+	redeem, err := RedeemScript(members[0], members, 288)
+	if err != nil {
+		t.Fatalf("redeem script: %v", err)
+	}
+
+	sigs := make([][]byte, len(members))
+	for i := range sigs {
+		sigs[i] = bytes.Repeat([]byte{byte(i + 1)}, SigLen)
+	}
+	settle, err := SettlementSigScript(redeem, sigs)
+	if err != nil {
+		t.Fatalf("settlement sigscript: %v", err)
+	}
+	refund, err := RefundSigScript(redeem, sigs[0])
+	if err != nil {
+		t.Fatalf("refund sigscript: %v", err)
+	}
+
+	if got := signatureSizedPushes(t, settle); got != len(members) {
+		t.Errorf("a settlement shows %d signature-sized pushes, want %d; the host reads "+
+			"fewer than two as a spend one party could make alone and will refuse to "+
+			"relay its payout", got, len(members))
+	}
+	if got := signatureSizedPushes(t, refund); got != 1 {
+		t.Errorf("a refund shows %d signature-sized pushes, want 1; at two or more the "+
+			"host would let a unilateral spend pay somebody other than its owner", got)
+	}
+}
+
+// signatureSizedPushes counts the way the host does: data pushes the size of a
+// signature, excluding the redeem script the script ends with.
+func signatureSizedPushes(t *testing.T, sigScript []byte) int {
+	t.Helper()
+	var pushes [][]byte
+	tok := txscript.MakeScriptTokenizer(0, sigScript)
+	for tok.Next() {
+		if d := tok.Data(); d != nil {
+			pushes = append(pushes, d)
+		}
+	}
+	if tok.Err() != nil {
+		t.Fatalf("tokenize: %v", tok.Err())
+	}
+	if len(pushes) < 2 {
+		return 0
+	}
+	var n int
+	for _, p := range pushes[:len(pushes)-1] {
+		if len(p) == SigLen {
+			n++
+		}
+	}
+	return n
 }
