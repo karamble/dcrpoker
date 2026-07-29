@@ -57,6 +57,16 @@ func (tbl *table) startPlaying() []outgoing {
 		// something they left.
 		return nil
 	}
+	if tbl.dealt {
+		// A hand was opened here before this process started, and hand
+		// numbers are signing positions: opening hand one again with a
+		// different deck would sign a used position over different bytes
+		// and publish this seat's log key. What was under way was never
+		// agreed by anybody, so there is nothing to resume - the table
+		// settles at the last boundary every seat signed, which is what a
+		// table that stops does anyway.
+		return nil
+	}
 	if len(tbl.funded) < int(tbl.terms.Seats) {
 		// Not every stake is on the chain yet, as far as this peer can
 		// tell. Somebody else saying otherwise is not the same thing.
@@ -91,6 +101,14 @@ func (tbl *table) startPlaying() []outgoing {
 		log.Printf("pokerplugin: table %s cannot start dealing: %v", tbl.terms.SID, err)
 		return nil
 	}
+	// What this key has already signed, from disk, so the refusal to sign one
+	// position twice outlives a crash.
+	logKey.Remember(&signBook{tbl: tbl})
+
+	// Recorded before a hand can be opened, never after. A crash between the
+	// two costs this table; the other order costs the bond.
+	tbl.dealt = true
+	_ = tbl.save()
 	schedule, err := blindsFor(tbl.terms.BuyInAtoms)
 	if err != nil {
 		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)

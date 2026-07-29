@@ -95,6 +95,30 @@ const (
 	DomainLeaving Domain = "leaving"
 )
 
+// Which nonce a domain takes, as a property of the domain and not a choice at the
+// call site. A position nonce is only safe where the position fixes the content;
+// where it does not - a freshly drawn card key, a shuffle with fresh blinding - the
+// same position can carry different bytes on a second attempt, and signing both
+// publishes the key.
+var committedDomains = map[Domain]bool{
+	DomainCardKey: true,
+	DomainShuffle: true,
+}
+
+var knownDomains = map[Domain]bool{
+	DomainEntry:      true,
+	DomainHead:       true,
+	DomainCheckpoint: true,
+	DomainCardKey:    true,
+	DomainShuffle:    true,
+	DomainLeaving:    true,
+}
+
+// Committed reports whether this domain commits to the message in its nonce.
+func (d Domain) Committed() bool { return committedDomains[d] }
+
+func (d Domain) known() bool { return knownDomains[d] }
+
 // Position is where a signature sits. Exactly one signature may ever be made at
 // one position with one key.
 type Position struct {
@@ -152,6 +176,46 @@ func nonce(priv *secp256k1.PrivateKey, p Position) (*secp256k1.ModNScalar, error
 	return nil, fmt.Errorf("could not derive a nonce for %s/%d", p.Domain, p.Seq)
 }
 
+var committedTag = []byte("dcrpoker/forfeit/nonce-committed/v1")
+
+// committedNonce derives k from the key, the position and the message, so two
+// different messages at one position take two different nonces and the pair yields
+// nothing. The RFC6979 shape, and it costs exactly the property Sign provides.
+func committedNonce(priv *secp256k1.PrivateKey, p Position, hash []byte) (*secp256k1.ModNScalar, error) {
+	if p.Domain == "" {
+		return nil, fmt.Errorf("a signature with no domain")
+	}
+	if p.Match == "" {
+		return nil, fmt.Errorf("a signature with no match")
+	}
+	key := priv.Serialize()
+	defer func() {
+		for i := range key {
+			key[i] = 0
+		}
+	}()
+
+	for i := uint32(0); i < 8; i++ {
+		h := blake256.New()
+		h.Write(committedTag)
+		writeField(h, key)
+		writeField(h, []byte(p.Match))
+		writeField(h, []byte(p.Domain))
+		_ = binary.Write(h, binary.BigEndian, p.Seq)
+		writeField(h, hash)
+		_ = binary.Write(h, binary.BigEndian, i)
+
+		var b [32]byte
+		copy(b[:], h.Sum(nil))
+		var k secp256k1.ModNScalar
+		overflow := k.SetBytes(&b)
+		if overflow == 0 && !k.IsZero() {
+			return &k, nil
+		}
+	}
+	return nil, fmt.Errorf("could not derive a nonce for %s/%d", p.Domain, p.Seq)
+}
+
 // Sign produces an EC-Schnorr-DCRv0 signature over hash, using a nonce fixed by
 // position.
 //
@@ -160,6 +224,29 @@ func nonce(priv *secp256k1.PrivateKey, p Position) (*secp256k1.ModNScalar, error
 // only difference is which nonce went in, and that difference is the whole
 // mechanism.
 func Sign(priv *secp256k1.PrivateKey, p Position, hash []byte) ([]byte, error) {
+	if p.Domain.Committed() {
+		return nil, fmt.Errorf("%s commits to its message and must not be signed by position; "+
+			"signing it this way is what publishes the key", p.Domain)
+	}
+	return signWith(priv, p, hash, nonce)
+}
+
+// SignCommitted signs content a position does not determine. Equivocation on such
+// a message stays provable, two conflicting signed frames being self-contained
+// evidence, but is no longer self-punishing.
+func SignCommitted(priv *secp256k1.PrivateKey, p Position, hash []byte) ([]byte, error) {
+	if !p.Domain.Committed() {
+		return nil, fmt.Errorf("%s is fixed by its position and must be signed by position, "+
+			"so that equivocating on it forfeits", p.Domain)
+	}
+	return signWith(priv, p, hash, func(pk *secp256k1.PrivateKey, pos Position) (*secp256k1.ModNScalar, error) {
+		return committedNonce(pk, pos, hash)
+	})
+}
+
+func signWith(priv *secp256k1.PrivateKey, p Position, hash []byte,
+	derive func(*secp256k1.PrivateKey, Position) (*secp256k1.ModNScalar, error)) ([]byte, error) {
+
 	if priv == nil {
 		return nil, fmt.Errorf("no signing key")
 	}
@@ -169,7 +256,10 @@ func Sign(priv *secp256k1.PrivateKey, p Position, hash []byte) ([]byte, error) {
 	if priv.Key.IsZero() {
 		return nil, fmt.Errorf("signing key is zero")
 	}
-	k, err := nonce(priv, p)
+	if !p.Domain.known() {
+		return nil, fmt.Errorf("unknown signing domain %q", p.Domain)
+	}
+	k, err := derive(priv, p)
 	if err != nil {
 		return nil, err
 	}

@@ -86,7 +86,7 @@ func TestSigningTwoCheckpointsForOneHandHandsOverTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
-	b, err := c.Checkpoint(0, 7, []int64{1900, 100}, privs[0])
+	b, err := c.Checkpoint(0, 7, []int64{1900, 100}, cheating(privs[0]))
 	if err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}

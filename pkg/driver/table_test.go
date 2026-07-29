@@ -328,6 +328,11 @@ func TestASeatCannotSignTwoResultsForOneHand(t *testing.T) {
 
 	// Signed by seat 1's real key, so the signature checks out and only the
 	// contents differ. That is exactly what equivocation looks like.
+	//
+	// The key itself refuses to sign one hand twice, so this gives it a book
+	// with no memory - which is what a restarted process has, and is how this
+	// gets done by accident rather than on purpose.
+	n.peers[1].cfg.Log.Remember(forgetful{})
 	forged, err := n.peers[1].chain.Checkpoint(1, 1, other, n.peers[1].cfg.Log)
 	if err != nil {
 		t.Fatalf("checkpoint: %v", err)
@@ -420,3 +425,10 @@ func TestTheTableWaitsForEverySeatToSignTheBoundary(t *testing.T) {
 		t.Fatal("peer 0 moved on to another hand without a signed boundary")
 	}
 }
+
+// forgetful is a position book that remembers nothing, standing in for a process
+// that has restarted.
+type forgetful struct{}
+
+func (forgetful) Used(forfeit.Position) ([32]byte, bool) { return [32]byte{}, false }
+func (forgetful) Record(forfeit.Position, [32]byte)      {}

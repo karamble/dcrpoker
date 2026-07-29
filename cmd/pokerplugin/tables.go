@@ -23,6 +23,16 @@ import (
 // table is one table this process is at.
 type table struct {
 	terms membership.Terms
+	// st is where this table's record goes. Held here because the signing
+	// book has to write through from inside the driver, far from any caller
+	// that knows about storage.
+	st *store
+	// dealt records that a hand has been opened here. Hand numbers are
+	// signing positions, so opening one twice publishes this seat's log key.
+	dealt bool
+	// signed is which positions the log key has used, kept so the refusal in
+	// pkg/forfeit outlives this process.
+	signed map[string]string
 	// gcID is the group chat the invitation arrived in. It decides only
 	// where frames go and where they are accepted from; it never decides
 	// who is believed about the table, which is the membership's job.
@@ -375,6 +385,14 @@ func (t *tables) verifyBonds(ctx context.Context, terms membership.Terms, msg *s
 // Failure is logged and not returned, but it is not harmless: a position this
 // process cannot write down is one a restart could contradict. There is nobody
 // to report it to, so the log is where it has to be visible.
+// save writes this table's record.
+func (tbl *table) save() error {
+	if tbl.st == nil {
+		return nil
+	}
+	return tbl.st.save(tbl.terms.SID, tbl.record())
+}
+
 func (t *tables) persist(tbl *table) {
 	if t.store == nil {
 		return
@@ -387,7 +405,13 @@ func (t *tables) persist(tbl *table) {
 // record renders what has to survive a restart.
 func (tbl *table) record() *record {
 	rec := &record{Terms: schema.TermsFrom(tbl.terms), Bound: tbl.bound,
-		Finished: tbl.finished, GCID: tbl.gcID}
+		Finished: tbl.finished, GCID: tbl.gcID, Dealt: tbl.dealt}
+	if len(tbl.signed) > 0 {
+		rec.Signed = make(map[string]string, len(tbl.signed))
+		for at, digest := range tbl.signed {
+			rec.Signed[at] = digest
+		}
+	}
 	if len(tbl.bonded) > 0 {
 		rec.Bonded = make(map[uint32]string, len(tbl.bonded))
 		for seat, outpoint := range tbl.bonded {
@@ -502,7 +526,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	if err != nil {
 		return nil, err
 	}
-	tbl := &table{terms: terms, gcID: gcID, form: form,
+	tbl := &table{terms: terms, gcID: gcID, form: form, st: t.store,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
 		uids:     map[uint32]string{},
@@ -542,6 +566,13 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 // that is derived, not stored, and so is exactly the key it was before.
 func (tbl *table) resume(rec *record) error {
 	tbl.finished = rec.Finished
+	tbl.dealt = rec.Dealt
+	for at, digest := range rec.Signed {
+		if tbl.signed == nil {
+			tbl.signed = map[string]string{}
+		}
+		tbl.signed[at] = digest
+	}
 	for i, wj := range rec.Joins {
 		j, err := wj.Into()
 		if err != nil {
@@ -800,7 +831,7 @@ func (t *tables) receipt(rec *record, id *identity) (*table, error) {
 		return nil, err
 	}
 	done := rec.Finished || rec.Aborted || everDealt(rec)
-	tbl := &table{terms: terms, gcID: rec.GCID, form: form,
+	tbl := &table{terms: terms, gcID: rec.GCID, form: form, st: t.store,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
 		uids:     map[uint32]string{},

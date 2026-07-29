@@ -36,6 +36,17 @@ func signed(t *testing.T, c *Chain, privs []*forfeit.LogKey, seat uint32, action
 	return e
 }
 
+// equivocated signs like signed, from a key that has forgotten what it already
+// put its name to. Only a cheat or a restarted process is in that position.
+func equivocated(t *testing.T, c *Chain, privs []*forfeit.LogKey, seat uint32, action Action, amount int64) *Entry {
+	t.Helper()
+	e := c.Next(seat, 1, StreetPreFlop, action, amount)
+	if err := e.Sign(cheating(privs[seat])); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return e
+}
+
 // The log is the account of the game and must not depend on any transport that
 // happens to carry it, generated types least of all. A test enforces it, because
 // an import added in passing would be invisible otherwise.
@@ -185,7 +196,7 @@ func TestEquivocationProof(t *testing.T) {
 	c, _ := NewChain(testMatch, roster)
 
 	folded := signed(t, c, privs, 0, ActionFold, 0)
-	raised := signed(t, c, privs, 0, ActionRaise, 500)
+	raised := equivocated(t, c, privs, 0, ActionRaise, 500)
 
 	if err := (EquivocationProof{A: *folded, B: *raised}).Verify(); err != nil {
 		t.Fatalf("a seat signing two different actions at one seq is a proof: %v", err)
@@ -226,7 +237,7 @@ func TestConflictingHeadAttestations(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	other, _ := NewChain(testMatch, roster)
-	if err := other.Append(signed(t, other, privs, 0, ActionBet, 900)); err != nil {
+	if err := other.Append(equivocated(t, other, privs, 0, ActionBet, 900)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -343,3 +354,18 @@ func TestNewChainRejectsBadRosters(t *testing.T) {
 		t.Fatalf("a malformed key must be refused")
 	}
 }
+
+// cheating makes a key forget what it has signed.
+//
+// A key refuses to sign one position twice, which is the guard against doing it by
+// accident. Demonstrating the punishment means getting past that deliberately, the
+// way a cheat running its own build or a restarted process does.
+func cheating(k *forfeit.LogKey) *forfeit.LogKey {
+	k.Remember(noMemory{})
+	return k
+}
+
+type noMemory struct{}
+
+func (noMemory) Used(forfeit.Position) ([32]byte, bool) { return [32]byte{}, false }
+func (noMemory) Record(forfeit.Position, [32]byte)      {}

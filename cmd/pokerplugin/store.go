@@ -65,6 +65,13 @@ type record struct {
 	// that moves money ever reads it - but it is kept because the message
 	// that taught it arrives once and a restart should not cost the labels.
 	UIDs map[uint32]string `json:"uids,omitempty"`
+	// Dealt records that this table has opened a hand. A restart must not
+	// open one again: hand numbers are signing positions, and re-signing one
+	// with a different deck publishes this seat's log key.
+	Dealt bool `json:"dealt,omitempty"`
+	// Signed is which positions the log key has put its name to, so the
+	// refusal in pkg/forfeit survives a restart. Keys are "domain/seq".
+	Signed map[string]string `json:"signed,omitempty"`
 }
 
 // sidRe is the shape a session id takes, repeated here because this builds a
@@ -287,12 +294,41 @@ func (s *store) save(sid string, rec *record) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
-		return fmt.Errorf("write session: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := writeDurable(path, blob); err != nil {
 		return fmt.Errorf("write session: %w", err)
 	}
 	return nil
+}
+
+// writeDurable writes, flushes, renames and flushes the directory.
+//
+// A plain write-then-rename can leave a renamed empty file after a host crash,
+// and what is being written here is the record of which positions this key has
+// signed at. Losing that costs the bond, so it is worth the two syncs.
+func writeDurable(path string, blob []byte) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(blob); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

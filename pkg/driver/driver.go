@@ -309,7 +309,7 @@ func (d *Driver) shuffle() ([]Out, error) {
 	if err != nil {
 		return nil, err
 	}
-	sig, err := d.cfg.Log.Sign(forfeit.DomainShuffle, d.cfg.Hand, digest[:])
+	sig, err := d.cfg.Log.SignCommitted(forfeit.DomainShuffle, d.cfg.Hand, digest[:])
 	if err != nil {
 		return nil, fmt.Errorf("sign shuffle: %w", err)
 	}

@@ -40,7 +40,7 @@ func shuffleAs(t *testing.T, seat int, hand uint64, key *forfeit.LogKey, d deck.
 	if err != nil {
 		t.Fatalf("shuffle digest: %v", err)
 	}
-	sig, err := key.Sign(forfeit.DomainShuffle, hand, digest[:])
+	sig, err := key.SignCommitted(forfeit.DomainShuffle, hand, digest[:])
 	if err != nil {
 		t.Fatalf("sign shuffle: %v", err)
 	}

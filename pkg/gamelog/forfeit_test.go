@@ -26,7 +26,7 @@ func TestEquivocatingOnAnActionHandsOverTheKey(t *testing.T) {
 		t.Fatalf("sign: %v", err)
 	}
 	raised := c.Next(0, 1, StreetPreFlop, ActionRaise, 500)
-	if err := raised.Sign(privs[0]); err != nil {
+	if err := raised.Sign(cheating(privs[0])); err != nil {
 		t.Fatalf("sign: %v", err)
 	}
 
@@ -66,7 +66,7 @@ func TestForkingHistoryHandsOverTheSameKey(t *testing.T) {
 	if err := one.Append(signed(t, one, privs, 0, ActionCheck, 0)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if err := other.Append(signed(t, other, privs, 0, ActionBet, 100)); err != nil {
+	if err := other.Append(equivocated(t, other, privs, 0, ActionBet, 100)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestForkingHistoryHandsOverTheSameKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attest: %v", err)
 	}
-	b, err := other.AttestHead(1, privs[1])
+	b, err := other.AttestHead(1, cheating(privs[1]))
 	if err != nil {
 		t.Fatalf("attest: %v", err)
 	}

@@ -92,7 +92,7 @@ func TestACardKeyCannotBeSentInAnotherSeatsName(t *testing.T) {
 		t.Fatalf("digest: %v", err)
 	}
 	// Seat 2 signs it. Everything else about the announcement is correct.
-	sig, err := n.logs[2].Sign(forfeit.DomainCardKey, 1, digest[:])
+	sig, err := n.logs[2].SignCommitted(forfeit.DomainCardKey, 1, digest[:])
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
@@ -141,11 +141,11 @@ func TestRepeatingAFrameProducesTheSameSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("digest: %v", err)
 	}
-	first, err := key.Sign(forfeit.DomainShuffle, 1, digest[:])
+	first, err := key.SignCommitted(forfeit.DomainShuffle, 1, digest[:])
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	again, err := key.Sign(forfeit.DomainShuffle, 1, digest[:])
+	again, err := key.SignCommitted(forfeit.DomainShuffle, 1, digest[:])
 	if err != nil {
 		t.Fatalf("sign again: %v", err)
 	}
@@ -154,19 +154,20 @@ func TestRepeatingAFrameProducesTheSameSignature(t *testing.T) {
 	}
 }
 
-// Equivocating publishes the key.
+// Signing two decks for one hand does NOT publish the key.
 //
-// Refusing a forgery is only half of it. A seat that signs two different decks
-// for one hand has signed twice at one position, and the punishment for that is
-// arithmetic rather than a vote: the two signatures yield the key that made
-// them, which is what the bond's punishment branch is built to spend.
-func TestSigningTwoDecksForOneHandPublishesTheKey(t *testing.T) {
+// A shuffle's content is fresh blinding, so its position cannot fix it: a table
+// whose hand counter starts over would sign hand one again with a different deck.
+// Under a position nonce that publishes the log key - the key the bond's punishment
+// branch pays on - so an ordinary restart would forfeit the restarting player's own
+// bond. Deck frames therefore commit to the message, and equivocating on one stays
+// provable without being self-punishing.
+func TestSigningTwoDecksForOneHandDoesNotPublishTheKey(t *testing.T) {
 	n := seat(t, 2, 1000)
 	key := n.logs[0]
 
 	one := deck.Fresh(n.peers[0].joint)
 	two := deck.Fresh(n.peers[0].joint)
-	// Two decks that differ, so the digests differ at one position.
 	two[0], two[1] = one[1], one[0]
 
 	digestA, err := shuffleDigest(testMatch, 1, 0, one, []byte("proof"))
@@ -181,21 +182,17 @@ func TestSigningTwoDecksForOneHandPublishesTheKey(t *testing.T) {
 		t.Fatal("two different decks hashed the same way")
 	}
 
-	sigA, err := key.Sign(forfeit.DomainShuffle, 1, digestA[:])
+	sigA, err := key.SignCommitted(forfeit.DomainShuffle, 1, digestA[:])
 	if err != nil {
 		t.Fatalf("sign a: %v", err)
 	}
-	sigB, err := key.Sign(forfeit.DomainShuffle, 1, digestB[:])
+	sigB, err := key.SignCommitted(forfeit.DomainShuffle, 1, digestB[:])
 	if err != nil {
 		t.Fatalf("sign b: %v", err)
 	}
 
-	recovered, err := forfeit.Recover(key.Public(), digestA[:], sigA, digestB[:], sigB)
-	if err != nil {
-		t.Fatalf("the two signatures did not yield the key: %v", err)
-	}
-	if !recovered.PubKey().IsEqual(key.Public()) {
-		t.Fatal("the recovered key is not the one that signed")
+	if _, err := forfeit.Recover(key.Public(), digestA[:], sigA, digestB[:], sigB); err == nil {
+		t.Fatal("two shuffles for one hand yielded the signing key")
 	}
 }
 

@@ -2,6 +2,7 @@ package forfeit
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
@@ -23,6 +24,45 @@ import (
 type LogKey struct {
 	priv  *secp256k1.PrivateKey
 	match string
+
+	// book is what this key has signed and where, so a second, different
+	// message at one position is refused instead of publishing the key. That
+	// mistake is reachable by accident: a table whose hand counter starts
+	// over signs hand one again with a different deck.
+	mu   sync.Mutex
+	book Book
+}
+
+// Book remembers what a key signed at each position. One that does not outlive
+// the process is a key with no memory of what it has already put its name to.
+type Book interface {
+	Used(p Position) ([32]byte, bool)
+	Record(p Position, digest [32]byte)
+}
+
+// memoryBook catches the mistake within one process, and no further.
+type memoryBook struct{ at map[Position][32]byte }
+
+func (b *memoryBook) Used(p Position) ([32]byte, bool) {
+	d, ok := b.at[p]
+	return d, ok
+}
+
+func (b *memoryBook) Record(p Position, digest [32]byte) {
+	if b.at == nil {
+		b.at = map[Position][32]byte{}
+	}
+	b.at[p] = digest
+}
+
+// Remember gives this key a book that outlives the process.
+func (k *LogKey) Remember(b Book) {
+	if b == nil {
+		return
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.book = b
 }
 
 // NewLogKey draws a log key for one match.
@@ -61,7 +101,34 @@ func (k *LogKey) Match() string { return k.match }
 // but it does mean a caller must be sure that a position means one message. The
 // sequence number comes from the chain, which enforces exactly that.
 func (k *LogKey) Sign(d Domain, seq uint64, hash []byte) ([]byte, error) {
-	return Sign(k.priv, Position{Match: k.match, Domain: d, Seq: seq}, hash)
+	p := Position{Match: k.match, Domain: d, Seq: seq}
+	if len(hash) != 32 {
+		return nil, fmt.Errorf("message digest is %d bytes, want 32", len(hash))
+	}
+	var digest [32]byte
+	copy(digest[:], hash)
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.book == nil {
+		k.book = &memoryBook{}
+	}
+	if was, ok := k.book.Used(p); ok && was != digest {
+		return nil, fmt.Errorf("%s/%d was already signed over a different message; "+
+			"signing it again would publish this key", d, seq)
+	}
+	sig, err := Sign(k.priv, p, hash)
+	if err != nil {
+		return nil, err
+	}
+	k.book.Record(p, digest)
+	return sig, nil
+}
+
+// SignCommitted signs content its position does not determine. Two different
+// messages at one position are two signatures and no disclosure.
+func (k *LogKey) SignCommitted(d Domain, seq uint64, hash []byte) ([]byte, error) {
+	return SignCommitted(k.priv, Position{Match: k.match, Domain: d, Seq: seq}, hash)
 }
 
 var bindTag = []byte("dcrpoker/forfeit/bind/v1")

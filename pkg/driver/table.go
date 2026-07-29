@@ -322,7 +322,7 @@ func (t *Table) openHand() ([]Out, error) {
 	if err != nil {
 		return nil, err
 	}
-	sig, err := t.cfg.Log.Sign(forfeit.DomainCardKey, t.hand, digest[:])
+	sig, err := t.cfg.Log.SignCommitted(forfeit.DomainCardKey, t.hand, digest[:])
 	if err != nil {
 		return nil, fmt.Errorf("sign card key: %w", err)
 	}

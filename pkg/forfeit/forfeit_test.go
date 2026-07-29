@@ -300,13 +300,17 @@ func TestEquivocationHandsTheBondToTheWrongedPlayer(t *testing.T) {
 		t.Fatal("a key was recovered from nothing")
 	}
 
-	// The cheat tells one player it folded and another that it raised.
+	// The cheat tells one player it folded and another that it raised. It
+	// signs through the primitive rather than the LogKey, because the book on
+	// the key refuses this - and a cheat runs its own software, so the guard
+	// protects an honest caller from a mistake and never a cheat from itself.
 	folded, raised := digest("seat 0 folds"), digest("seat 0 raises 2000")
-	a, err := cheat.Sign(DomainEntry, 11, folded)
+	at := Position{Match: cheat.Match(), Domain: DomainEntry, Seq: 11}
+	a, err := Sign(cheat.priv, at, folded)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	b, err := cheat.Sign(DomainEntry, 11, raised)
+	b, err := Sign(cheat.priv, at, raised)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
