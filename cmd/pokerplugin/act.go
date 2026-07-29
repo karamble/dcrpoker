@@ -109,6 +109,12 @@ type handView struct {
 	Hole  []string `json:"hole,omitempty"`
 	Board []string `json:"board,omitempty"`
 
+	// Shown is every seat whose cards have opened here, which for anybody but
+	// this player means a showdown they contested. A seat that folded is
+	// absent, and absent because its cards were never published rather than
+	// because anything here decided to withhold them.
+	Shown []shownHand `json:"shown,omitempty"`
+
 	// Pot is what earlier streets collected, and Chairs carries what each
 	// seat has put in on this one. They are separate because the reducer
 	// keeps them separate, and it keeps them separate because an uncalled
@@ -129,6 +135,13 @@ type handView struct {
 	Done    bool             `json:"done"`
 	Awards  []replay.Award   `json:"awards,omitempty"`
 	Settled *settledBoundary `json:"settled,omitempty"`
+}
+
+// shownHand is one seat's cards, as read from the deck rather than taken from
+// anybody's word for them.
+type shownHand struct {
+	Seat  int      `json:"seat"`
+	Cards []string `json:"cards"`
 }
 
 // settledBoundary is the last hand every seat signed off on, which is where a
@@ -270,6 +283,21 @@ func (t *tables) HandView(sid string) (*handView, error) {
 		for _, c := range hole {
 			v.Hole = append(v.Hole, c.String())
 		}
+	}
+	// Every seat whose hand opened, this one included, so a caller has one
+	// place to look rather than two rules to combine. Nothing is decided here:
+	// a seat that folded never published its shares, so it simply is not
+	// readable and does not appear.
+	for other := range len(tbl.play.Stacks()) {
+		cards, ok := h.Shown(other)
+		if !ok {
+			continue
+		}
+		shown := shownHand{Seat: other}
+		for _, c := range cards {
+			shown.Cards = append(shown.Cards, c.String())
+		}
+		v.Shown = append(v.Shown, shown)
 	}
 	for _, c := range h.Board() {
 		v.Board = append(v.Board, c.String())

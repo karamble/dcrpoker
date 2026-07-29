@@ -206,26 +206,63 @@ export function Progress({
     },
     {
       key: 'deal',
-      short: 'deal',
-      title: 'Play',
+      short: table.over ? 'ended' : 'deal',
+      title: table.over ? 'The table has ended' : 'Play',
       done: Boolean(table.dealing),
-      body: () => (
-        <>
-          <p className="lede">
-            {table.dealing
-              ? `The table is hot${table.hand ? ` and playing hand ${table.hand}` : ''}.`
-              : 'The table deals as soon as every stake and every bond is on the chain.'}
-          </p>
-          {table.dealing && (
-            <div className="row">
-              <span>The cards are on the felt</span>
-              <button className="act primary" onClick={onFelt}>
-                Go to the felt
-              </button>
-            </div>
-          )}
-        </>
-      ),
+      body: () => {
+        // A table that is over is the one state where the rail has something to
+        // report rather than something to ask for. It used to say "the table is
+        // hot" for a table that had finished playing, paid out and released its
+        // bonds, which is the last screen anybody sees and was the least true.
+        if (table.over) {
+          const at = table.settled
+          return (
+            <>
+              <p className="lede">
+                Nobody is dealt in here any more. It ended at the last result every seat
+                put their name to
+                {at ? ` — hand ${at.hand === 0 ? 'zero, the buy-ins' : at.hand}` : ''}, and
+                that is what it paid out.
+              </p>
+              {at?.stacks && (
+                <div className="rows">
+                  {at.stacks.map((atoms, seat) => (
+                    <div className="row" key={seat}>
+                      <span>
+                        seat {seat}
+                        {seat === table.seat ? ' · you' : ''}
+                      </span>
+                      <span>{dcr(atoms)} DCR</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="lede muted">
+                The payout and the bonds coming back are on the chain, below. Your stake is
+                not refundable separately once it has been paid out - it went out in the
+                settlement.
+              </p>
+            </>
+          )
+        }
+        return (
+          <>
+            <p className="lede">
+              {table.dealing
+                ? `The table is hot${table.hand ? ` and playing hand ${table.hand}` : ''}.`
+                : 'The table deals as soon as every stake and every bond is on the chain.'}
+            </p>
+            {table.dealing && (
+              <div className="row">
+                <span>The cards are on the felt</span>
+                <button className="act primary" onClick={onFelt}>
+                  Go to the felt
+                </button>
+              </div>
+            )}
+          </>
+        )
+      },
     },
   ]
 

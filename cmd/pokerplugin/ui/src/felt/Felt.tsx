@@ -126,7 +126,16 @@ function Seat({
   const cardX = x + BOX_W / 2 - HOLE_W - 3
 
   const turn = hand.toAct === seat
-  const hole = ours ? (hand.hole ?? []) : []
+  // Our own cards, or anybody's that opened at a showdown they contested.
+  //
+  // A seat that folded published no shares for its own cards, so they never
+  // opened and there is simply nothing here to draw. That is the protocol
+  // deciding what may be seen rather than this component, which is why there is
+  // no rule about folding anywhere in the felt - and it matters, because a hand
+  // that was never revealed is what lets an abandoned one settle.
+  const hole = ours
+    ? (hand.hole ?? [])
+    : (hand.shown?.find((s) => s.seat === seat)?.cards ?? [])
   // What is behind them now, not what they signed for at the last boundary.
   const stack = chair ? chair.stack : hand.stacks[seat]
   const out = chair?.folded || chair?.allIn
@@ -139,7 +148,7 @@ function Seat({
           x={cardX + i * (HOLE_W + 4)}
           y={cardY}
           w={HOLE_W}
-          slot={ours ? { card: hole[i] } : { hidden: true }}
+          slot={hole[i] ? { card: hole[i] } : { hidden: true }}
         />
       ))}
 

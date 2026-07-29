@@ -714,8 +714,28 @@ func (d *Driver) runout() ([]Out, error) {
 }
 
 // Hole reports this peer's own cards, once it can read them.
-func (d *Driver) Hole() ([2]deck.Card, bool) {
-	slots, err := d.layout.Hole(d.cfg.Seat)
+func (d *Driver) Hole() ([2]deck.Card, bool) { return d.Shown(d.cfg.Seat) }
+
+// Shown reports a seat's cards, if they have opened here.
+//
+// Which for anybody but this peer means a showdown they contested: a seat still
+// in at the end publishes the shares for its own hole cards, and that is the
+// only thing that ever opens them. A seat that folded published nothing, so its
+// slots never open, so this says no - not by a rule written here, but because
+// there is genuinely nothing to read.
+//
+// That distinction is load-bearing rather than tidy. A folded hand staying shut
+// is what lets an abandoned hand settle at all: nothing was revealed, so there
+// is nothing to argue about. So this reports what opened and never reconstructs
+// what did not, and a caller may show exactly what it is given.
+//
+// Both cards or neither. One card of a hand is not a hand, and a showdown
+// rendered half-open would invite reading something into the gap.
+func (d *Driver) Shown(seat int) ([2]deck.Card, bool) {
+	if seat < 0 || seat >= d.seats {
+		return [2]deck.Card{}, false
+	}
+	slots, err := d.layout.Hole(seat)
 	if err != nil {
 		return [2]deck.Card{}, false
 	}

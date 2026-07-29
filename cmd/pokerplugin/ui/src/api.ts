@@ -81,6 +81,11 @@ export type Waiting = {
   where: 'absent' | 'mempool' | 'confirming'
 }
 
+/** One seat's cards, once they have opened. Present only for hands that were
+ *  actually shown - a seat that folded published nothing, so it never appears
+ *  here and the felt has nothing to draw for it. */
+export type Shown = { seat: number; cards: string[] }
+
 export type Shuffle = { seat: number; state: 'ours' | 'verified' | 'awaited' }
 
 export type Award = { seat: number; atoms: number }
@@ -111,6 +116,7 @@ export type HandView = {
   minRaise: number
   legal?: string[]
   hole?: string[]
+  shown?: Shown[]
   board?: string[]
   pot: number
   chairs?: Chair[]

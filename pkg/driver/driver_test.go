@@ -541,3 +541,77 @@ func TestABadShareLeavesTheDutyStanding(t *testing.T) {
 		t.Fatal("the good share did not count, so the card is stranded")
 	}
 }
+
+// A showdown opens the hands that contested it, and a fold opens nothing.
+//
+// The second half is the one worth pinning. A seat that folds never publishes
+// the shares for its own cards, so those slots never open and Shown has nothing
+// to report - not because anything here refuses, but because the card is not
+// readable by anybody. That is what lets an abandoned hand settle at all: no
+// card was revealed, so there is nothing to argue about. An interface may show
+// whatever Shown gives it precisely because of this.
+func TestOnlyHandsThatWentToAShowdownAreShown(t *testing.T) {
+	n := seat(t, 2, 1000)
+	n.start()
+
+	// Check it down, so both hands are still in at the end.
+	for range 8 {
+		if n.peers[0].State().Done {
+			break
+		}
+		st := n.peers[0].State()
+		if st.ToAct < 0 {
+			break
+		}
+		if st.Bet-st.Seats[st.ToAct].Committed > 0 {
+			n.act(gamelog.ActionCall, 0)
+		} else {
+			n.act(gamelog.ActionCheck, 0)
+		}
+	}
+	if !n.peers[0].State().Done {
+		t.Skip("the hand did not finish inside the moves this test makes")
+	}
+
+	// Both seats contested it, so each can read the other's hand.
+	for i, p := range n.peers {
+		other := 1 - i
+		if _, ok := p.Shown(other); !ok {
+			t.Fatalf("peer %d cannot see seat %d's cards after a showdown they both contested",
+				i, other)
+		}
+		if _, ok := p.Shown(i); !ok {
+			t.Fatalf("peer %d cannot see its own cards", i)
+		}
+	}
+
+	// And both peers read the same cards, which is the point of opening them
+	// from the deck rather than being told.
+	a, _ := n.peers[0].Shown(1)
+	b, _ := n.peers[1].Shown(1)
+	if a != b {
+		t.Fatalf("the two peers read seat 1's hand differently: %v and %v", a, b)
+	}
+}
+
+// A hand somebody folded out of stays shut, at every other seat.
+func TestAFoldedHandIsNeverShown(t *testing.T) {
+	n := seat(t, 2, 1000)
+	n.start()
+
+	folder := n.peers[0].State().ToAct
+	if folder < 0 {
+		t.Skip("nobody was to act")
+	}
+	n.act(gamelog.ActionFold, 0)
+
+	for i, p := range n.peers {
+		if i == folder {
+			continue
+		}
+		if cards, ok := p.Shown(folder); ok {
+			t.Fatalf("peer %d can read seat %d's folded hand %v; an abandoned hand settles "+
+				"because nothing was revealed", i, folder, cards)
+		}
+	}
+}
