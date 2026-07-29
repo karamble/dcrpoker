@@ -136,9 +136,20 @@ var testHeight = func() *atomic.Int64 {
 }()
 
 // tickAll moves the chain on one block and runs the tick every peer runs.
+// testClock is the wall clock these tests hand the repair timers, advanced one
+// tick at a time. The dealing repair answers to seconds rather than blocks, so a
+// test that ticked forty times inside a second would see a single repair and
+// call the machinery broken - the same mistake as counting a block budget in
+// wall time, in the other direction.
+var testClock atomic.Int64
+
 func tickAll(peers ...*plugin) {
 	h := testHeight.Add(1)
+	// A minute a tick, which is more than any repair interval, so a tick is
+	// still the unit a test counts in.
+	nanos := testClock.Add(int64(time.Minute))
 	for _, p := range peers {
+		p.tables.now = func() time.Time { return time.Unix(0, nanos) }
 		// Everything watchChain does on a block, in the order it does it:
 		// what the chain says first, then what the table makes of it. A
 		// harness that only ticked the table would leave the plugin unable

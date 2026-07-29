@@ -135,6 +135,9 @@ type table struct {
 	// ever say that it was.
 	stalledAt     string
 	stalledSaidAt int64
+	// stalledSaidWhen is the same in wall-clock, for the phases that answer to
+	// seconds rather than to blocks. See recover.go's two intervals.
+	stalledSaidWhen time.Time
 
 	// finished says this player has got up from the table and it is kept
 	// only because it still holds their money. See tables.drop.
@@ -267,6 +270,12 @@ type tables struct {
 	// never have accepted.
 	signBonded func(terms membership.Terms, seat uint32, outpoint string) (*membership.Bonded, error)
 
+	// now is the clock the repair timers read. Injected so a test can drive it:
+	// the dealing repair answers to seconds rather than to blocks, and a test
+	// that ticks forty times in a second would otherwise see one repair and
+	// conclude the machinery was broken. Nil means time.Now.
+	now func() time.Time
+
 	// payoutAddr is where this player wants to be paid, asked for rather than
 	// stored, because the host may rebind the gaming account between one
 	// announcement and the next. Injected like the signers above: this
@@ -281,7 +290,7 @@ type tables struct {
 }
 
 func newTables(st *store) *tables {
-	return &tables{m: make(map[string]*table), store: st}
+	return &tables{m: make(map[string]*table), store: st, now: time.Now}
 }
 
 // termsFor reports a table's terms, if this is a session and a conversation

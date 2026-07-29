@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/driver"
 	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
@@ -157,10 +158,30 @@ func (tbl *table) noteFork(theirs *gamelog.HeadAttestation, ourHead [32]byte, se
 	return nil
 }
 
-// stallEvery is how many blocks a stuck hand waits before saying its messages
-// again. Slow, because the common reason a table is quiet is that somebody is
-// thinking; not never, because the uncommon reason is that a repair was lost.
-const stallEvery = 4
+// How long a stuck hand waits before saying its messages again.
+//
+// Two intervals, because a quiet table means two different things depending on
+// what it is quiet during.
+//
+// While somebody is betting, the common reason nothing is moving is that a
+// person is thinking, and a person may think for minutes. So that one is slow,
+// counted in blocks, and repeating every four is enough to unstick a lost frame
+// without shouting at anybody.
+//
+// While the deck is being shuffled or dealt there is no person in the loop at
+// all - it is machines exchanging frames that should cross in seconds. Quiet
+// there does not mean deliberation, it means something was lost. Waiting four
+// blocks to find that out is about twenty minutes of a table looking broken,
+// which is what a live table spent this afternoon doing.
+//
+// The dealing one is wall-clock rather than block height on purpose. Every
+// deadline in this protocol is a block because two peers have to agree on it;
+// this is not a deadline and nobody else has to agree - it is one peer deciding
+// when to repeat itself, exactly like the message TTLs in pkg/gaming/wire.
+const (
+	stallEvery     = 4
+	dealStallEvery = 45 * time.Second
+)
 
 // republishStalled says again what this seat has already sent.
 //
@@ -195,10 +216,8 @@ func (t *tables) republishStalled(tbl *table, height int64) []outgoing {
 	}
 	at := tbl.progress()
 	moved := at != tbl.stalledAt
-	if !moved && height > 0 && height < tbl.stalledSaidAt+stallEvery {
-		// Said recently, and nothing has moved since. A table where
-		// somebody is genuinely just slow hears from us every stallEvery
-		// blocks and no more often.
+	if !moved && !tbl.stallDue(height, t.clock()) {
+		// Said recently, and nothing has moved since.
 		return nil
 	}
 	if _, owes := tbl.play.Owes(int(seat)); owes && moved {
@@ -222,6 +241,7 @@ func (t *tables) republishStalled(tbl *table, height int64) []outgoing {
 	}
 	tbl.stalledAt = at
 	tbl.stalledSaidAt = height
+	tbl.stalledSaidWhen = t.clock()
 
 	held := tbl.play.Republish()
 	if len(held) == 0 {
@@ -239,6 +259,34 @@ func (t *tables) republishStalled(tbl *table, height int64) []outgoing {
 	log.Printf("pokerplugin: table %s: nothing owed here and nothing moving; saying our %d messages again",
 		tbl.terms.SID, len(out))
 	return out
+}
+
+// clock is the time these repairs are paced by, which a test may replace.
+func (t *tables) clock() time.Time {
+	if t.now == nil {
+		return time.Now()
+	}
+	return t.now()
+}
+
+// stallDue reports whether enough has passed to say our messages again.
+//
+// Which clock it reads depends on what the table is waiting for. Dealing is
+// machines and answers to seconds; betting is a person and answers to blocks.
+// See the constants above.
+func (tbl *table) stallDue(height int64, now time.Time) bool {
+	if tbl.play != nil {
+		if h := tbl.play.Hand(); h != nil {
+			switch h.Phase() {
+			case driver.PhaseShuffling, driver.PhaseDealing:
+				return now.Sub(tbl.stalledSaidWhen) >= dealStallEvery
+			}
+		}
+	}
+	if height <= 0 {
+		return true
+	}
+	return height >= tbl.stalledSaidAt+stallEvery
 }
 
 // progress is a fingerprint of how far the hand has got.

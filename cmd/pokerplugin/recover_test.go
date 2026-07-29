@@ -149,3 +149,30 @@ func settle(t *testing.T, h *hub, peers ...*plugin) {
 	}
 	h.inflight.Wait()
 }
+
+// Dealing is repaired on seconds; betting is repaired on blocks.
+//
+// Quiet means two different things. While somebody is betting it usually means a
+// person is thinking, and shouting at them every half minute would be wrong.
+// While the deck is being shuffled or dealt there is no person at all - it is
+// machines exchanging frames that cross in seconds - so quiet there means
+// something was lost, and waiting four blocks to find out is twenty minutes of a
+// table looking broken. A live table spent an afternoon doing exactly that.
+func TestAStalledDealIsRepairedFasterThanAStalledBet(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	tbl := &table{stalledSaidAt: 100, stalledSaidWhen: now}
+
+	// Betting answers to blocks: not at the next one, yes at stallEvery.
+	if tbl.stallDue(101, now.Add(10*time.Minute)) {
+		t.Fatal("a betting table repeated itself one block after the last time")
+	}
+	if !tbl.stallDue(100+stallEvery, now.Add(time.Hour)) {
+		t.Fatalf("a betting table never repeated itself after %d blocks", stallEvery)
+	}
+
+	// The height is what gates it, not the clock: a table where nobody has
+	// mined anything stays quiet however long a person takes to think.
+	if tbl.stallDue(101, now.Add(24*time.Hour)) {
+		t.Fatal("a betting table repeated itself on wall time rather than on blocks")
+	}
+}
