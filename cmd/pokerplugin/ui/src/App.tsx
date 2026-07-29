@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type Snapshot } from './api'
+import { api, type Bond as BondInfo, type Snapshot } from './api'
 import { dcr } from './format'
 import { useHost } from './host'
 import { useTableState } from './state'
 import { Bond } from './table/Bond'
 import { Lifecycle } from './table/Lifecycle'
 import { Money } from './table/Money'
-import { Obligations } from './table/Obligations'
+import { Progress } from './table/Progress'
 import { OnChain } from './table/OnChain'
 import { Provenance } from './table/Provenance'
 import { Actions } from './felt/Actions'
@@ -33,6 +33,10 @@ export function App() {
   const state = useTableState(host.ready)
   const [tab, setTab] = useState<Tab>(readTab)
   const [chosen, setChosen] = useState<string>()
+  // Held here because two things need it: the step rail, which asks whether
+  // this player can join anything at all, and the card at the bottom that says
+  // when it comes back. Asking twice would be two answers on two clocks.
+  const [bond, setBond] = useState<BondInfo>()
 
   useEffect(() => {
     const onHash = () => setTab(readTab())
@@ -107,12 +111,14 @@ export function App() {
         ) : tab === 'table' ? (
           <>
             {table.finished && <Finished table={table} />}
+            {!table.finished && (
+              <Progress table={table} ledger={ledger} bond={bond} onFelt={() => show('felt')} />
+            )}
             <Provenance hand={hand} />
             <Money table={table} ledger={ledger} />
-            <OnChain ledger={ledger} />
-            <Obligations table={table} ledger={ledger} payoutAddress={host.payoutAddress} />
+            <OnChain ledger={ledger} dealing={table.dealing} refreshed={ledger?.refreshed} />
             <Lifecycle table={table} />
-            <Bond />
+            <Bond onLoad={setBond} />
           </>
         ) : !table.dealing || !hand ? (
           // The plugin answers 400 on /table/hand until the table deals, which

@@ -51,6 +51,9 @@ export type Snapshot = {
   reason?: string
   /** The height admission closed at, which is what tables are ordered by. */
   until?: number
+  /** The block the seating is drawn from. Given rather than derived, so this
+   *  page never carries its own copy of a protocol constant. */
+  seatsAt?: number
   waiting: number
   funded: number
   seat?: number

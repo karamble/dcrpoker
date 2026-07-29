@@ -19,7 +19,7 @@ import { blocks, dcr, short } from '../format'
 // allowlisted API - a page that could cause a broadcast is a larger thing than
 // a page that can read. Where to do it is said instead of shown.
 
-export function Bond() {
+export function Bond({ onLoad }: { onLoad?: (b: BondInfo) => void }) {
   const [bond, setBond] = useState<BondInfo>()
   const [error, setError] = useState<string>()
   const [asked, setAsked] = useState<Asked>()
@@ -30,10 +30,11 @@ export function Bond() {
       .bond()
       .then((b) => {
         setBond(b)
+        onLoad?.(b)
         setError(undefined)
       })
       .catch((e) => setError(String(e instanceof Error ? e.message : e)))
-  }, [])
+  }, [onLoad])
 
   useEffect(() => {
     load()

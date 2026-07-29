@@ -1597,6 +1597,13 @@ type snapshot struct {
 	// these are ordered by, and an order a caller cannot see is one it cannot
 	// preserve when it holds tables of its own.
 	Until uint32 `json:"until,omitempty"`
+
+	// SeatsAt is the block the seating is drawn from. Derived here rather
+	// than left to the caller, because it is Until plus a protocol constant
+	// and an interface that added the constant itself would be a second copy
+	// of it - wrong the moment the depth changes, and wrong in the one place
+	// that tells somebody how long they are waiting.
+	SeatsAt uint32 `json:"seatsAt,omitempty"`
 	// Waiting counts log entries that arrived before the one they chain
 	// to. A number that stays above zero means entries are missing rather
 	// than merely late.
@@ -1724,6 +1731,7 @@ func (t *tables) snapshots() []snapshot {
 			Joined:     len(tbl.form.Joins()),
 			Reason:     tbl.form.Reason(),
 			Until:      tbl.terms.Until,
+			SeatsAt:    membership.BeaconHeight(tbl.terms),
 		}
 		if id, ok := tbl.form.MatchID(); ok {
 			s.MatchID = id

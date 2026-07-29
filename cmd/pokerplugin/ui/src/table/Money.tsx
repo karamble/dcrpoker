@@ -152,7 +152,7 @@ function Chain({ roster }: { roster: LedgerView['roster'] }) {
  *
  *  None of this decides anything. The peer accepts a stake or a bond only on
  *  confirmed coin; this is the reason for a wait, rendered after the fact. */
-function Awaited({ on }: { on?: Waiting }) {
+export function Awaited({ on }: { on?: Waiting }) {
   if (!on) return <span className="muted">not seen by this peer</span>
   if (on.where === 'mempool') {
     return (

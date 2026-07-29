@@ -277,3 +277,48 @@ button.pick[aria-pressed='true'] { border-color: var(--accent); color: var(--ink
 
 .amount-field { display: inline-flex; align-items: center; gap: 6px; }
 .amount-field .unit { font-size: 12px; color: var(--ink-3); font-family: var(--mono); }
+
+/* The step rail.
+ *
+ * Seven steps, and the only one that matters at any moment is the current one -
+ * so the rail is small and quiet and the detail below it is not. A rail that
+ * competed with its own contents would be decoration.
+ *
+ * It wraps rather than scrolls. A step that has fallen off the right edge is a
+ * step somebody cannot see they are waiting for, and this renders in a panel a
+ * person is free to make narrow. */
+.rail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+.rail-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  letter-spacing: .03em;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.rail-pip {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+.rail-step.done .rail-pip { border-color: var(--good); color: var(--good); }
+.rail-step.done .rail-name { color: var(--ink-3); }
+/* The current step is the only thing here allowed to be loud. */
+.rail-step.now .rail-pip { border-color: var(--ink); color: var(--ink); }
+.rail-step.now .rail-name { color: var(--ink); font-weight: 600; }
+.rail-step.later { opacity: .5; }

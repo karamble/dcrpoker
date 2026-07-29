@@ -27,7 +27,15 @@ const wording: Record<ChainEvent['kind'], string> = {
   blocked: 'Could not complete',
 }
 
-export function OnChain({ ledger }: { ledger?: LedgerView }) {
+export function OnChain({
+  ledger,
+  dealing,
+  refreshed,
+}: {
+  ledger?: LedgerView
+  dealing?: boolean
+  refreshed?: boolean
+}) {
   const events = [...(ledger?.events ?? [])].reverse()
   const claims = ledger?.claims ?? []
   const settlement = ledger?.settlement
@@ -89,6 +97,15 @@ export function OnChain({ ledger }: { ledger?: LedgerView }) {
             </div>
           ))}
         </div>
+      )}
+
+      {dealing && !refreshed && (
+        <p className="lede warn">
+          The answers to a future claim are still being gathered. Until every seat holds
+          one, a seat claimed against cannot answer — the signatures an answer needs
+          include the accusers', and they will not give them once they have started
+          accusing.
+        </p>
       )}
 
       {events.length === 0 ? (
