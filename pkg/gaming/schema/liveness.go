@@ -223,3 +223,21 @@ func (h Head) Into() (*gamelog.HeadAttestation, error) {
 	copy(att.Hash[:], hash)
 	return att, nil
 }
+
+// Release is one member's signature on the transaction that hands a seat's
+// table bond back.
+//
+// One signature and one input, unlike a settlement: each bond is its own output
+// under its own script, and the branch that releases it names the whole table.
+// So a table of n seats releases n bonds as n transactions rather than one, and
+// every member signs each of them.
+type Release struct {
+	// Seat is whose bond this releases. A signature for one seat's bond
+	// cannot be applied to another's, and saying which is what lets a peer
+	// rebuild the transaction it is being asked to sign.
+	Seat uint32 `json:"seat"`
+	// Tx is the unsigned release, hex-encoded.
+	Tx     string `json:"tx"`
+	Signer string `json:"signer"` // hex compressed session pubkey
+	Sig    string `json:"sig"`
+}

@@ -299,3 +299,59 @@ func TestTheTableBondBuilderRefusesUnsafeTerms(t *testing.T) {
 		})
 	}
 }
+
+// A peer must never sign a bond release it did not derive itself.
+//
+// The release needs every member's signature, so a seat that signed whatever
+// arrived would hand the sender a transaction paying wherever they liked with
+// everybody's names on it. This is the only thing standing between a
+// co-operative release and a way to rob the table politely.
+func TestABondReleaseIsRefusedUnlessItIsTheOneWeWouldBuild(t *testing.T) {
+	b := postTableBond(t, 2)
+	spent := spendTx(t, 0)
+	d := AliveDraft{
+		Bond:       b.script,
+		Prevout:    spent.TxIn[0].PreviousOutPoint,
+		ValueAtoms: spent.TxIn[0].ValueIn,
+		PayScript:  spent.TxOut[0].PkScript,
+		FeeAtoms:   2000,
+	}
+
+	honest, err := BuildAlive(d)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if err := CheckAliveDraft(honest, d); err != nil {
+		t.Fatalf("the transaction we build ourselves was refused: %v", err)
+	}
+
+	// Paying somewhere else, which is the attack.
+	elsewhere := honest.Copy()
+	elsewhere.TxOut[0].PkScript = append(
+		append([]byte(nil), honest.TxOut[0].PkScript...), 0x51)
+	if err := CheckAliveDraft(elsewhere, d); err == nil {
+		t.Fatal("a release paying somebody else was accepted")
+	}
+
+	// Keeping more than the fee.
+	greedy := honest.Copy()
+	greedy.TxOut[0].Value -= 1000
+	if err := CheckAliveDraft(greedy, d); err == nil {
+		t.Fatal("a release skimming the difference was accepted")
+	}
+
+	// Spending some other output.
+	elsewhereIn := honest.Copy()
+	elsewhereIn.TxIn[0].PreviousOutPoint.Index++
+	if err := CheckAliveDraft(elsewhereIn, d); err == nil {
+		t.Fatal("a release spending a different output was accepted")
+	}
+
+	// And a timelocked sequence, which would be the backstop branch wearing
+	// the alive branch's clothes.
+	locked := honest.Copy()
+	locked.TxIn[0].Sequence = 42
+	if err := CheckAliveDraft(locked, d); err == nil {
+		t.Fatal("a release carrying a timelock was accepted")
+	}
+}

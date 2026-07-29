@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	dcrwire "github.com/decred/dcrd/wire"
+
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 )
 
@@ -164,6 +166,15 @@ func TestATableThatEndsPaysTheWinner(t *testing.T) {
 	waitOver(t, h, terms.SID, a, b)
 	tx := waitPaid(t, h, a, b)
 
+	// And the bonds come back in the same session, on the branch every member
+	// signs, rather than each player waiting out a week for coin nobody ever
+	// disputed. Two seats, so two releases: a bond is one output under a script
+	// naming the whole table, and each is its own transaction.
+	released := waitReleased(t, h, 2, a, b)
+	if len(released) != 2 {
+		t.Fatalf("%d bonds came back, want one a seat", len(released))
+	}
+
 	// It spends both stakes and nothing else. An escrow output needs every
 	// member's signature, so a payout that reached the chain at all is one
 	// both seats agreed to.
@@ -235,7 +246,15 @@ func TestTheTableCannotBePaidOutTwice(t *testing.T) {
 
 	// Both peers keep ticking, and both hold the same signatures.
 	advance(t, h, 6, a, b)
-	if sent := h.relayed(); len(sent) != 1 {
+	// Settlements only: a bond release is also relayed now, and it has one
+	// input where a settlement has one per seat.
+	var sent []*dcrwire.MsgTx
+	for _, tx := range h.relayed() {
+		if len(tx.TxIn) > 1 {
+			sent = append(sent, tx)
+		}
+	}
+	if len(sent) != 1 {
 		t.Fatalf("the table paid out %d times", len(sent))
 	}
 	for _, in := range tx.TxIn {

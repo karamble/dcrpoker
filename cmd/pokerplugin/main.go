@@ -258,6 +258,9 @@ func (p *plugin) watchChain(ctx context.Context) {
 				log.Printf("pokerplugin: cannot read the chain: %v", err)
 			}
 		} else {
+			// Before the tick, because the tick is what proposes a bond
+			// release and it cannot build one without the amount.
+			p.learnBondValues(ctx)
 			p.publish(ctx, p.tables.tick(tip.Height))
 			p.drawSeats(ctx, tip.Height)
 		}

@@ -443,3 +443,45 @@ func BuildRefreshChain(d RefreshDraft, depth int) ([]*wire.MsgTx, error) {
 	}
 	return out, nil
 }
+
+// CheckAliveDraft rebuilds the transaction a draft describes and refuses
+// anything that is not it.
+//
+// The rule every co-signing step here follows: a peer signs what it derived
+// itself, never what it was handed. A bond release is the one where that matters
+// most - it needs every member's signature, so a seat that signed whatever
+// arrived would be handing the sender a transaction paying wherever they liked,
+// with everybody's names on it. Rebuilding is the whole defence, and there is
+// deliberately no field-by-field trust in the incoming transaction beyond
+// comparing it with our own.
+func CheckAliveDraft(tx *wire.MsgTx, d AliveDraft) error {
+	want, err := BuildAlive(d)
+	if err != nil {
+		return err
+	}
+	if tx == nil || len(tx.TxIn) != 1 || len(tx.TxOut) != 1 {
+		return fmt.Errorf("a bond release has one input and one output")
+	}
+	if tx.Version != want.Version {
+		return fmt.Errorf("release is version %d, want %d", tx.Version, want.Version)
+	}
+	if tx.TxIn[0].PreviousOutPoint != want.TxIn[0].PreviousOutPoint {
+		return fmt.Errorf("release spends a different output than the bond named")
+	}
+	if tx.TxIn[0].ValueIn != want.TxIn[0].ValueIn {
+		return fmt.Errorf("release states the bond holds %d, not %d",
+			tx.TxIn[0].ValueIn, want.TxIn[0].ValueIn)
+	}
+	if tx.TxIn[0].Sequence != want.TxIn[0].Sequence {
+		return fmt.Errorf("release carries a sequence of %d, and the branch every member signs has no timelock",
+			tx.TxIn[0].Sequence)
+	}
+	if tx.TxOut[0].Value != want.TxOut[0].Value {
+		return fmt.Errorf("release pays out %d, and the fee leaves %d",
+			tx.TxOut[0].Value, want.TxOut[0].Value)
+	}
+	if !bytes.Equal(tx.TxOut[0].PkScript, want.TxOut[0].PkScript) {
+		return fmt.Errorf("release pays somewhere other than where this seat asked to be paid")
+	}
+	return nil
+}

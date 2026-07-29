@@ -59,8 +59,13 @@ type table struct {
 	// refresh is every pre-agreed answer, filed by the output it spends, and
 	// bondedAt is where a seat's bond sits now if it has answered a claim
 	// and moved it.
-	refresh   map[string]*refresh
-	bondedAt  map[uint32]string
+	refresh  map[string]*refresh
+	bondedAt map[uint32]string
+	// releases is each seat's bond going back, once the table is over, and
+	// bondValue is what the chain says each bond holds - needed to build the
+	// release and known only from having looked.
+	releases  map[uint32]*release
+	bondValue map[uint32]int64
 	refreshed bool
 	settle    *settlement
 	settled   bool
@@ -472,6 +477,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	tbl := &table{terms: terms, gcID: gcID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
+		releases: map[uint32]*release{}, bondValue: map[uint32]int64{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain, logPriv: creds.Log}
@@ -765,6 +771,7 @@ func (t *tables) receipt(rec *record, id *identity) (*table, error) {
 	tbl := &table{terms: terms, gcID: rec.GCID, form: form,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
+		releases: map[uint32]*release{}, bondValue: map[uint32]int64{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain,
@@ -811,6 +818,7 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, tbl.proposeClaim(t.params)...)
 		out = append(out, tbl.presignRefreshes()...)
 		out = append(out, tbl.proposeSettlement()...)
+		out = append(out, tbl.proposeReleases()...)
 		out = append(out, t.announceAgain(tbl, height)...)
 		out = append(out, t.announceBondAgain(tbl, height)...)
 		out = append(out, t.announcePayoutAgain(tbl, height)...)
@@ -1262,6 +1270,13 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 			return nil, err
 		}
 		return tbl.adoptSettlement(context.Background(), body), nil
+
+	case schema.KindRelease:
+		var body schema.Release
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		return tbl.adoptRelease(context.Background(), body), nil
 
 	case schema.KindPayout:
 		var body schema.Payout

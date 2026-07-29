@@ -139,6 +139,11 @@ var testHeight = func() *atomic.Int64 {
 func tickAll(peers ...*plugin) {
 	h := testHeight.Add(1)
 	for _, p := range peers {
+		// Everything watchChain does on a block, in the order it does it:
+		// what the chain says first, then what the table makes of it. A
+		// harness that only ticked the table would leave the plugin unable
+		// to build anything that needs an amount from the chain.
+		p.learnBondValues(context.Background())
 		p.publish(context.Background(), p.tables.tick(h))
 	}
 }
@@ -361,7 +366,17 @@ func waitPaid(t *testing.T, h *hub, peers ...*plugin) *dcrwire.MsgTx {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		if sent := h.relayed(); len(sent) > 0 {
+		// The settlement spends every seat's stake, so it has more than one
+		// input; a bond release has exactly one of each. Both reach this chain
+		// now that bonds come back cooperatively, and counting a release as a
+		// second payout would report a double-spend that never happened.
+		var sent []*dcrwire.MsgTx
+		for _, tx := range h.relayed() {
+			if len(tx.TxIn) > 1 {
+				sent = append(sent, tx)
+			}
+		}
+		if len(sent) > 0 {
 			// One and only one. Every seat holds the same fully signed
 			// transaction and any of them may send it, so the second is
 			// refused by the chain rather than by good manners - but a
@@ -373,6 +388,36 @@ func waitPaid(t *testing.T, h *hub, peers ...*plugin) *dcrwire.MsgTx {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the table ended and never paid anybody")
+		}
+		time.Sleep(tickEvery)
+		tickAll(peers...)
+		h.inflight.Wait()
+	}
+}
+
+// waitReleased waits for every table bond to be handed back.
+//
+// Counted rather than assumed, because the cooperative release is the path that
+// should happen every time and the one whose absence is invisible: a bond nobody
+// released simply sits there looking locked, and the backstop hides it for a
+// week before anybody notices.
+func waitReleased(t *testing.T, h *hub, want int, peers ...*plugin) []*dcrwire.MsgTx {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		var got []*dcrwire.MsgTx
+		for _, tx := range h.relayed() {
+			// A release spends one output and pays one; a settlement spends
+			// every stake. Telling them apart by shape is enough here.
+			if len(tx.TxIn) == 1 && len(tx.TxOut) == 1 {
+				got = append(got, tx)
+			}
+		}
+		if len(got) >= want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d bonds ever came back", len(got), want)
 		}
 		time.Sleep(tickEvery)
 		tickAll(peers...)

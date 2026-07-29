@@ -117,6 +117,13 @@ const (
 	// KindSettle is a signature on the transaction that pays a table out.
 	KindSettle Kind = "settle"
 
+	// KindRelease is a signature on the transaction that hands one seat's
+	// table bond back when the table has finished. The alive branch of the
+	// bond, which every member signs and which carries no timelock - so a
+	// table that ends properly returns its bonds at once rather than leaving
+	// each player to wait out the week the backstop takes.
+	KindRelease Kind = "release"
+
 	// KindPayout is one member saying where it wants to be paid.
 	KindPayout Kind = "payout"
 

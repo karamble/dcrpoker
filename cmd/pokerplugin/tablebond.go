@@ -53,28 +53,30 @@ func (tbl *table) bond(seat uint32, params stdaddr.AddressParams) (membership.Ta
 // already agreed - not one the announcement supplied. A bond nobody else can
 // claim looks exactly like a real one from the outside, and the difference is
 // the entire point of having it.
-func checkTableBond(ctx context.Context, chain *transport.Bridge, outpoint, wantPkScript string) error {
+// Returns what the output holds, because releasing this bond later needs the
+// amount and this is the one place that has already looked it up.
+func checkTableBond(ctx context.Context, chain *transport.Bridge, outpoint, wantPkScript string) (int64, error) {
 	txid, vout, err := splitOutpoint(outpoint)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	out, err := chain.Outpoint(ctx, txid, vout)
 	if err != nil {
-		return fmt.Errorf("could not check the bond: %w", err)
+		return 0, fmt.Errorf("could not check the bond: %w", err)
 	}
 	switch {
 	case !out.Found:
-		return fmt.Errorf("%s holds no coin anyone can see", outpoint)
+		return 0, fmt.Errorf("%s holds no coin anyone can see", outpoint)
 	case !strings.EqualFold(out.PkScriptHex, wantPkScript):
-		return fmt.Errorf("%s does not pay this seat's bond script", outpoint)
+		return 0, fmt.Errorf("%s does not pay this seat's bond script", outpoint)
 	case out.ValueAtoms < int64(escrow.MinBondAtoms):
-		return fmt.Errorf("%s holds %d atoms, and a bond is at least %d",
+		return 0, fmt.Errorf("%s holds %d atoms, and a bond is at least %d",
 			outpoint, out.ValueAtoms, escrow.MinBondAtoms)
 	case out.Confirmations < int64(escrow.BondConfirmations):
-		return fmt.Errorf("%s has %d confirmations, and a bond needs %d",
+		return 0, fmt.Errorf("%s has %d confirmations, and a bond needs %d",
 			outpoint, out.Confirmations, escrow.BondConfirmations)
 	}
-	return nil
+	return out.ValueAtoms, nil
 }
 
 // acceptBond records another seat's bond, once the chain agrees it is there.
@@ -129,7 +131,8 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 		return nil
 	}
 
-	if err := checkTableBond(ctx, t.chain, bn.Outpoint, want.PkScriptHex); err != nil {
+	value, err := checkTableBond(ctx, t.chain, bn.Outpoint, want.PkScriptHex)
+	if err != nil {
 		log.Printf("pokerplugin: table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
 		// A bond needs two confirmations, so the first telling is always
 		// refused and a person is owed the difference between "waiting" and
@@ -146,6 +149,7 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 		return nil
 	}
 	tbl.bonded[bn.Seat] = bn.Outpoint
+	tbl.bondValue[bn.Seat] = value
 	delete(tbl.bondWaiting, bn.Seat)
 	t.persist(tbl)
 	log.Printf("pokerplugin: table %s: seat %d is bonded at %s (%d of %d seats)",
