@@ -72,6 +72,21 @@ type record struct {
 	// Signed is which positions the log key has put its name to, so the
 	// refusal in pkg/forfeit survives a restart. Keys are "domain/seq".
 	Signed map[string]string `json:"signed,omitempty"`
+	// Refreshes are the pre-agreed answers to a claim. They are agreed once,
+	// while everybody is still talking, and can never be agreed again: the
+	// branch needs the accusers' signatures and they will not sign once they
+	// have started claiming. A restart without them is a seat that cannot
+	// answer.
+	Refreshes []recordedRefresh `json:"refreshes,omitempty"`
+}
+
+// recordedRefresh is one answer and the signatures gathered for it.
+type recordedRefresh struct {
+	Seat uint32 `json:"seat"`
+	Tx   string `json:"tx"`
+	Bond string `json:"bond"`
+	// Sigs is signer pubkey hex to signature hex.
+	Sigs map[string]string `json:"sigs"`
 }
 
 // sidRe is the shape a session id takes, repeated here because this builds a

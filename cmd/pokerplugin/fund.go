@@ -161,6 +161,18 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 	if tbl == nil {
 		return nil
 	}
+	if held, ok := tbl.funded[fn.Seat]; ok && held != fn.Outpoint {
+		// Two outpoints from one seat, each signed by the session key that
+		// holds it, is that seat saying two different things about where
+		// its stake is. Keeping the first is what makes it a fault rather
+		// than a race: every peer then agrees which one counts, and the
+		// pair of announcements is evidence anybody can check. Overwriting
+		// let a seat make its own bond unclaimable, since a claim is built
+		// against whichever one this peer happened to keep.
+		log.Printf("pokerplugin: table %s: seat %d announced a second stake at %s "+
+			"while %s stands; keeping the first", d.SID, fn.Seat, fn.Outpoint, held)
+		return nil
+	}
 	tbl.funded[fn.Seat] = fn.Outpoint
 	// The sender of a verified funding announcement is the identity that
 	// owns the seat: only owners ever send these, and the repeats resend

@@ -148,6 +148,13 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 	if tbl == nil {
 		return nil
 	}
+	if held, ok := tbl.bonded[bn.Seat]; ok && held != bn.Outpoint {
+		// The first one stands, as with a stake: a seat naming two bonds is
+		// naming two, and a claim can only be built against one.
+		log.Printf("pokerplugin: table %s: seat %d announced a second bond at %s "+
+			"while %s stands; keeping the first", d.SID, bn.Seat, bn.Outpoint, held)
+		return nil
+	}
 	tbl.bonded[bn.Seat] = bn.Outpoint
 	tbl.bondValue[bn.Seat] = value
 	tbl.uids[bn.Seat] = d.Sender

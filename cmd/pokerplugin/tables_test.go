@@ -48,6 +48,11 @@ type hub struct {
 	// the money.
 	sent  []*dcrwire.MsgTx
 	spent map[string]bool
+	// pending is outpoints a transaction in the mempool is spending. The real
+	// lookup hides these from the confirmed view and not from the
+	// mempool-aware one, which is the only way a claim can be seen before it
+	// is mined.
+	pending map[string]bool
 
 	// confs is how deep this chain says every output is. Settable because
 	// maturity is the one thing a script engine cannot check, so the only way
@@ -206,6 +211,7 @@ func newHub(t *testing.T) *hub {
 		swallow: make(map[schema.Kind]int),
 		lost:    make(map[schema.Kind]int),
 		spent:   make(map[string]bool),
+		pending: make(map[string]bool),
 	}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/gaming/chain/outpoint" {
@@ -213,6 +219,9 @@ func newHub(t *testing.T) *hub {
 			key := q.Get("txid") + ":" + q.Get("vout")
 			h.mu.Lock()
 			pkScript, gone := h.bonds[key], h.spent[key]
+			if q.Get("mempool") == "1" && h.pending[key] {
+				gone = true
+			}
 			confs := h.confs
 			h.mu.Unlock()
 			if confs == 0 {

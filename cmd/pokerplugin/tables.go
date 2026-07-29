@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	dcrwire "github.com/decred/dcrd/wire"
+
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/pokerbisonrelay/pkg/chainwatch"
@@ -412,6 +414,18 @@ func (tbl *table) record() *record {
 			rec.Signed[at] = digest
 		}
 	}
+	for _, r := range tbl.refresh {
+		raw, err := r.tx.Bytes()
+		if err != nil {
+			continue
+		}
+		kept := recordedRefresh{Seat: r.seat, Tx: hex.EncodeToString(raw),
+			Bond: hex.EncodeToString(r.bond), Sigs: map[string]string{}}
+		for signer, sig := range r.sigs {
+			kept.Sigs[signer] = hex.EncodeToString(sig)
+		}
+		rec.Refreshes = append(rec.Refreshes, kept)
+	}
 	if len(tbl.bonded) > 0 {
 		rec.Bonded = make(map[uint32]string, len(tbl.bonded))
 		for seat, outpoint := range tbl.bonded {
@@ -572,6 +586,31 @@ func (tbl *table) resume(rec *record) error {
 			tbl.signed = map[string]string{}
 		}
 		tbl.signed[at] = digest
+	}
+	for _, kept := range rec.Refreshes {
+		raw, err := hex.DecodeString(kept.Tx)
+		if err != nil {
+			return fmt.Errorf("recorded answer for seat %d: %w", kept.Seat, err)
+		}
+		tx := dcrwire.NewMsgTx()
+		if err := tx.FromBytes(raw); err != nil {
+			return fmt.Errorf("recorded answer for seat %d: %w", kept.Seat, err)
+		}
+		bond, err := hex.DecodeString(kept.Bond)
+		if err != nil {
+			return fmt.Errorf("recorded answer for seat %d: %w", kept.Seat, err)
+		}
+		for signer, sig := range kept.Sigs {
+			b, err := hex.DecodeString(sig)
+			if err != nil {
+				continue
+			}
+			pub, err := hex.DecodeString(signer)
+			if err != nil {
+				continue
+			}
+			tbl.holdRefresh(kept.Seat, tx, bond, pub, b)
+		}
 	}
 	for i, wj := range rec.Joins {
 		j, err := wj.Into()
