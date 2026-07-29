@@ -127,9 +127,12 @@ export function App() {
           <section className="card">
             <h2>The felt</h2>
             <p className="lede">
-              Nothing is being dealt yet. {table.funded} of {table.seats} stakes and{' '}
-              {table.bonded} of {table.seats} bonds are on the chain, and the table deals
-              when both are complete.
+              {table.dealing
+                ? 'The last hand is over and the seats are signing the result. The next hand ' +
+                  'starts when they agree - nothing here is final until they do.'
+                : `Nothing is being dealt yet. ${table.funded} of ${table.seats} stakes and ` +
+                  `${table.bonded} of ${table.seats} bonds are on the chain, and the table ` +
+                  'deals when both are complete.'}
             </p>
             <p className="lede muted">
               The buy-in is {dcr(table.buyinAtoms)} DCR a seat. Everything outstanding is
@@ -153,19 +156,43 @@ export function App() {
   )
 }
 
+/** Done says what the hand did to this player, in those words.
+ *
+ *  It used to say "the hand is over" and then list what each seat was awarded,
+ *  which is the reducer's vocabulary rather than a person's: an award is not a
+ *  result. A seat that put in 1000 and is awarded 1000 won nothing, and the old
+ *  screen showed it the same way it showed a seat that was awarded 1000 having
+ *  put in nothing. What somebody wants is the difference. */
 function Done({ hand }: { hand: ReturnType<typeof useTableState>['hands'][string] }) {
+  const awards = hand.awards ?? []
+  const mine = awards.find((a) => a.seat === hand.seat)?.atoms ?? 0
+  const paid = hand.chairs?.find((c) => c.seat === hand.seat)?.total ?? 0
+  const net = mine - paid
+
   return (
     <div className="rows">
-      <p className="waiting">The hand is over.</p>
-      {(hand.awards ?? []).map((a) => (
-        <div className="row" key={a.seat}>
-          <span>
-            seat {a.seat}
-            {a.seat === hand.seat ? ' · you' : ''}
-          </span>
-          <span>{dcr(a.atoms)} DCR</span>
-        </div>
-      ))}
+      <p className="headline">
+        {net > 0 ? `You won ${dcr(net)} DCR` : net < 0 ? `You lost ${dcr(-net)} DCR` : 'You broke even'}
+      </p>
+      {awards.map((a) => {
+        const seatPaid = hand.chairs?.find((c) => c.seat === a.seat)?.total ?? 0
+        const seatNet = a.atoms - seatPaid
+        return (
+          <div className="row" key={a.seat}>
+            <span>
+              seat {a.seat}
+              {a.seat === hand.seat ? ' · you' : ''}
+            </span>
+            <span className={seatNet > 0 ? 'good' : seatNet < 0 ? 'muted' : undefined}>
+              {seatNet > 0 ? `+${dcr(seatNet)}` : seatNet < 0 ? `-${dcr(-seatNet)}` : '±0'} DCR
+            </span>
+          </div>
+        )
+      })}
+      <p className="lede muted">
+        The seats are signing this result now. Nothing is final until they all have, and
+        the next hand starts when they agree.
+      </p>
     </div>
   )
 }

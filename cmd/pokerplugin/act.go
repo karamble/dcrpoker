@@ -244,7 +244,16 @@ func (t *tables) HandView(sid string) (*handView, error) {
 			v.ToCall = owed
 		}
 		v.MinRaise = st.MinRaise
-		if v.Ours {
+		// Only while the table is actually taking bets.
+		//
+		// legalActions answers from the betting state, which still holds a
+		// whose-turn-it-is and a set of moves while the next hand is being
+		// shuffled and dealt. Reporting them then offered actions the driver
+		// refuses on arrival - "an action arrived while dealing" - so the
+		// interface invited a move that could not be made and said nothing
+		// about why. A seat has nothing to do while the cards are coming, and
+		// the honest way to say that is an empty list.
+		if v.Ours && h.Phase() == driver.PhaseBetting {
 			v.Legal = legalActions(st, int(seat))
 		}
 	}

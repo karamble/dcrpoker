@@ -45,6 +45,22 @@ export function Actions({ hand }: { hand: HandView }) {
     setRefused(undefined)
   }, [hand.hand, hand.street, hand.toAct, floor])
 
+  // Nothing to offer while the cards are still coming.
+  //
+  // Shuffling and dealing carry a whose-turn-it-is from the betting round that
+  // has not started yet, so a screen that keyed only on "is it ours" put check,
+  // raise and all-in in front of somebody whose hand did not exist - and the
+  // driver refused every one of them on arrival. Say what is happening instead.
+  if (hand.phase === 'shuffling' || hand.phase === 'dealing') {
+    return (
+      <p className="waiting">
+        {hand.phase === 'shuffling'
+          ? 'The deck is being shuffled. Every seat permutes it in turn and proves it did nothing else.'
+          : 'The cards are being dealt. Each seat publishes what the others need to read their own.'}
+      </p>
+    )
+  }
+
   if (!hand.ours) {
     return (
       <p className="waiting">
