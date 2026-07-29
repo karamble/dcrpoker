@@ -68,7 +68,7 @@ func TestRestoreWillNotStrandABond(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	if err := holder.setBondDeposit("c3f9927d53dd1fc243095447ad1868a8dceecd90ec870f83987c2eb40f2fae13:1"); err != nil {
+	if err := holder.setBondDeposit("1def0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab:1"); err != nil {
 		t.Fatalf("set bond: %v", err)
 	}
 	if err := holder.restore(seedHex, ""); err == nil {

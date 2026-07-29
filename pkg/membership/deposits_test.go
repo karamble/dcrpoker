@@ -6,7 +6,7 @@ import (
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 )
 
-const testOutpoint = "c3f9927d53dd1fc243095447ad1868a8dceecd90ec870f83987c2eb40f2fae13:1"
+const testOutpoint = "1def0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab:1"
 
 // A funding announcement establishes who said where their stake is - and
 // nothing else. Whether that outpoint is real, big enough, or pays the right
