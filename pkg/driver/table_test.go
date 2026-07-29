@@ -11,8 +11,11 @@ import (
 // A table of tables: several hands, played by peers who only ever see each
 // other's messages.
 type tnet struct {
-	t       *testing.T
-	peers   []*Table
+	t     *testing.T
+	peers []*Table
+	// logs is every seat's signing key, kept so a test can put a frame on
+	// the wire as any seat - including one it has no right to speak for.
+	logs    []*forfeit.LogKey
 	pending []addressed
 }
 
@@ -49,6 +52,7 @@ func seatTable(t *testing.T, n int, stack int64) *tnet {
 		}
 		nw.peers = append(nw.peers, tb)
 	}
+	nw.logs = logs
 	return nw
 }
 
@@ -80,11 +84,11 @@ func (n *tnet) deliver() {
 func tableInbound(o Out) In {
 	switch m := o.(type) {
 	case OutCardKey:
-		return InCardKey{Seat: m.Seat, Hand: m.Hand, Key: m.Key}
+		return InCardKey{Seat: m.Seat, Hand: m.Hand, Key: m.Key, Sig: m.Sig}
 	case OutCheckpoint:
 		return InCheckpoint{Checkpoint: m.Checkpoint}
 	case OutLeaving:
-		return InLeaving{Seat: m.Seat, Hand: m.Hand}
+		return InLeaving{Seat: m.Seat, Hand: m.Hand, Sig: m.Sig}
 	}
 	return inbound(o)
 }

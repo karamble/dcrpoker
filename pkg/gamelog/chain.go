@@ -72,6 +72,24 @@ func (c *Chain) MatchID() string { return c.matchID }
 // Len reports how many entries the chain holds.
 func (c *Chain) Len() int { return len(c.entries) }
 
+// Signer reports the key a seat signs with, and whether the seat is at this
+// table at all.
+//
+// This is the roster the escrow committed to, which is what makes it worth
+// asking: anything checked against it is checked against the agreement that
+// holds the money, not against who a message appeared to come from. Callers
+// outside the log need it because the log is not the only thing a seat signs -
+// the dealing is signed too, and it is verified against exactly this.
+func (c *Chain) Signer(seat uint32) ([]byte, bool) {
+	key, ok := c.roster[seat]
+	if !ok {
+		return nil, false
+	}
+	out := make([]byte, len(key))
+	copy(out, key)
+	return out, true
+}
+
 // Entries returns a copy of the chain's entries.
 func (c *Chain) Entries() []Entry {
 	out := make([]Entry, len(c.entries))

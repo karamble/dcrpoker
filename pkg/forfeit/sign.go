@@ -80,6 +80,19 @@ const (
 	// precisely because the domain keeps the two numbering schemes from
 	// colliding.
 	DomainCheckpoint Domain = "checkpoint"
+
+	// The three below are the dealing, and they are all indexed by hand for
+	// the same reason the checkpoint is: a seat does each of them exactly
+	// once in a hand, so one hand is one position and a second signature at
+	// it is equivocation rather than anything a straight player could do.
+	//
+	// DomainCardKey is a seat's deck key for a hand: one per hand.
+	DomainCardKey Domain = "cardkey"
+	// DomainShuffle is a seat's shuffle of the deck: one per hand, because
+	// the round a seat shuffles in is its own seat number.
+	DomainShuffle Domain = "shuffle"
+	// DomainLeaving is a seat saying it is getting up: one per hand.
+	DomainLeaving Domain = "leaving"
 )
 
 // Position is where a signature sits. Exactly one signature may ever be made at

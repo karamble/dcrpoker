@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 
 	"go.dedis.ch/kyber/v4"
@@ -60,14 +61,19 @@ func readPoint(s, what string) (kyber.Point, error) {
 // CardKey is one seat's deck key for one hand.
 //
 // A new one every hand, because a card key becomes public when its hand ends.
-// It carries no signature: a seat that announced different keys to different
-// players would give them different joint keys, so the first shuffle would fail
-// to verify everywhere and the hand would simply never start - which is
-// answered by the claim on that seat's bond, the same as walking out.
+//
+// The signature is the seat saying the key is its own, checked against the roster
+// the escrow committed to. It is not there to catch equivocation - a seat handing
+// different keys to different players gives them different joint keys, so the
+// first shuffle fails everywhere and the hand never starts. It is there to catch
+// pre-emption: a key announced for a seat that has not spoken yet would otherwise
+// be believed, and since the joint key is the sum of all of them, the table would
+// mask every card to a secret the seat it is attributed to does not hold.
 type CardKey struct {
 	Seat uint32 `json:"seat"`
 	Hand uint64 `json:"hand"`
 	Key  string `json:"key"`
+	Sig  string `json:"sig"`
 }
 
 // CardKeyFrom renders a key announcement.
@@ -76,7 +82,7 @@ func CardKeyFrom(m driver.OutCardKey) (CardKey, error) {
 	if err != nil {
 		return CardKey{}, fmt.Errorf("card key: %w", err)
 	}
-	return CardKey{Seat: uint32(m.Seat), Hand: m.Hand, Key: k}, nil
+	return CardKey{Seat: uint32(m.Seat), Hand: m.Hand, Key: k, Sig: hex.EncodeToString(m.Sig)}, nil
 }
 
 // Into reads a key announcement back.
@@ -85,7 +91,11 @@ func (c CardKey) Into() (driver.InCardKey, error) {
 	if err != nil {
 		return driver.InCardKey{}, err
 	}
-	return driver.InCardKey{Seat: int(c.Seat), Hand: c.Hand, Key: p}, nil
+	sig, err := hex.DecodeString(c.Sig)
+	if err != nil {
+		return driver.InCardKey{}, fmt.Errorf("card key signature: %w", err)
+	}
+	return driver.InCardKey{Seat: int(c.Seat), Hand: c.Hand, Key: p, Sig: sig}, nil
 }
 
 // Shuffle is one seat's permutation of the deck, and the proof it did nothing
@@ -95,6 +105,11 @@ type Shuffle struct {
 	Hand  uint64 `json:"hand"`
 	Deck  string `json:"deck"`
 	Proof string `json:"proof"`
+	// Sig is the seat saying the shuffle is its own. The proof cannot say
+	// it - a Neff proof's witness is the permutation and the masking, so it
+	// establishes that the deck was permuted honestly by somebody and never
+	// by whom.
+	Sig string `json:"sig"`
 }
 
 // deckBytes lays a masked deck out as C1,C2 pairs.
@@ -150,6 +165,7 @@ func ShuffleFrom(m driver.OutShuffle, hand uint64) (Shuffle, error) {
 		Hand:  hand,
 		Deck:  b64(b),
 		Proof: b64(m.Proof),
+		Sig:   hex.EncodeToString(m.Sig),
 	}, nil
 }
 
@@ -172,7 +188,11 @@ func (s Shuffle) Into() (driver.InShuffle, error) {
 	if err != nil {
 		return driver.InShuffle{}, err
 	}
-	return driver.InShuffle{Seat: int(s.Seat), Deck: d, Proof: prf}, nil
+	sig, err := hex.DecodeString(s.Sig)
+	if err != nil {
+		return driver.InShuffle{}, fmt.Errorf("shuffle signature: %w", err)
+	}
+	return driver.InShuffle{Seat: int(s.Seat), Deck: d, Proof: prf, Sig: sig}, nil
 }
 
 // Share is one seat's contribution to opening one card.

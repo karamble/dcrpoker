@@ -151,6 +151,10 @@ func (c Claim) Validate() error {
 type Leaving struct {
 	Seat uint32 `json:"seat"`
 	Hand uint64 `json:"hand"`
+	// Sig is the seat saying this is its own decision. Once every seat is
+	// marked leaving the table settles, so an unsigned one would let anybody
+	// who could reach the table end somebody else's game.
+	Sig string `json:"sig"`
 }
 
 // Refresh is one member's signature on another seat's answer to a future claim.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 
@@ -228,7 +229,9 @@ func renderDriver(m driver.Out, hand uint64) (schema.Kind, any, error) {
 	case driver.OutCheckpoint:
 		return schema.KindCheckpoint, schema.CheckpointFrom(v.Checkpoint), nil
 	case driver.OutLeaving:
-		return schema.KindLeaving, schema.Leaving{Seat: uint32(v.Seat), Hand: v.Hand}, nil
+		return schema.KindLeaving, schema.Leaving{
+			Seat: uint32(v.Seat), Hand: v.Hand, Sig: hex.EncodeToString(v.Sig),
+		}, nil
 	}
 	return "", nil, fmt.Errorf("nothing renders a %T", m)
 }
@@ -302,7 +305,11 @@ func decodeDriver(msg *schema.Message) (driver.In, error) {
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}
-		return driver.InLeaving{Seat: int(body.Seat), Hand: body.Hand}, nil
+		sig, err := hex.DecodeString(body.Sig)
+		if err != nil {
+			return nil, fmt.Errorf("leaving signature: %w", err)
+		}
+		return driver.InLeaving{Seat: int(body.Seat), Hand: body.Hand, Sig: sig}, nil
 
 	case schema.KindAction:
 		// The bet, and the one that was missing. Three kinds carry the

@@ -22,8 +22,29 @@ const testHeight uint32 = 1_100_000
 type net struct {
 	t     *testing.T
 	peers []*Driver
+	// logs is every seat's signing key, kept so a test can put a frame on
+	// the wire the way a real peer would - or the way a cheat would.
+	logs []*forfeit.LogKey
 	// pending is what has been sent and not yet delivered.
 	pending []addressed
+}
+
+// shuffleAs builds a shuffle frame signed by whichever key is handed to it.
+//
+// The seat and the key are separate arguments on purpose: passing a seat's own
+// key is what an honest peer does, and passing somebody else's is the forgery
+// this is all here to refuse.
+func shuffleAs(t *testing.T, seat int, hand uint64, key *forfeit.LogKey, d deck.Deck, proof []byte) InShuffle {
+	t.Helper()
+	digest, err := shuffleDigest(testMatch, hand, seat, d, proof)
+	if err != nil {
+		t.Fatalf("shuffle digest: %v", err)
+	}
+	sig, err := key.Sign(forfeit.DomainShuffle, hand, digest[:])
+	if err != nil {
+		t.Fatalf("sign shuffle: %v", err)
+	}
+	return InShuffle{Seat: seat, Deck: d, Proof: proof, Sig: sig}
 }
 
 type addressed struct {
@@ -75,6 +96,7 @@ func seat(t *testing.T, n int, stack int64) *net {
 		}
 		nw.peers = append(nw.peers, d)
 	}
+	nw.logs = logs
 	return nw
 }
 
@@ -105,10 +127,15 @@ func (n *net) deliver() {
 	}
 }
 
+// inbound turns what one peer sent into what another receives.
+//
+// It carries the signature across, and that is the point of it existing: a harness
+// that dropped the field would model traffic nobody sends, and every test in this
+// package would go on passing against a protocol that does not exist.
 func inbound(o Out) In {
 	switch m := o.(type) {
 	case OutShuffle:
-		return InShuffle{Seat: m.Seat, Deck: m.Deck, Proof: m.Proof}
+		return InShuffle{Seat: m.Seat, Deck: m.Deck, Proof: m.Proof, Sig: m.Sig}
 	case OutShare:
 		return InShare{Seat: m.Seat, Slot: m.Slot, Share: m.Share}
 	case OutAction:
@@ -330,18 +357,20 @@ func TestAShuffleOutOfTurnIsRefused(t *testing.T) {
 	}
 	sh := out[0].(OutShuffle)
 
-	// Seat 2 must not accept it as seat 1's turn, and must not accept its own
-	// back either.
-	if _, err := n.peers[2].Handle(InShuffle{Seat: 2, Deck: sh.Deck, Proof: sh.Proof}); err == nil {
+	// Every frame below is properly signed by the seat it claims to come
+	// from. Unsigned ones are refused too, and that is a different test - if
+	// these were unsigned they would be refused for that reason and this
+	// would quietly stop testing the order at all.
+	if _, err := n.peers[2].Handle(shuffleAs(t, 2, 1, n.logs[2], sh.Deck, sh.Proof)); err == nil {
 		t.Fatal("a peer accepted its own shuffle coming back")
 	}
-	if _, err := n.peers[1].Handle(InShuffle{Seat: 1, Deck: sh.Deck, Proof: sh.Proof}); err == nil {
+	if _, err := n.peers[1].Handle(shuffleAs(t, 1, 1, n.logs[1], sh.Deck, sh.Proof)); err == nil {
 		t.Fatal("a shuffle was accepted from the wrong seat")
 	}
 	// And a proof that does not check out is refused whoever sent it.
 	bad := append([]byte(nil), sh.Proof...)
 	bad[0] ^= 0x01
-	if _, err := n.peers[1].Handle(InShuffle{Seat: 0, Deck: sh.Deck, Proof: bad}); err == nil {
+	if _, err := n.peers[1].Handle(shuffleAs(t, 0, 1, n.logs[0], sh.Deck, bad)); err == nil {
 		t.Fatal("a shuffle with a corrupted proof was built on")
 	}
 }

@@ -189,6 +189,10 @@ type OutCardKey struct {
 	Seat int
 	Hand uint64
 	Key  kyber.Point
+	// Sig is this seat saying the key is its own - see sign.go. Without it
+	// a card key is a claim anybody could make, and the joint key is the
+	// sum of all of them.
+	Sig []byte
 }
 
 // InCardKey is another seat's deck key for a hand.
@@ -196,6 +200,7 @@ type InCardKey struct {
 	Seat int
 	Hand uint64
 	Key  kyber.Point
+	Sig  []byte
 }
 
 // OutCheckpoint is this peer's signature over the stacks at a hand boundary.
@@ -213,12 +218,14 @@ type InCheckpoint struct{ Checkpoint *gamelog.Checkpoint }
 type OutLeaving struct {
 	Seat int
 	Hand uint64
+	Sig  []byte
 }
 
 // InLeaving is another seat saying the same.
 type InLeaving struct {
 	Seat int
 	Hand uint64
+	Sig  []byte
 }
 
 func (OutLeaving) out() {}
@@ -311,7 +318,15 @@ func (t *Table) openHand() ([]Out, error) {
 	t.keys = make([]kyber.Point, t.seats)
 	t.keys[t.cfg.Seat] = t.card.Public
 
-	return []Out{OutCardKey{Seat: t.cfg.Seat, Hand: t.hand, Key: t.card.Public}}, nil
+	digest, err := cardKeyDigest(t.cfg.Match, t.hand, t.cfg.Seat, t.card.Public)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := t.cfg.Log.Sign(forfeit.DomainCardKey, t.hand, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign card key: %w", err)
+	}
+	return []Out{OutCardKey{Seat: t.cfg.Seat, Hand: t.hand, Key: t.card.Public, Sig: sig}}, nil
 }
 
 // Handle folds one message in.
@@ -364,6 +379,14 @@ func (t *Table) onCardKey(m InCardKey) ([]Out, error) {
 	}
 	if m.Key == nil {
 		return nil, fmt.Errorf("seat %d announced no key", m.Seat)
+	}
+	// Whose key this is, before it is recorded. The joint key is the sum of
+	// every seat's, so a key accepted for the wrong seat puts a secret
+	// nobody at this table holds into the one thing every card is masked to.
+	if err := t.checkDealt(m.Seat, m.Sig, func() ([32]byte, error) {
+		return cardKeyDigest(t.cfg.Match, m.Hand, m.Seat, m.Key)
+	}); err != nil {
+		return nil, err
 	}
 	if m.Seat == t.cfg.Seat {
 		return nil, fmt.Errorf("this peer's own card key came back to it")
@@ -428,7 +451,12 @@ func (t *Table) leave() ([]Out, error) {
 	}
 	t.leaving[t.cfg.Seat] = true
 
-	out := []Out{OutLeaving{Seat: t.cfg.Seat, Hand: t.hand}}
+	leaveDigest := leavingDigest(t.cfg.Match, t.hand, t.cfg.Seat)
+	leaveSig, err := t.cfg.Log.Sign(forfeit.DomainLeaving, t.hand, leaveDigest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign leaving: %w", err)
+	}
+	out := []Out{OutLeaving{Seat: t.cfg.Seat, Hand: t.hand, Sig: leaveSig}}
 	if t.everybodyLeaving() {
 		// The last seat to ask. There is nobody left to fold to and
 		// nothing left to play for, so the table stops here instead of
@@ -452,6 +480,15 @@ func (t *Table) onLeaving(m InLeaving) ([]Out, error) {
 	}
 	if m.Seat == t.cfg.Seat {
 		return nil, fmt.Errorf("this peer's own leaving came back to it")
+	}
+	// Getting up is a seat's own decision to announce. Unsigned, anybody who
+	// could reach the table could stand somebody else's seat up, and once
+	// every seat is marked leaving the table settles - so a forged one ends
+	// a game at a moment its author picked.
+	if err := t.checkDealt(m.Seat, m.Sig, func() ([32]byte, error) {
+		return leavingDigest(t.cfg.Match, m.Hand, m.Seat), nil
+	}); err != nil {
+		return nil, err
 	}
 	t.leaving[m.Seat] = true
 	// Nothing else happens now. The seat folds its own hand when its turn

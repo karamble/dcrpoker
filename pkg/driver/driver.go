@@ -234,6 +234,10 @@ type OutShuffle struct {
 	Seat  int
 	Deck  deck.Deck
 	Proof []byte
+	// Sig is this seat saying the shuffle is its own - see sign.go. The
+	// Neff proof cannot say it: its witness is the permutation and the
+	// masking, so it proves the deck was permuted honestly by somebody.
+	Sig []byte
 }
 
 // OutShare is one decryption share for one slot.
@@ -258,6 +262,7 @@ type InShuffle struct {
 	Seat  int
 	Deck  deck.Deck
 	Proof []byte
+	Sig   []byte
 }
 
 // InShare is another seat's share for a slot.
@@ -300,10 +305,18 @@ func (d *Driver) shuffle() ([]Out, error) {
 	if err != nil {
 		return nil, fmt.Errorf("shuffle: %w", err)
 	}
+	digest, err := shuffleDigest(d.cfg.Match, d.cfg.Hand, d.cfg.Seat, out, prf)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := d.cfg.Log.Sign(forfeit.DomainShuffle, d.cfg.Hand, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("sign shuffle: %w", err)
+	}
 	d.deck = out
 	d.round++
 
-	msgs := []Out{OutShuffle{Seat: d.cfg.Seat, Deck: out, Proof: prf}}
+	msgs := []Out{OutShuffle{Seat: d.cfg.Seat, Deck: out, Proof: prf, Sig: sig}}
 	done, err := d.maybeDeal()
 	if err != nil {
 		return nil, err
@@ -441,6 +454,18 @@ func (d *Driver) Handle(in In) ([]Out, error) {
 func (d *Driver) onShuffle(m InShuffle) ([]Out, error) {
 	if d.phase != PhaseShuffling {
 		return nil, fmt.Errorf("a shuffle arrived while %s", d.phase)
+	}
+	// Who sent this, before anything is done about it. Ahead of the repeat
+	// and out-of-turn checks on purpose: a forged shuffle that got as far as
+	// being treated as this round's would move the round on, and the seat it
+	// impersonated would then have its real shuffle dropped as a repeat.
+	if m.Seat < 0 || m.Seat >= d.seats {
+		return nil, fmt.Errorf("seat %d is not at this table", m.Seat)
+	}
+	if err := d.checkDealt(m.Seat, m.Sig, func() ([32]byte, error) {
+		return shuffleDigest(d.cfg.Match, d.cfg.Hand, m.Seat, m.Deck, m.Proof)
+	}); err != nil {
+		return nil, err
 	}
 	if m.Seat < d.round {
 		// Already folded in. This channel loses messages, so anything

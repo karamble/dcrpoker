@@ -29,7 +29,14 @@ import (
 
 // Version is the game protocol version, carried as gv in the envelope and
 // separate from the framing version.
-const Version = 1
+//
+// The dealing frames - card key, shuffle, leaving - must carry the signature of
+// the seat they name, and a peer refuses one without it. There is deliberately no
+// mode that accepts unsigned frames, because such a mode is the hole itself, held
+// open by a flag somebody forgets. Peers on different versions therefore do not
+// play together, which is the intended behaviour rather than something to work
+// around.
+const Version = 2
 
 // Game is the routing key for poker traffic.
 const Game = "poker"
