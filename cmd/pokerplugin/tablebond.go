@@ -302,3 +302,112 @@ func (p *plugin) handleTableBond(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{"seat": seat, "outpoint": done.Outpoint, "bonded": true})
 }
+
+// ourTableBond reports where this seat's forfeitable bond sits and what script
+// holds it.
+//
+// The outpoint is bondedAt before bonded, because answering a claim respends a
+// bond into an identical one and the answer is what is on the chain afterwards.
+// Reclaiming the outpoint the bond was first paid to would be reclaiming
+// something already spent - the same fallback refreshDraft makes, for the same
+// reason.
+func (t *tables) ourTableBond(sid string) (seat uint32, bond membership.TableBond, outpoint string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tbl := t.m[sid]
+	if tbl == nil {
+		return 0, membership.TableBond{}, "", fmt.Errorf("not at table %q", sid)
+	}
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		return 0, membership.TableBond{}, "", fmt.Errorf("table %s was never seated, so it has no bond of ours", sid)
+	}
+	bond, err = tbl.bond(seat, t.params)
+	if err != nil {
+		return 0, membership.TableBond{}, "", err
+	}
+	outpoint = tbl.bondedAt[seat]
+	if outpoint == "" {
+		outpoint = tbl.bonded[seat]
+	}
+	if outpoint == "" {
+		return 0, membership.TableBond{}, "", fmt.Errorf("no bond of ours was ever seen at seat %d of %s", seat, sid)
+	}
+	return seat, bond, outpoint, nil
+}
+
+// handleTableBondSweep takes this seat's forfeitable bond back on its own.
+//
+// The backstop branch: the owner alone, after the long lock. It is the way out
+// of a table that dissolved rather than ended - one that never dealt, or one
+// whose hand could not finish - where the cooperative release needs signatures
+// from peers who are no longer there to give them.
+//
+// Slow on purpose. The lock has to outlast the table by enough that nobody can
+// sit out their own claim window, so this is a week rather than the stake's few
+// hours. That is the price of a branch that needs nobody's agreement, and it is
+// the right trade for the one path that still works when nothing else does.
+func (p *plugin) handleTableBondSweep(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		SID      string `json:"sid"`
+		DestAddr string `json:"destAddr"`
+		FeeAtoms int64  `json:"feeAtoms"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	sid := strings.ToLower(strings.TrimSpace(req.SID))
+
+	seat, bond, outpoint, err := p.tables.ourTableBond(sid)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	script, err := hex.DecodeString(bond.ScriptHex)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("this seat's bond script: %w", err))
+		return
+	}
+	// The bond names the session key as its owner, because that is the key the
+	// roster seats. The identity's own bond key holds the standing deposit and
+	// could not spend this.
+	key, err := p.id.sessionKey(sid)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	txid, err := p.reclaim(r.Context(), outpoint, script, key, membership.TableBondBlocks,
+		escrow.BackstopSigScript, req.DestAddr, req.FeeAtoms)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	p.tables.forgetTableBond(sid, seat)
+	log.Printf("pokerplugin: table %s: reclaimed seat %d's bond in %s", sid, seat, txid)
+	writeJSON(w, map[string]any{"sid": sid, "seat": seat, "txid": txid})
+}
+
+// forgetTableBond stops a table citing a bond it has spent.
+//
+// Same discipline as forgetStake: a table still announcing an output that is
+// gone is a table telling its peers something untrue about the chain.
+func (t *tables) forgetTableBond(sid string, seat uint32) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tbl := t.m[sid]
+	if tbl == nil {
+		return
+	}
+	delete(tbl.bonded, seat)
+	delete(tbl.bondedAt, seat)
+	t.persist(tbl)
+}

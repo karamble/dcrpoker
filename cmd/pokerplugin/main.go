@@ -166,6 +166,10 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 		}
 		return membership.SignBonded(terms, seat, outpoint, session)
 	}
+	// Asked for on each repeat rather than captured once: the host can rebind
+	// the gaming account, and an address held from startup would go on naming
+	// one the user has moved away from.
+	p.tables.payoutAddr = id.payoutAddress
 	p.router, err = transport.NewRouter(transport.Config{
 		Game:    schema.Game,
 		GameVer: schema.Version,
@@ -283,7 +287,7 @@ func (p *plugin) drawSeats(ctx context.Context, height int64) {
 			log.Printf("pokerplugin: table %s: block %d has no usable hash", sid, at)
 			continue
 		}
-		p.tables.seat(sid, raw)
+		p.publish(ctx, p.tables.seat(sid, raw))
 	}
 }
 
@@ -371,6 +375,11 @@ func (p *plugin) routes() http.Handler {
 	// hatch that works when nothing else does.
 	mux.HandleFunc("/table/refund", p.guard(p.handleTableRefund))
 	mux.HandleFunc("/bond/sweep", p.guard(p.handleBondSweep))
+	// Three locks, three routes, because the coin behind each is held by a
+	// different key on a different clock: the stake by the session key for
+	// this table's CSV, the standing bond by the identity's bond key for the
+	// minimum, and this by the session key for a week.
+	mux.HandleFunc("/table/bond/sweep", p.guard(p.handleTableBondSweep))
 
 	// The seed nothing can regenerate, and the one way to put it back.
 	mux.HandleFunc("/identity/backup", p.guard(p.handleIdentityBackup))

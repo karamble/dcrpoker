@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -107,6 +108,13 @@ type table struct {
 	// bondedAnnouncedAt is the same for the bond. Kept apart because the two
 	// are paid minutes apart and each has to be repeated on its own account.
 	bondedAnnouncedAt int64
+
+	// payoutAnnouncedAt is the same for where this seat wants to be paid.
+	// Kept apart from the other two for a different reason: they are repeated
+	// because a payment needs confirmations, and this is repeated because the
+	// first telling may have been sent before there was a seat to tell anybody
+	// about. See announcePayoutAgain.
+	payoutAnnouncedAt int64
 
 	// stalledAt is how far the hand had got when this seat last said its
 	// messages again, so a stall is answered once rather than every tick.
@@ -242,6 +250,12 @@ type tables struct {
 	// for the same reason: a bond said once is a bond the other seats may
 	// never have accepted.
 	signBonded func(terms membership.Terms, seat uint32, outpoint string) (*membership.Bonded, error)
+
+	// payoutAddr is where this player wants to be paid, asked for rather than
+	// stored, because the host may rebind the gaming account between one
+	// announcement and the next. Injected like the signers above: this
+	// registry holds tables, not the identity that owns them.
+	payoutAddr func() string
 
 	// height is where the host last said the chain was. Kept because every
 	// deadline here is a block number, and a block number reported on its
@@ -786,6 +800,7 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, tbl.proposeSettlement()...)
 		out = append(out, t.announceAgain(tbl, height)...)
 		out = append(out, t.announceBondAgain(tbl, height)...)
+		out = append(out, t.announcePayoutAgain(tbl, height)...)
 		out = append(out, t.exchangeHeads(tbl)...)
 		out = append(out, t.republishStalled(tbl)...)
 		if tbl.fundingLapsed(height) {
@@ -898,6 +913,44 @@ func (t *tables) announceBondAgain(tbl *table, height int64) []outgoing {
 	}
 	tbl.bondedAnnouncedAt = height
 	return []outgoing{tbl.frame(schema.KindBonded, schema.BondedFrom(bn), wire.ClassState)}
+}
+
+// announcePayoutAgain says again where this seat wants to be paid.
+//
+// The third repeat, and the odd one out. The two above exist because a payment
+// needs confirmations, so the first telling is refused on purpose. This one
+// exists because the first telling may have been sent when there was nothing to
+// tell: the address is announced when the host mints a panel session, and a
+// payout can only be signed against a seat, which does not exist until the
+// beacon block is drawn. Somebody accepting an invitation opens the panel during
+// registration - that is when one accepts an invitation - so the announcement
+// went out, found no seat, and returned nothing. Nothing said it again.
+//
+// Nothing heals it either. publishResync carries joins and commits, not payouts,
+// and dealing is gated on stakes and bonds rather than on this. So the table
+// deals, plays to the end, and only there discovers it cannot build a payout at
+// all, because settlement and every claim read tbl.payouts. Seen live at table
+// cb2b558c, where one box happened to have its panel reopened after seating and
+// the other did not.
+//
+// Stopped by this player getting up rather than by a funding deadline, like the
+// bond and for the same reason: the address matters right until the money moves,
+// and our own record of it says nothing about whether anybody else holds it.
+func (t *tables) announcePayoutAgain(tbl *table, height int64) []outgoing {
+	if height <= 0 || height <= tbl.payoutAnnouncedAt || t.payoutAddr == nil {
+		return nil
+	}
+	if tbl.finished || tbl.form.State() != membership.Settled {
+		return nil
+	}
+	out := tbl.payoutFrame(t.payoutAddr())
+	if out == nil {
+		// No seat yet, or the host has no address to give. Both are
+		// states to come back from, so the height is left alone.
+		return nil
+	}
+	tbl.payoutAnnouncedAt = height
+	return out
 }
 
 // fundingLapsed gives up on a settled table that was never fully paid for.
@@ -1014,17 +1067,22 @@ func (t *tables) needSeating(height int64) map[string]uint32 {
 }
 
 // seat draws a table's seating from the block the whole table derives.
-func (t *tables) seat(sid string, beacon []byte) {
+//
+// It returns the payout address this seat now has somewhere to be signed against.
+// Drawing the seating is the moment that becomes possible, and saying it here
+// rather than waiting for the next tick saves half a minute in the ordinary case;
+// announcePayoutAgain is what covers every other case.
+func (t *tables) seat(sid string, beacon []byte) []outgoing {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	tbl := t.m[sid]
 	if tbl == nil {
-		return
+		return nil
 	}
 	if err := tbl.form.SetBeacon(beacon); err != nil {
 		log.Printf("pokerplugin: table %s: %v", sid, err)
-		return
+		return nil
 	}
 	// The draw is the one step of forming a table that no player has any
 	// say in, so it is said out loud with the block it came from. Two peers
@@ -1039,6 +1097,10 @@ func (t *tables) seat(sid string, beacon []byte) {
 	// by then, which after a reorganisation is not the block it was dealt
 	// from.
 	t.persist(tbl)
+	if t.payoutAddr == nil {
+		return nil
+	}
+	return tbl.payoutFrame(t.payoutAddr())
 }
 
 // deliver routes one decoded message to the table it is for.
@@ -1502,6 +1564,11 @@ type snapshot struct {
 	Joined     int    `json:"joined"`
 	MatchID    string `json:"matchId,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+
+	// Until is the height admission closed at. Reported because it is what
+	// these are ordered by, and an order a caller cannot see is one it cannot
+	// preserve when it holds tables of its own.
+	Until uint32 `json:"until,omitempty"`
 	// Waiting counts log entries that arrived before the one they chain
 	// to. A number that stays above zero means entries are missing rather
 	// than merely late.
@@ -1593,6 +1660,19 @@ type seatView struct {
 	Says string       `json:"says,omitempty"`
 }
 
+// snapshots describes every table this player is at, in a fixed order.
+//
+// The order is part of the answer, not a detail of it. These are built by
+// ranging a map, and Go randomises that on every call - so a caller asking twice
+// a second, which is exactly what a panel does, got the same tables in a
+// different order each time and rendered a row of buttons that swapped places
+// continuously. Sorting here rather than in the client fixes both transports at
+// once, since the stream and the poll answer with the same bodies.
+//
+// Newest first, because the table somebody just joined is the one they are
+// looking for, and tables that are over sink below the live ones. The final
+// comparison is the session id, which is arbitrary but total: two tables that
+// tie on everything else must still not be free to swap.
 func (t *tables) snapshots() []snapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1608,6 +1688,7 @@ func (t *tables) snapshots() []snapshot {
 			CSVBlocks:  tbl.terms.CSVBlocks,
 			Joined:     len(tbl.form.Joins()),
 			Reason:     tbl.form.Reason(),
+			Until:      tbl.terms.Until,
 		}
 		if id, ok := tbl.form.MatchID(); ok {
 			s.MatchID = id
@@ -1644,6 +1725,16 @@ func (t *tables) snapshots() []snapshot {
 		}
 		out = append(out, s)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Finished != b.Finished {
+			return !a.Finished
+		}
+		if a.Until != b.Until {
+			return a.Until > b.Until
+		}
+		return a.SID < b.SID
+	})
 	return out
 }
 

@@ -43,6 +43,22 @@ type Action =
 
 const empty: State = { tables: [], hands: {}, ledgers: {}, live: false }
 
+/** ordered fixes the order tables are shown in, newest first and finished ones
+ *  last.
+ *
+ *  The plugin already sorts, and this repeats it rather than trusting it. The
+ *  cost of being wrong is not cosmetic: these are rendered as a row of buttons
+ *  somebody is about to press, and a list that reorders under a cursor is a list
+ *  that gets the wrong table picked. Sorting twice is a few microseconds against
+ *  a mis-click on a table holding money. */
+function ordered(tables: Snapshot[]): Snapshot[] {
+  return [...tables].sort((a, b) => {
+    if (!!a.finished !== !!b.finished) return a.finished ? 1 : -1
+    if ((a.until ?? 0) !== (b.until ?? 0)) return (b.until ?? 0) - (a.until ?? 0)
+    return a.sid < b.sid ? -1 : a.sid > b.sid ? 1 : 0
+  })
+}
+
 function reduce(state: State, action: Action): State {
   switch (action.type) {
     case 'tables': {
@@ -53,7 +69,7 @@ function reduce(state: State, action: Action): State {
       const ledgers: Record<string, LedgerView> = {}
       for (const [sid, v] of Object.entries(state.hands)) if (live.has(sid)) hands[sid] = v
       for (const [sid, v] of Object.entries(state.ledgers)) if (live.has(sid)) ledgers[sid] = v
-      return { ...state, tables: action.tables, hands, ledgers }
+      return { ...state, tables: ordered(action.tables), hands, ledgers }
     }
     case 'hand':
       return { ...state, hands: { ...state.hands, [action.sid]: action.view } }

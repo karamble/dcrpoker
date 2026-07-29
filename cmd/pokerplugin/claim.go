@@ -387,13 +387,20 @@ func (tbl *table) adoptPayout(body schema.Payout) error {
 	return nil
 }
 
-// announcePayout says where this player wants to be paid at a table.
-func (tbl *table) announcePayout(addr string) []outgoing {
+// payoutFrame signs where this seat wants to be paid and frames it.
+//
+// Deliberately without the "we already recorded this" guard that announcePayout
+// has. Recording and saying are two different things, and conflating them is
+// what made this address impossible to repeat: our own record says nothing about
+// whether the peer holds it, and the peer that still needs to hear it is by
+// definition the one whose view differs from ours.
+//
+// Nil before the seating is drawn, because a payout is signed against a seat and
+// there is no seat yet. That is correct here and is exactly why the caller has
+// to come back afterwards - see announcePayoutAgain.
+func (tbl *table) payoutFrame(addr string) []outgoing {
 	seat, ok := tbl.form.OurSeat()
 	if !ok || addr == "" || tbl.session == nil {
-		return nil
-	}
-	if tbl.payouts[seat] == addr {
 		return nil
 	}
 	p, err := membership.SignPayout(tbl.terms, seat, addr, tbl.session)
@@ -403,6 +410,15 @@ func (tbl *table) announcePayout(addr string) []outgoing {
 	}
 	tbl.payouts[seat] = addr
 	return []outgoing{tbl.frame(schema.KindPayout, schema.PayoutFrom(p), gwire.ClassState)}
+}
+
+// announcePayout says where this player wants to be paid at a table, when that
+// is news. The repeat that makes sure it arrives is announcePayoutAgain.
+func (tbl *table) announcePayout(addr string) []outgoing {
+	if seat, ok := tbl.form.OurSeat(); ok && tbl.payouts[seat] == addr {
+		return nil
+	}
+	return tbl.payoutFrame(addr)
 }
 
 // handlePayoutSet records where this player wants to be paid, and tells every

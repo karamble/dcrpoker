@@ -49,6 +49,12 @@ type hub struct {
 	sent  []*dcrwire.MsgTx
 	spent map[string]bool
 
+	// confs is how deep this chain says every output is. Settable because
+	// maturity is the one thing a script engine cannot check, so the only way
+	// to test a timelocked branch on both sides of its lock is to move the
+	// chain rather than the transaction. Zero means the default.
+	confs int64
+
 	// swallow is how many more frames of a kind to lose on the way through,
 	// and lost records what actually went missing.
 	//
@@ -207,7 +213,11 @@ func newHub(t *testing.T) *hub {
 			key := q.Get("txid") + ":" + q.Get("vout")
 			h.mu.Lock()
 			pkScript, gone := h.bonds[key], h.spent[key]
+			confs := h.confs
 			h.mu.Unlock()
+			if confs == 0 {
+				confs = int64(escrow.BondConfirmations)
+			}
 			_ = json.NewEncoder(w).Encode(transport.Outpoint{
 				// Spent is indistinguishable from never-existed here, and
 				// that is what the real lookup says too: it answers about
@@ -215,7 +225,7 @@ func newHub(t *testing.T) *hub {
 				Found:         pkScript != "" && !gone,
 				ValueAtoms:    testOutpointAtoms,
 				PkScriptHex:   pkScript,
-				Confirmations: int64(escrow.BondConfirmations),
+				Confirmations: confs,
 			})
 			return
 		}
@@ -1186,4 +1196,110 @@ func TestThisPlayerCannotJoinWithoutItsOwnBond(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "bond") {
 		t.Fatalf("the refusal should say what is missing: %s", rec.Body.String())
 	}
+}
+
+// Tables are listed in one order, and it is not the map's.
+//
+// snapshots() is built by ranging a map, which Go randomises per call. A panel
+// asking twice a second therefore got its tables back shuffled every time and
+// drew a row of buttons that swapped places continuously - which is not merely
+// ugly, because those buttons pick which table a person is about to act on.
+func TestTablesAreListedNewestFirstAndDoNotReorder(t *testing.T) {
+	h := newHub(t)
+	p := h.restart(t, t.TempDir(), "tok")
+
+	// Three tables, deliberately accepted oldest first so that insertion
+	// order and the wanted order disagree.
+	for i, until := range []uint32{900000, 900010, 900005} {
+		inv := testInvite(2)
+		inv.SID = fmt.Sprintf("%015x%d", 0, i)
+		inv.Until = until
+		acceptInvite(t, p, inv)
+	}
+
+	first := p.tables.snapshots()
+	if len(first) != 3 {
+		t.Fatalf("holding %d tables, joined 3", len(first))
+	}
+	if got := []uint32{first[0].Until, first[1].Until, first[2].Until}; got[0] != 900010 ||
+		got[1] != 900005 || got[2] != 900000 {
+		t.Fatalf("listed in %v, want the newest admission deadline first", got)
+	}
+
+	// The failure this guards against is intermittent by nature, so ask
+	// enough times that a map's randomness would have shown itself.
+	want := make([]string, len(first))
+	for i, s := range first {
+		want[i] = s.SID
+	}
+	for range 50 {
+		got := p.tables.snapshots()
+		for i, s := range got {
+			if s.SID != want[i] {
+				t.Fatalf("asked again and table %d became %s, was %s", i, s.SID, want[i])
+			}
+		}
+	}
+}
+
+// A payout address announced before there was a seat to sign it against.
+//
+// The address is set when the host mints a panel session, and a panel is opened
+// to accept an invitation - which is before the seating is drawn. announcePayout
+// can only sign against a seat, so that first telling produced nothing, and
+// nothing ever said it again: resync carries joins and commits, and dealing is
+// gated on stakes and bonds rather than on this. The table therefore dealt, played
+// to the end, and only there found it could not build a payout at all.
+//
+// Seen live at table cb2b558c, where one box happened to have its panel reopened
+// after seating and the other did not.
+func TestAPayoutSaidBeforeSeatingIsSaidAgainAfterIt(t *testing.T) {
+	h := newHub(t)
+	dir := t.TempDir()
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+	other := h.lend(t, "dd")
+
+	p := h.restart(t, dir, "tok")
+	acceptInvite(t, p, inv)
+	deliverJoin(t, p, terms, other)
+	p.tables.tick(int64(terms.Until) + 1)
+	deliverCommit(t, p, terms, other, rosterHashOf(t, p.tables.snapshots()[0].MatchID))
+
+	// The host says where to pay, exactly as it does when a panel opens: the
+	// table is settled, but nobody has been seated yet.
+	addr := payoutAddress(t, p)
+	if err := p.id.setPayout(addr, testParams); err != nil {
+		t.Fatalf("payout address: %v", err)
+	}
+	if out := p.tables.announcePayouts(addr); len(out) != 0 {
+		t.Fatalf("announced a payout for a seat that does not exist yet: %d frames", len(out))
+	}
+
+	beacon := make([]byte, 32)
+	for i := range beacon {
+		beacon[i] = byte(i + 1)
+	}
+
+	// Drawing the seating is the moment it becomes sayable, so it is said.
+	said := p.tables.seat(terms.SID, beacon)
+	if len(said) != 1 || said[0].kind != schema.KindPayout {
+		t.Fatalf("seating a table said %d frames, want one payout", len(said))
+	}
+
+	// And it keeps being said, because our own record of it says nothing
+	// about whether the other seat ever received it.
+	again := p.tables.tick(int64(terms.Until) + 2)
+	if !saysPayout(again) {
+		t.Fatal("a seated table stopped repeating where to pay it")
+	}
+}
+
+func saysPayout(out []outgoing) bool {
+	for _, o := range out {
+		if o.kind == schema.KindPayout {
+			return true
+		}
+	}
+	return false
 }

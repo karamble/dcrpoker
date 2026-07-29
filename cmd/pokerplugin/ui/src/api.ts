@@ -44,6 +44,8 @@ export type Snapshot = {
   joined: number
   matchId?: string
   reason?: string
+  /** The height admission closed at, which is what tables are ordered by. */
+  until?: number
   waiting: number
   funded: number
   seat?: number
