@@ -40,11 +40,11 @@ type ledgerView struct {
 	// previously a failure visible only as a refusal to co-sign.
 	PayoutsMissing []uint32 `json:"payoutsMissing,omitempty"`
 
-	// Refreshed reports that every seat's answer to a future claim has been
+	// Accused reports that every seat's accusation has been
 	// gathered and is held. A table dealing without this cannot answer a
 	// claim, because the signatures an answer needs include the accusers'
 	// and they will not give them once they have started accusing.
-	Refreshed bool `json:"refreshed"`
+	Accused bool `json:"accused"`
 
 	Claims     []claimView  `json:"claims,omitempty"`
 	Settlement *settleView  `json:"settlement,omitempty"`
@@ -120,11 +120,11 @@ func (t *tables) Ledger(sid string) (*ledgerView, error) {
 // ledger is the report itself. Requires the registry lock.
 func (tbl *table) ledger(height int64, names map[string]string) *ledgerView {
 	v := &ledgerView{
-		SID:       tbl.terms.SID,
-		Height:    height,
-		Roster:    tbl.seatViews(names),
-		Refreshed: tbl.refreshed,
-		Events:    append([]chainEvent(nil), tbl.events...),
+		SID:     tbl.terms.SID,
+		Height:  height,
+		Roster:  tbl.seatViews(names),
+		Accused: tbl.accused,
+		Events:  append([]chainEvent(nil), tbl.events...),
 	}
 	if id, ok := tbl.form.MatchID(); ok {
 		v.Match = id

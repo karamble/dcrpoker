@@ -80,7 +80,7 @@ const ClaimBlocks uint32 = 3
 // that *must* be contestable, because the accusation might be false. One is
 // keyed to a secret the cheat published themselves; this one is keyed to
 // silence.
-func TableBondScript(owner []byte, members [][]byte, claimBlocks, lockBlocks uint32) ([]byte, error) {
+func TableBondScript(owner []byte, members [][]byte, lockBlocks uint32) ([]byte, error) {
 	if err := checkPubKey(owner); err != nil {
 		return nil, fmt.Errorf("owner key: %w", err)
 	}
@@ -94,12 +94,6 @@ func TableBondScript(owner []byte, members [][]byte, claimBlocks, lockBlocks uin
 	if len(sorted) < 2 {
 		return nil, fmt.Errorf("a table bond needs at least 2 members, not %d", len(sorted))
 	}
-	if claimBlocks == 0 {
-		return nil, fmt.Errorf("a claim with no delay could not be answered")
-	}
-	if claimBlocks > MaxCSVBlocks {
-		return nil, fmt.Errorf("a claim delay of %d blocks is beyond %d", claimBlocks, MaxCSVBlocks)
-	}
 	if lockBlocks < MinBondBlocks {
 		return nil, fmt.Errorf("bond lock of %d blocks is under the %d block minimum",
 			lockBlocks, MinBondBlocks)
@@ -108,23 +102,9 @@ func TableBondScript(owner []byte, members [][]byte, claimBlocks, lockBlocks uin
 		return nil, fmt.Errorf("bond lock of %d blocks is beyond %d, so it could never be reclaimed",
 			lockBlocks, MaxCSVBlocks)
 	}
-	if claimBlocks >= lockBlocks {
-		return nil, fmt.Errorf("a claim delay of %d is not shorter than the %d block lock, "+
-			"so the owner could always outrun a claim", claimBlocks, lockBlocks)
-	}
-	others := withoutKey(sorted, owner)
-
 	b := txscript.NewScriptBuilder()
 	b.AddOp(txscript.OP_IF)
 	for _, m := range sorted {
-		b.AddData(m).AddInt64(sigType).AddOp(txscript.OP_CHECKSIGALTVERIFY)
-	}
-	b.AddOp(txscript.OP_ELSE).
-		AddOp(txscript.OP_IF).
-		AddInt64(int64(claimBlocks)).
-		AddOp(txscript.OP_CHECKSEQUENCEVERIFY).
-		AddOp(txscript.OP_DROP)
-	for _, m := range others {
 		b.AddData(m).AddInt64(sigType).AddOp(txscript.OP_CHECKSIGALTVERIFY)
 	}
 	b.AddOp(txscript.OP_ELSE).
@@ -134,7 +114,6 @@ func TableBondScript(owner []byte, members [][]byte, claimBlocks, lockBlocks uin
 		AddData(owner).
 		AddInt64(sigType).
 		AddOp(txscript.OP_CHECKSIGALTVERIFY).
-		AddOp(txscript.OP_ENDIF).
 		AddOp(txscript.OP_ENDIF).
 		AddOp(txscript.OP_TRUE)
 
@@ -177,29 +156,12 @@ func AliveSigScript(bond []byte, sigs [][]byte) ([]byte, error) {
 	return branchSigScript(bond, sigs, txscript.OP_1)
 }
 
-// ClaimSigScript spends the branch that takes an absent player's bond.
-//
-// Every member except the owner has to sign, and the spending input's sequence
-// has to satisfy ClaimBlocks.
-func ClaimSigScript(bond []byte, sigs [][]byte) ([]byte, error) {
-	terms, err := ParseTableBond(bond)
-	if err != nil {
-		return nil, err
-	}
-	if len(sigs) != len(terms.Others) {
-		return nil, fmt.Errorf("a claim needs all %d other members' signatures, not %d",
-			len(terms.Others), len(sigs))
-	}
-	// Decline the alive branch, take the claim branch.
-	return branchSigScript(bond, sigs, txscript.OP_0, txscript.OP_1)
-}
-
 // BackstopSigScript spends the owner's own way out, once the long lock matures.
 func BackstopSigScript(bond, ownerSig []byte) ([]byte, error) {
 	if _, err := ParseTableBond(bond); err != nil {
 		return nil, err
 	}
-	return branchSigScript(bond, [][]byte{ownerSig}, txscript.OP_0, txscript.OP_0)
+	return branchSigScript(bond, [][]byte{ownerSig}, txscript.OP_0)
 }
 
 // branchSigScript assembles signatures and branch selectors.
@@ -227,9 +189,13 @@ func branchSigScript(bond []byte, sigs [][]byte, selectors ...byte) ([]byte, err
 
 // TableBondTerms is what a table bond commits to.
 type TableBondTerms struct {
-	Owner       []byte
-	Members     [][]byte // canonical order, owner included
-	Others      [][]byte // canonical order, owner excluded
+	Owner   []byte
+	Members [][]byte // canonical order, owner included
+	Others  [][]byte // canonical order, owner excluded
+	// ClaimBlocks is the window an accusation opens, carried here for the
+	// callers that derive a claimed bond. It is not in the script: the bond
+	// has no branch that waits, so there is nothing for it to commit to, and
+	// it is the same constant at every table.
 	ClaimBlocks uint32
 	LockBlocks  uint32
 }
@@ -267,27 +233,27 @@ func ParseTableBond(bond []byte) (*TableBondTerms, error) {
 	if err := tokenizer.Err(); err != nil {
 		return nil, fmt.Errorf("parse table bond script: %w", err)
 	}
-	if len(locks) != 2 {
-		return nil, fmt.Errorf("a table bond has a claim delay and a lock; this has %d timelocks", len(locks))
+	if len(locks) != 1 {
+		return nil, fmt.Errorf("a table bond has one lock; this has %d timelocks", len(locks))
 	}
-	// Members, then everyone but the owner, then the owner: 2n keys for n
-	// members, so an odd count is not this script at all.
-	if len(keys) < 4 || len(keys)%2 != 0 {
+	// Every member, then the owner again for the backstop: n+1 keys.
+	if len(keys) < 3 {
 		return nil, fmt.Errorf("script names %d keys, which is not a table bond's layout", len(keys))
 	}
-	n := len(keys) / 2
+	owner := keys[len(keys)-1]
+	members := keys[:len(keys)-1]
 
 	terms := &TableBondTerms{
-		Owner:       keys[len(keys)-1],
-		Members:     keys[:n],
-		Others:      keys[n : len(keys)-1],
-		ClaimBlocks: locks[0],
-		LockBlocks:  locks[1],
+		Owner:       owner,
+		Members:     members,
+		Others:      withoutKey(members, owner),
+		ClaimBlocks: ClaimBlocks,
+		LockBlocks:  locks[0],
 	}
 
 	// Rebuilding is the real check - it is the only thing that rules out a
 	// script carrying these same pushes alongside another path to the coin.
-	want, err := TableBondScript(terms.Owner, terms.Members, terms.ClaimBlocks, terms.LockBlocks)
+	want, err := TableBondScript(terms.Owner, terms.Members, terms.LockBlocks)
 	if err != nil {
 		return nil, err
 	}
@@ -309,4 +275,15 @@ func MemberIndex(terms *TableBondTerms, key []byte) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("that key is not a member of this table bond")
+}
+
+// MemberIndexOf reports where a key sits in a given list, for the callers that
+// hold one rather than a whole bond.
+func MemberIndexOf(keys [][]byte, key []byte) (int, error) {
+	for i, m := range keys {
+		if bytes.Equal(m, key) {
+			return i, nil
+		}
+	}
+	return 0, fmt.Errorf("that key is not one of these")
 }

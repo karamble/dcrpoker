@@ -214,7 +214,7 @@ export function App() {
             )}
             <Provenance hand={hand} />
             <Money table={table} ledger={ledger} />
-            <OnChain ledger={ledger} dealing={table.dealing} refreshed={ledger?.refreshed} />
+            <OnChain ledger={ledger} dealing={table.dealing} accused={ledger?.accused} />
             <Lifecycle table={table} />
             <Bond onLoad={setBond} />
           </>

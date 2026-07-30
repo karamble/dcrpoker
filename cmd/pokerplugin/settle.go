@@ -17,7 +17,7 @@ import (
 
 // The two transactions that were designed and never assembled.
 //
-// A refresh is a seat's answer to a claim, gathered while the table is still
+// An accusation is agreed while the table is still
 // cooperating because it cannot be gathered afterwards. A settlement is the
 // table paying out what it ended holding, which is the only reason any of the
 // rest of this exists.
@@ -31,14 +31,27 @@ import (
 // settleFee is left for the miner out of a table's final balance.
 const settleFee int64 = 20_000
 
-// presignRefreshes agrees every seat's answer to a claim, in advance.
+// presignAccusations agrees every accusation the table may need, in advance.
+//
+// Repeated until every seat can be accused rather than sent once, because this
+// channel loses messages and what is being agreed is the answer to somebody who
+// stops. Repeats are byte-identical, so a peer that already holds one keeps it.
+//
+// It does not gate dealing, and that leaves a window: a seat that goes quiet
+// between posting its bond and signing the accusations against itself cannot be
+// accused at all, and its bond waits for the backstop. Closing it means a table
+// that will not deal until the set is complete, which is the right answer and needs
+// the dealing path to drive the exchange rather than only the clock. An accusation needs every member's signature including the
+// seat it accuses, so a seat that went quiet before this was agreed could never be
+// accused at all. Playing a hand first would be playing with no answer to somebody
+// who stops, which is the one thing the bond exists to provide.
 //
 // Called once the bonds are all posted, which is the moment there is something
 // to answer for and everybody is still talking. A peer signs every seat's
 // answer, including its own: the branch needs the whole table, so a seat that
 // signed only its neighbours' would leave its own unanswerable.
-func (tbl *table) presignRefreshes() []outgoing {
-	if tbl.play == nil || tbl.refreshed {
+func (tbl *table) presignAccusations() []outgoing {
+	if tbl.accusationsReady() {
 		return nil
 	}
 	seats, ok := tbl.form.Seats()
@@ -48,25 +61,40 @@ func (tbl *table) presignRefreshes() []outgoing {
 	mine, _ := tbl.form.OurSeat()
 	var out []outgoing
 	for seat := range seats {
-		chain, bond, err := tbl.refreshChain(seat)
+		chain, bond, err := tbl.accuseChain(seat)
 		if err != nil {
-			// A seat whose bond is not yet on the chain has nothing to
-			// answer for. It gets its turn when it does.
+			// Usually a seat whose bond is not on the chain yet, which
+			// gets its turn when it is. Said out loud regardless: a table
+			// with no accusations agreed has no answer to somebody who
+			// stops, and that is not something to discover later.
+			log.Printf("pokerplugin: table %s: no accusations agreed against seat %d: %v",
+				tbl.terms.SID, seat, err)
+			continue
+		}
+		terms, err := escrow.ParseTableBond(bond)
+		if err != nil {
 			continue
 		}
 		for _, tx := range chain {
 			sig, err := escrow.SignBondSpend(tx, bond, tbl.session)
 			if err != nil {
-				log.Printf("pokerplugin: table %s: pre-signing an answer: %v",
+				log.Printf("pokerplugin: table %s: pre-signing an accusation: %v",
 					tbl.terms.SID, err)
+				continue
+			}
+			// Held whatever happens, so this peer can complete the set from
+			// its own side.
+			tbl.holdAccusation(seat, tx, bond, seats[mine], sig)
+			if tbl.fullySigned(tx, terms) {
+				// Everybody has signed this one. Saying it again would
+				// only add traffic to a channel the hand is using.
 				continue
 			}
 			raw, err := tx.Bytes()
 			if err != nil {
 				continue
 			}
-			tbl.holdRefresh(seat, tx, bond, seats[mine], sig)
-			out = append(out, tbl.frame(schema.KindRefresh, schema.Refresh{
+			out = append(out, tbl.frame(schema.KindAccusation, schema.Accusation{
 				Seat:   seat,
 				Tx:     hex.EncodeToString(raw),
 				Signer: hex.EncodeToString(seats[mine]),
@@ -74,44 +102,81 @@ func (tbl *table) presignRefreshes() []outgoing {
 			}, gwire.ClassState))
 		}
 	}
-	if len(out) > 0 {
-		tbl.refreshed = true
-	}
+	// Said again every tick until every seat can be accused, and stopped by
+	// that rather than by having said it once. A signature lost on the way is
+	// a table that never deals, and nothing else would ever send it again.
+	// Repeats are byte-identical, so a peer that already holds one keeps it.
+	tbl.accused = tbl.accusationsReady()
 	return out
 }
 
-// refreshChain builds every answer a seat may need, in order.
-func (tbl *table) refreshChain(seat uint32) ([]*wire.MsgTx, []byte, error) {
-	d, bond, err := tbl.refreshDraft(seat)
+// accuseChain builds every accusation against a seat that the table may need.
+//
+// Cached on the outpoint it starts from, which is the only thing that changes it:
+// deriving a chain costs a script and a transaction per entry, and this is asked
+// every tick by everything that wants to know whether a seat can be accused. When
+// the bond moves the key moves with it, so there is nothing to invalidate.
+func (tbl *table) accuseChain(seat uint32) ([]*wire.MsgTx, []byte, error) {
+	d, bond, err := tbl.accuseDraft(seat)
 	if err != nil {
 		return nil, nil, err
 	}
-	chain, err := escrow.BuildRefreshChain(d, escrow.RefreshDepth)
-	return chain, bond, err
+	key := fmt.Sprintf("%d/%s", seat, d.Prevout)
+	if held, ok := tbl.chains[key]; ok {
+		return held, bond, nil
+	}
+	terms, err := escrow.ParseTableBond(bond)
+	if err != nil {
+		return nil, nil, err
+	}
+	if escrow.AffordableDepth(d.ValueAtoms, d.FeeAtoms, len(terms.Others)) < 1 {
+		return nil, nil, fmt.Errorf(
+			"a bond of %d cannot fund one accusation at a fee of %d paying %d seats",
+			d.ValueAtoms, d.FeeAtoms, len(terms.Others))
+	}
+	// One, against where the bond sits now. A deeper chain was agreed up front
+	// when the answer needed signatures gathered in advance; it does not any
+	// more. Answering moves the bond, every peer re-derives the accusation
+	// against the new output, and the seat that answered signs it - which it
+	// will, having just proved it is there.
+	chain, err := escrow.BuildAccuseChain(d, 1)
+	if err != nil {
+		return nil, nil, err
+	}
+	if tbl.chains == nil {
+		tbl.chains = map[string][]*wire.MsgTx{}
+	}
+	tbl.chains[key] = chain
+	return chain, bond, nil
 }
 
-// refreshDraft describes a seat's answer: its bond respent into the same bond.
-func (tbl *table) refreshDraft(seat uint32) (escrow.RefreshDraft, []byte, error) {
+// accuseDraft describes an accusation: a seat's bond moved into the claimed bond,
+// where that seat has the window to answer.
+//
+// Nothing about who gets paid, because an accusation pays nobody - which also
+// means it can be built at a table where somebody has not yet said where to pay
+// them, unlike the claim it replaces.
+func (tbl *table) accuseDraft(seat uint32) (escrow.AccuseDraft, []byte, error) {
 	outpoint := tbl.bondedAt[seat]
 	if outpoint == "" {
 		outpoint = tbl.bonded[seat]
 	}
 	if outpoint == "" {
-		return escrow.RefreshDraft{}, nil, fmt.Errorf("seat %d has no bond on the chain", seat)
+		return escrow.AccuseDraft{}, nil, fmt.Errorf("seat %d has no bond on the chain", seat)
 	}
 	b, err := tbl.bond(seat, tbl.netParams)
 	if err != nil {
-		return escrow.RefreshDraft{}, nil, err
+		return escrow.AccuseDraft{}, nil, err
 	}
 	script, err := hex.DecodeString(b.ScriptHex)
 	if err != nil {
-		return escrow.RefreshDraft{}, nil, err
+		return escrow.AccuseDraft{}, nil, err
 	}
 	prevout, err := outpointOf(outpoint)
 	if err != nil {
-		return escrow.RefreshDraft{}, nil, err
+		return escrow.AccuseDraft{}, nil, err
 	}
-	return escrow.RefreshDraft{
+	return escrow.AccuseDraft{
 		Bond:       script,
 		Prevout:    prevout,
 		ValueAtoms: int64(escrow.MinBondAtoms),
@@ -120,46 +185,46 @@ func (tbl *table) refreshDraft(seat uint32) (escrow.RefreshDraft, []byte, error)
 	}, script, nil
 }
 
-// holdRefresh keeps a signature on one answer, filed by the output it spends.
+// holdAccusation keeps a signature on one accusation, filed by the output it spends.
 //
 // By outpoint rather than by seat, because a seat has a chain of them and the
 // one it needs is decided by where its bond actually sits - which a peer that
 // restarted can look up rather than having to remember how many it has used.
-func (tbl *table) holdRefresh(seat uint32, tx *wire.MsgTx, bond []byte, signer, sig []byte) {
+func (tbl *table) holdAccusation(seat uint32, tx *wire.MsgTx, bond []byte, signer, sig []byte) {
 	key := tx.TxIn[0].PreviousOutPoint.String()
-	r := tbl.refresh[key]
+	r := tbl.accuse[key]
 	if r == nil {
-		r = &refresh{seat: seat, tx: tx, bond: bond, sigs: map[string][]byte{}}
-		tbl.refresh[key] = r
+		r = &accusation{seat: seat, tx: tx, bond: bond, sigs: map[string][]byte{}}
+		tbl.accuse[key] = r
 	}
 	r.sigs[hex.EncodeToString(signer)] = sig
 }
 
-// refresh is one seat's answer and the signatures gathered for it.
-type refresh struct {
+// accusation is one pre-agreed accusation and the signatures gathered for it.
+type accusation struct {
 	seat uint32
 	tx   *wire.MsgTx
 	bond []byte
 	sigs map[string][]byte
 }
 
-// adoptRefresh keeps somebody's signature on an answer, having checked what it
-// signs.
+// adoptAccusation keeps somebody's signature on an accusation, having checked what
+// it signs.
 //
 // The check matters more here than anywhere else, because this is agreed long
 // before anybody looks at it again: anything other than a payment back into the
 // same bond is that seat taking its bond out early, and a signature given now is
 // one that cannot be taken back.
-func (tbl *table) adoptRefresh(body schema.Refresh) error {
+func (tbl *table) adoptAccusation(body schema.Accusation) error {
 	raw, err := hex.DecodeString(body.Tx)
 	if err != nil {
-		return fmt.Errorf("refresh transaction: %w", err)
+		return fmt.Errorf("accusation transaction: %w", err)
 	}
 	tx := wire.NewMsgTx()
 	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
-		return fmt.Errorf("refresh transaction: %w", err)
+		return fmt.Errorf("accusation transaction: %w", err)
 	}
-	chain, bond, err := tbl.refreshChain(body.Seat)
+	chain, bond, err := tbl.accuseChain(body.Seat)
 	if err != nil {
 		return err
 	}
@@ -173,16 +238,25 @@ func (tbl *table) adoptRefresh(body schema.Refresh) error {
 		}
 	}
 	if want == nil {
-		return fmt.Errorf("an answer for seat %d that this peer did not derive", body.Seat)
+		// Worth saying out loud, not only returning. A peer whose
+		// accusations are being refused will have nothing to accuse with the
+		// day somebody stops, and that is a thing to learn now.
+		tbl.note(eventRefused, fmt.Sprintf(
+			"an accusation against seat %d was not one this peer derived, and was not signed",
+			body.Seat), "", seatp(int(body.Seat)))
+		return fmt.Errorf("an accusation against seat %d that this peer did not derive", body.Seat)
 	}
-	if err := escrow.CheckRefreshDraft(tx, escrow.RefreshDraft{
+	if err := escrow.CheckAccuseDraft(tx, escrow.AccuseDraft{
 		Bond:       bond,
 		Prevout:    want.TxIn[0].PreviousOutPoint,
 		ValueAtoms: want.TxIn[0].ValueIn,
 		FeeAtoms:   claimFee,
 		Params:     tbl.netParams,
 	}); err != nil {
-		return fmt.Errorf("not keeping an answer that %w", err)
+		tbl.note(eventRefused, fmt.Sprintf(
+			"an accusation against seat %d was refused: %v", body.Seat, err),
+			"", seatp(int(body.Seat)))
+		return fmt.Errorf("not keeping an accusation that %w", err)
 	}
 	signer, err := hex.DecodeString(body.Signer)
 	if err != nil {
@@ -197,25 +271,83 @@ func (tbl *table) adoptRefresh(body schema.Refresh) error {
 		return err
 	}
 	if _, err := escrow.MemberIndex(terms, signer); err != nil {
-		return fmt.Errorf("a signature on an answer from somebody not at this table")
+		return fmt.Errorf("a signature on an accusation from somebody not at this table")
 	}
-	tbl.holdRefresh(body.Seat, want, bond, signer, sig)
+	key := want.TxIn[0].PreviousOutPoint.String()
+	_, knew := tbl.accuse[key].sigsOf()[hex.EncodeToString(signer)]
+	tbl.holdAccusation(body.Seat, want, bond, signer, sig)
+	if knew {
+		// Nothing learned, so nothing to say back. That is what stops this
+		// from going round for ever.
+		return nil
+	}
+	// Learned something, so answer with ours. A broadcast that everybody
+	// repeats until their own view looks complete deadlocks the moment one
+	// peer is satisfied before another - so this converges by replying rather
+	// than by insisting.
+	tbl.replyWith = append(tbl.replyWith, tbl.ourAccusation(body.Seat, want, bond)...)
 	return nil
 }
 
-// answerClaim broadcasts this seat's pre-agreed answer.
+// sigsOf is the signatures held for an accusation, or none.
+func (a *accusation) sigsOf() map[string][]byte {
+	if a == nil {
+		return nil
+	}
+	return a.sigs
+}
+
+// ourAccusation is this peer's own signature on one accusation, as a frame.
+func (tbl *table) ourAccusation(seat uint32, tx *wire.MsgTx, bond []byte) []outgoing {
+	if tbl.session == nil {
+		return nil
+	}
+	seats, ok := tbl.form.Seats()
+	if !ok {
+		return nil
+	}
+	mine, ok := tbl.form.OurSeat()
+	if !ok {
+		return nil
+	}
+	sig, err := escrow.SignBondSpend(tx, bond, tbl.session)
+	if err != nil {
+		return nil
+	}
+	raw, err := tx.Bytes()
+	if err != nil {
+		return nil
+	}
+	tbl.holdAccusation(seat, tx, bond, seats[mine], sig)
+	return []outgoing{tbl.frame(schema.KindAccusation, schema.Accusation{
+		Seat:   seat,
+		Tx:     hex.EncodeToString(raw),
+		Signer: hex.EncodeToString(seats[mine]),
+		Sig:    hex.EncodeToString(sig),
+	}, gwire.ClassState)}
+}
+
+// answerClaim spends the claimed bond back into a bond, with this seat's own key.
 //
-// What it spends is the output the claim is against, so the claim dies whatever
-// anybody thinks about it. Nobody is asked and nobody is convinced: the accused
-// simply spends its own bond back into an identical bond, which it could have
-// done at any time and which gains it nothing.
+// One signature, nobody asked. That is the shape the claimed bond exists to
+// provide: an accusation moves the bond somewhere its owner can take back
+// immediately while the accusers wait out the window, so answering needs no
+// agreement gathered in advance and no file kept since the table formed. A seat
+// that has lost everything but its seed can still do this.
+//
+// Where to answer is derived rather than remembered. Every accusation against this
+// seat is deterministic, so the one that was broadcast is one of the chain this peer
+// can rebuild - and the claimed bond it created is its first output.
 func (tbl *table) answerClaim(ctx context.Context) {
 	seat, ok := tbl.form.OurSeat()
-	if !ok {
+	if !ok || tbl.session == nil {
 		return
 	}
-	// The answer whose input is where the bond actually sits. Answering once
-	// moves it on, and the next claim is against the new output.
+	chain, bond, err := tbl.accuseChain(seat)
+	if err != nil {
+		log.Printf("pokerplugin: table %s: cannot work out how to answer: %v", tbl.terms.SID, err)
+		return
+	}
 	at := tbl.bondedAt[seat]
 	if at == "" {
 		at = tbl.bonded[seat]
@@ -224,68 +356,74 @@ func (tbl *table) answerClaim(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	r := tbl.refresh[prevout.String()]
-	if r == nil {
-		log.Printf("pokerplugin: table %s: claimed against and holding no answer for %s",
-			tbl.terms.SID, at)
-		// The bond is going. Nothing else in this process is going to say
-		// so, and the player cannot be told to check a log they have no
-		// shell to read.
-		tbl.note(eventUnanswerable,
-			fmt.Sprintf("claimed against, and this peer holds no answer for the bond at %s", at),
-			"", seatp(int(seat)))
-		return
-	}
-	terms, err := escrow.ParseTableBond(r.bond)
-	if err != nil {
-		return
-	}
-	sigs := make([][]byte, 0, len(terms.Members))
-	for _, m := range terms.Members {
-		sig, ok := r.sigs[hex.EncodeToString(m)]
-		if !ok {
-			log.Printf("pokerplugin: table %s: claimed against and short of an answer's signatures",
-				tbl.terms.SID)
-			tbl.note(eventUnanswerable,
-				"claimed against, and the answer this peer holds is short of a signature",
-				"", seatp(int(seat)))
-			return
+	// The accusation whose input is where the bond actually sits. Answering
+	// moves it on, and the next accusation is against the new output.
+	var accuse *wire.MsgTx
+	for _, c := range chain {
+		if c.TxIn[0].PreviousOutPoint == prevout {
+			accuse = c
+			break
 		}
-		sigs = append(sigs, sig)
 	}
-	done, err := escrow.FinishAlive(r.tx, r.bond, sigs, tbl.netParams)
-	if err != nil {
-		log.Printf("pokerplugin: table %s: the answer held does not satisfy the bond: %v",
-			tbl.terms.SID, err)
+	if accuse == nil {
+		log.Printf("pokerplugin: table %s: claimed against at %s, which no agreed accusation spends",
+			tbl.terms.SID, at)
 		tbl.note(eventUnanswerable,
-			fmt.Sprintf("claimed against, and the answer this peer holds does not satisfy the bond: %v", err),
+			fmt.Sprintf("claimed against at %s, and no accusation this peer agreed spends it", at),
 			"", seatp(int(seat)))
 		return
 	}
-	raw, err := done.Bytes()
+
+	claimed, err := escrow.AccuseDraft{Bond: bond}.ClaimedScript()
+	if err != nil {
+		return
+	}
+	answer, err := escrow.BuildAnswer(escrow.AnswerDraft{
+		Claimed:    claimed,
+		Bond:       bond,
+		Prevout:    wire.OutPoint{Hash: accuse.TxHash(), Index: 0, Tree: wire.TxTreeRegular},
+		ValueAtoms: accuse.TxOut[0].Value,
+		FeeAtoms:   claimFee,
+		Params:     tbl.netParams,
+	})
+	if err != nil {
+		log.Printf("pokerplugin: table %s: cannot build an answer: %v", tbl.terms.SID, err)
+		return
+	}
+	sig, err := escrow.SignClaimedSpend(answer, claimed, tbl.session)
+	if err != nil {
+		log.Printf("pokerplugin: table %s: cannot sign an answer: %v", tbl.terms.SID, err)
+		return
+	}
+	sigScript, err := escrow.AnswerSigScript(claimed, sig)
+	if err != nil {
+		log.Printf("pokerplugin: table %s: the answer does not satisfy the claimed bond: %v",
+			tbl.terms.SID, err)
+		return
+	}
+	answer.TxIn[0].SignatureScript = sigScript
+
+	raw, err := answer.Bytes()
 	if err != nil {
 		return
 	}
 	txid, err := tbl.chain.Broadcast(ctx, hex.EncodeToString(raw))
 	if err != nil {
 		log.Printf("pokerplugin: table %s: could not answer a claim: %v", tbl.terms.SID, err)
-		// Unanswerable rather than blocked: the answer existed and did
-		// not go out, which from the bond's point of view is the same
-		// thing as not having one.
 		tbl.note(eventUnanswerable,
 			fmt.Sprintf("claimed against, and the answer could not be sent: %v", err),
 			"", seatp(int(seat)))
 		return
 	}
-	// The bond has moved, so every future claim - and every future answer -
-	// is against the new output. Recorded here and announced, because a peer
-	// still naming the old one would build a claim nobody can sign.
-	tbl.bondedAt[seat] = fmt.Sprintf("%s:0", done.TxHash())
+	// The bond has moved, so every future accusation is against the new
+	// output. Recorded and announced, because a peer still naming the old one
+	// would hold an accusation nothing can spend.
+	tbl.bondedAt[seat] = fmt.Sprintf("%s:0", answer.TxHash())
 	log.Printf("pokerplugin: table %s: answered a claim in %s; the bond is posted again at %s",
 		tbl.terms.SID, txid, tbl.bondedAt[seat])
 	tbl.note(eventAnswered,
-		fmt.Sprintf("claimed against, and the pre-agreed answer was sent; the bond is posted again at %s",
-			tbl.bondedAt[seat]), txid, seatp(int(seat)))
+		fmt.Sprintf("claimed against, and the answer was sent from this seat's own key; "+
+			"the bond is posted again at %s", tbl.bondedAt[seat]), txid, seatp(int(seat)))
 }
 
 // settleDraft is what this table would pay out, from the last boundary every
@@ -534,4 +672,50 @@ func outpointOf(s string) (wire.OutPoint, error) {
 		return wire.OutPoint{}, fmt.Errorf("outpoint: %w", err)
 	}
 	return wire.OutPoint{Hash: h, Index: vout, Tree: wire.TxTreeRegular}, nil
+}
+
+// accusationsReady reports whether every seat can be accused if it stops.
+//
+// The first accusation in each seat's chain has to carry every member's signature.
+// The rest of the chain matters only if a seat answers one, and by then the table
+// is talking again.
+func (tbl *table) accusationsReady() bool {
+	seats, ok := tbl.form.Seats()
+	if !ok {
+		return false
+	}
+	for seat := range seats {
+		chain, bond, err := tbl.accuseChain(seat)
+		if err != nil || len(chain) == 0 {
+			return false
+		}
+		terms, err := escrow.ParseTableBond(bond)
+		if err != nil {
+			return false
+		}
+		a := tbl.accuse[chain[0].TxIn[0].PreviousOutPoint.String()]
+		if a == nil {
+			return false
+		}
+		for _, m := range terms.Members {
+			if _, held := a.sigs[hex.EncodeToString(m)]; !held {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// fullySigned reports whether every member has signed one accusation.
+func (tbl *table) fullySigned(tx *wire.MsgTx, terms *escrow.TableBondTerms) bool {
+	a := tbl.accuse[tx.TxIn[0].PreviousOutPoint.String()]
+	if a == nil {
+		return false
+	}
+	for _, m := range terms.Members {
+		if _, held := a.sigs[hex.EncodeToString(m)]; !held {
+			return false
+		}
+	}
+	return true
 }

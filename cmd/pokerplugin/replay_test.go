@@ -86,7 +86,7 @@ func TestTheSigningBookSurvivesARestart(t *testing.T) {
 // They can only be agreed once. The branch they spend needs every member's
 // signature including the accusers', and an accuser will not sign once it has
 // started claiming - so a seat that comes back without them cannot answer a claim
-// at all, and presignRefreshes cannot make more because it needs a live hand.
+// at all, and presignAccusations cannot make more because it needs a live hand.
 func TestTheAnswersToAClaimSurviveARestart(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
@@ -94,12 +94,12 @@ func TestTheAnswersToAClaimSurviveARestart(t *testing.T) {
 	advance(t, h, 2, a, b)
 
 	tbl := a.tables.m[terms.SID]
-	if len(tbl.refresh) == 0 {
+	if len(tbl.accuse) == 0 {
 		t.Fatal("no answers were agreed while the table was live")
 	}
-	before := len(tbl.refresh)
+	before := len(tbl.accuse)
 	var sigs int
-	for _, r := range tbl.refresh {
+	for _, r := range tbl.accuse {
 		sigs += len(r.sigs)
 	}
 	if sigs == 0 {
@@ -111,11 +111,11 @@ func TestTheAnswersToAClaimSurviveARestart(t *testing.T) {
 	if back == nil {
 		t.Fatal("the table did not come back")
 	}
-	if got := len(back.refresh); got != before {
+	if got := len(back.accuse); got != before {
 		t.Fatalf("came back with %d answers, agreed %d", got, before)
 	}
 	var kept int
-	for _, r := range back.refresh {
+	for _, r := range back.accuse {
 		kept += len(r.sigs)
 		if r.tx == nil || len(r.bond) == 0 {
 			t.Fatal("an answer came back without its transaction or its bond script")
@@ -146,7 +146,7 @@ func TestAClaimInTheMempoolIsAnswered(t *testing.T) {
 	if outpoint == "" {
 		t.Fatal("this seat has no bond, so there is nothing to claim")
 	}
-	if len(tbl.refresh) == 0 {
+	if len(tbl.accuse) == 0 {
 		t.Fatal("no answer was agreed, so answering cannot be observed")
 	}
 

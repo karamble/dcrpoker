@@ -434,6 +434,12 @@ func TestAClaimIsReportedAndNotOnlyLogged(t *testing.T) {
 	}
 	waitPayouts(t, terms.SID, a, b)
 
+	// Every seat answerable for first. Agreeing an accusation is an exchange
+	// and exchanges cost blocks, and those blocks move the hand - so this has
+	// to happen before the wait below rather than after it, or it would hand
+	// this seat an obligation it has no way to discharge.
+	waitAccusable(t, h, terms.SID, a, b)
+
 	// Wait until this seat owes nothing before taking the other off the wire.
 	//
 	// Otherwise the hand can be at a point where *we* are the one holding it
@@ -453,6 +459,10 @@ func TestAClaimIsReportedAndNotOnlyLogged(t *testing.T) {
 	height := int64(terms.Until) + 2
 	for {
 		height += int64(claimAfter) + 1
+		// Keep doing our part. A seat that owes something is not entitled to
+		// accuse anybody, and with the other peer gone our turn comes round
+		// repeatedly - so the scenario only holds if we keep playing.
+		playOn(t, a, terms.SID)
 		a.publish(context.Background(), a.tables.tick(height))
 
 		v := ledgerOf(t, a, terms.SID)
@@ -579,24 +589,27 @@ func TestTheHeightIsCarriedBesideTheDeadline(t *testing.T) {
 	}
 }
 
-// A refusal to co-sign is somebody else's claim being turned down, and the
-// player on either end of it should be able to see that happened.
-func TestARefusalToCoSignIsReported(t *testing.T) {
+// A refusal to pre-agree an accusation is visible from outside the process.
+//
+// Nothing is co-signed at dispute time any more - an accusation is agreed while the
+// table is still cooperating - so this is where a refusal happens now, and it is
+// the more important place for it: a peer whose accusations are all refused has
+// nothing to accuse with the day somebody stops, and should find out while there is
+// still time to care.
+func TestARefusalToPreAgreeIsReported(t *testing.T) {
 	h := newHub(t)
 	p, _, terms := dealingTable(t, h)
 
 	tbl := p.tables.m[terms.SID]
-	// A claim naming a duty this peer's log knows nothing about. It is
-	// refused, and the refusal is the thing being tested: it used to be
-	// invisible from outside the process.
+	// An accusation this peer did not derive. Signed by nobody in particular
+	// and against a transaction that is not in the chain it built.
 	p.tables.mu.Lock()
-	tbl.acceptClaim(schema.Claim{
-		Seat:         theirSeat(t, tbl),
-		Duty:         dutyAgainst(t, tbl),
-		BondOutpoint: strings.Repeat("ab", 32) + ":0",
-		BondScript:   strings.Repeat("00", 32),
-		Tx:           strings.Repeat("00", 32),
-	}, testParams)
+	_ = tbl.adoptAccusation(schema.Accusation{
+		Seat:   theirSeat(t, tbl),
+		Tx:     strings.Repeat("00", 32),
+		Signer: strings.Repeat("02", 33),
+		Sig:    strings.Repeat("01", 64),
+	})
 	p.tables.mu.Unlock()
 
 	v := ledgerOf(t, p, terms.SID)
@@ -901,8 +914,55 @@ func waitOwesNothing(t *testing.T, h *hub, sid string, p *plugin, peers ...*plug
 		if time.Now().After(deadline) {
 			t.Fatal("this seat never finished what the hand asked of it")
 		}
+		// Discharge it rather than wait for it to pass. The scenario is "we
+		// have done everything and the other seat has not", and this seat's
+		// turn arriving is part of everything - waiting it out would mean
+		// waiting for somebody else to play our hand.
+		playOn(t, p, sid)
 		tickAll(all...)
 		h.inflight.Wait()
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitAccusable ticks until every peer holds a complete accusation against every
+// seat, which is what a table needs before anybody stopping can be answered.
+func waitAccusable(t *testing.T, h *hub, sid string, peers ...*plugin) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		ready := true
+		for _, p := range peers {
+			p.tables.mu.Lock()
+			tbl := p.tables.m[sid]
+			if tbl == nil || !tbl.accusationsReady() {
+				ready = false
+			}
+			p.tables.mu.Unlock()
+		}
+		if ready {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the table never agreed an accusation against every seat")
+		}
+		tickAll(peers...)
+		h.inflight.Wait()
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// playOn takes the cheapest legal action, if this seat has one to take.
+//
+// Check when checking is allowed and call when it is not, which pre-flop against
+// a blind it is not. Refusals are ignored: this is asked on every pass and most
+// of them are not this seat's turn at all.
+func playOn(t *testing.T, p *plugin, sid string) {
+	t.Helper()
+	for _, action := range []string{"check", "call"} {
+		if code, _ := post(t, p, "/table/act",
+			map[string]any{"sid": sid, "action": action}); code == http.StatusOK {
+			return
+		}
 	}
 }

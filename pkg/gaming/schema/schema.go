@@ -36,7 +36,12 @@ import (
 // open by a flag somebody forgets. Peers on different versions therefore do not
 // play together, which is the intended behaviour rather than something to work
 // around.
-const Version = 2
+//
+// 3 changes the table bond: a claim no longer takes it but moves it into a claimed
+// bond, where its owner has a window to answer with its own key. The bond script
+// loses its claim branch, so its address changes, and a bond posted under an
+// earlier version is a bond under earlier rules.
+const Version = 3
 
 // Game is the routing key for poker traffic.
 const Game = "poker"
@@ -112,14 +117,15 @@ const (
 	// bond. Like KindFunded, the chain is what makes it true.
 	KindBonded Kind = "bonded"
 
-	// KindRefresh is a signature on somebody's answer to a future claim,
+	// KindAccusation is a signature on a future accusation against a seat,
 	// agreed while the table is still cooperating.
 	//
-	// It has to be pre-signed. The branch that answers a claim needs every
-	// member's signature including the accusers', who will not give it once
-	// they have started - so an answer assembled at the time cannot exist,
-	// and this is the same answer agreed in advance and kept by its owner.
-	KindRefresh Kind = "refresh"
+	// It has to be pre-signed, because an accusation needs every member
+	// including the accused, who would not sign once accused. It pays into the
+	// claimed bond, where its target answers with its own key alone - so what
+	// is gathered here is the ability to accuse, and a peer that loses it has
+	// lost no defence.
+	KindAccusation Kind = "accusation"
 
 	// KindSettle is a signature on the transaction that pays a table out.
 	KindSettle Kind = "settle"
@@ -142,14 +148,22 @@ const (
 	// on their bond.
 	KindLeaving Kind = "leaving"
 
-	// KindClaim proposes taking an absent player's bond, for the other
-	// seats to co-sign.
+	// KindClaim says an accusation has been broadcast, and carries it.
 	//
-	// It is not an accusation and nobody weighs it. The claim is delayed on
-	// chain and the accused answers by spending the same output, so what
-	// decides it is whether they are still there - not whether anyone
-	// believed this message.
+	// Nothing is gathered by it and nobody weighs it: the accusation was
+	// agreed before the dispute and the chain is what decides. It is said out
+	// loud only so a peer that is listening learns it is accused without
+	// waiting for a confirmation - and the accused watches the chain too,
+	// precisely because this message can be withheld.
 	KindClaim Kind = "claim"
+
+	// KindTake proposes taking a claimed bond whose window has closed, for the
+	// other seats to co-sign.
+	//
+	// The forfeiture, and the only part of a dispute that is agreed at the
+	// time: the accusation was pre-signed and the answer needs one key, but
+	// this needs the seats it pays and they are willing when it happens.
+	KindTake Kind = "take"
 )
 
 // Message is the envelope every payload travels in.

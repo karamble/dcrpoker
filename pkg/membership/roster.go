@@ -196,8 +196,7 @@ func TableBonds(seats map[uint32][]byte, params stdaddr.AddressParams) ([]TableB
 
 	out := make([]TableBond, 0, len(seats))
 	for seat, owner := range seats {
-		script, err := escrow.TableBondScript(owner, canonical,
-			escrow.ClaimBlocks, TableBondBlocks)
+		script, err := escrow.TableBondScript(owner, canonical, TableBondBlocks)
 		if err != nil {
 			return nil, fmt.Errorf("seat %d bond: %w", seat, err)
 		}

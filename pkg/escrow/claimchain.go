@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
+	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
 )
@@ -235,6 +238,31 @@ func BuildTake(d TakeDraft) (*wire.MsgTx, error) {
 	return tx, nil
 }
 
+// AffordableDepth is how many accusations a bond of this size can actually fund.
+//
+// Each step of the chain costs two fees, not one: the accusation moves the bond and
+// the answer moves it back. What has to be left at the end is enough for the
+// forfeiture to pay every taking seat its minimum, or the last accusation in the
+// chain is one nobody could ever collect on.
+//
+// Worth computing rather than assuming. A chain that does not fit is a chain that
+// cannot be built at all, and the failure is silent from the outside: a table would
+// simply have no accusations agreed and nobody would be told.
+func AffordableDepth(value, fee int64, takers int) int {
+	if value <= 0 || fee <= 0 || takers < 1 {
+		return 0
+	}
+	room := value - int64(takers)*MinShareAtoms
+	if room <= 0 {
+		return 0
+	}
+	depth := int(room / (2 * fee))
+	if depth > AccuseDepth {
+		return AccuseDepth
+	}
+	return depth
+}
+
 // BuildAccuseChain builds every accusation a table may need against one bond, in
 // order.
 //
@@ -251,8 +279,8 @@ func BuildAccuseChain(d AccuseDraft, depth int) ([]*wire.MsgTx, error) {
 	if depth < 1 {
 		return nil, fmt.Errorf("a chain of %d accusations is no chain", depth)
 	}
-	if depth > RefreshDepth {
-		return nil, fmt.Errorf("a chain of %d accusations is beyond the %d agreed", depth, RefreshDepth)
+	if depth > AccuseDepth {
+		return nil, fmt.Errorf("a chain of %d accusations is beyond the %d agreed", depth, AccuseDepth)
 	}
 	claimed, err := d.ClaimedScript()
 	if err != nil {
@@ -285,4 +313,30 @@ func BuildAccuseChain(d AccuseDraft, depth int) ([]*wire.MsgTx, error) {
 		next.ValueAtoms = answer.TxOut[0].Value
 	}
 	return out, nil
+}
+
+// SignClaimedSpend signs a spend of a claimed bond, for either of its branches.
+//
+// Separate from SignBondSpend only because the script it commits to is a
+// different one: the signature hash covers the redeem script, so signing against
+// the bond would produce something that verifies against nothing.
+func SignClaimedSpend(tx *wire.MsgTx, claimed []byte, key *secp256k1.PrivateKey) ([]byte, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("no transaction to sign")
+	}
+	if key == nil {
+		return nil, fmt.Errorf("no signing key")
+	}
+	if _, err := ParseClaimedBond(claimed); err != nil {
+		return nil, err
+	}
+	sighash, err := txscript.CalcSignatureHash(claimed, txscript.SigHashAll, tx, 0, nil)
+	if err != nil {
+		return nil, fmt.Errorf("signature hash: %w", err)
+	}
+	sig, err := schnorr.Sign(key, sighash)
+	if err != nil {
+		return nil, fmt.Errorf("sign: %w", err)
+	}
+	return append(sig.Serialize(), byte(txscript.SigHashAll)), nil
 }

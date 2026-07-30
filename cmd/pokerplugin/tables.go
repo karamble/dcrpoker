@@ -71,14 +71,22 @@ type table struct {
 	// refresh is every pre-agreed answer, filed by the output it spends, and
 	// bondedAt is where a seat's bond sits now if it has answered a claim
 	// and moved it.
-	refresh  map[string]*refresh
-	bondedAt map[uint32]string
+	accuse map[string]*accusation
+	// takes is each proposed forfeiture, by the claimed bond it spends.
+	takes map[string]*take
+	// chains caches derived accusation chains, keyed by seat and the outpoint
+	// they start from.
+	chains map[string][]*dcrwire.MsgTx
+	// replyWith is what adopting a message decided to say back, collected
+	// because the adopt path returns an error rather than frames.
+	replyWith []outgoing
+	bondedAt  map[uint32]string
 	// releases is each seat's bond going back, once the table is over, and
 	// bondValue is what the chain says each bond holds - needed to build the
 	// release and known only from having looked.
 	releases  map[uint32]*release
 	bondValue map[uint32]int64
-	refreshed bool
+	accused   bool
 	settle    *settlement
 	settled   bool
 	// session is the key this seat signs table business with, and netParams
@@ -414,17 +422,17 @@ func (tbl *table) record() *record {
 			rec.Signed[at] = digest
 		}
 	}
-	for _, r := range tbl.refresh {
+	for _, r := range tbl.accuse {
 		raw, err := r.tx.Bytes()
 		if err != nil {
 			continue
 		}
-		kept := recordedRefresh{Seat: r.seat, Tx: hex.EncodeToString(raw),
+		kept := recordedAccusation{Seat: r.seat, Tx: hex.EncodeToString(raw),
 			Bond: hex.EncodeToString(r.bond), Sigs: map[string]string{}}
 		for signer, sig := range r.sigs {
 			kept.Sigs[signer] = hex.EncodeToString(sig)
 		}
-		rec.Refreshes = append(rec.Refreshes, kept)
+		rec.Accusations = append(rec.Accusations, kept)
 	}
 	if len(tbl.bonded) > 0 {
 		rec.Bonded = make(map[uint32]string, len(tbl.bonded))
@@ -546,7 +554,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 		uids:     map[uint32]string{},
 		releases: map[uint32]*release{}, bondValue: map[uint32]int64{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
-		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
+		accuse: map[string]*accusation{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain, logPriv: creds.Log}
 
 	if rec != nil {
@@ -587,18 +595,18 @@ func (tbl *table) resume(rec *record) error {
 		}
 		tbl.signed[at] = digest
 	}
-	for _, kept := range rec.Refreshes {
+	for _, kept := range rec.Accusations {
 		raw, err := hex.DecodeString(kept.Tx)
 		if err != nil {
-			return fmt.Errorf("recorded answer for seat %d: %w", kept.Seat, err)
+			return fmt.Errorf("recorded accusation against seat %d: %w", kept.Seat, err)
 		}
 		tx := dcrwire.NewMsgTx()
 		if err := tx.FromBytes(raw); err != nil {
-			return fmt.Errorf("recorded answer for seat %d: %w", kept.Seat, err)
+			return fmt.Errorf("recorded accusation against seat %d: %w", kept.Seat, err)
 		}
 		bond, err := hex.DecodeString(kept.Bond)
 		if err != nil {
-			return fmt.Errorf("recorded answer for seat %d: %w", kept.Seat, err)
+			return fmt.Errorf("recorded accusation against seat %d: %w", kept.Seat, err)
 		}
 		for signer, sig := range kept.Sigs {
 			b, err := hex.DecodeString(sig)
@@ -609,7 +617,7 @@ func (tbl *table) resume(rec *record) error {
 			if err != nil {
 				continue
 			}
-			tbl.holdRefresh(kept.Seat, tx, bond, pub, b)
+			tbl.holdAccusation(kept.Seat, tx, bond, pub, b)
 		}
 	}
 	for i, wj := range rec.Joins {
@@ -876,7 +884,7 @@ func (t *tables) receipt(rec *record, id *identity) (*table, error) {
 		uids:     map[uint32]string{},
 		releases: map[uint32]*release{}, bondValue: map[uint32]int64{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
-		refresh: map[string]*refresh{}, bondedAt: map[uint32]string{},
+		accuse: map[string]*accusation{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain,
 		logPriv: creds.Log, finished: done}
 
@@ -919,7 +927,7 @@ func (t *tables) tick(height int64) []outgoing {
 		}
 		out = append(out, tbl.askAgain(height)...)
 		out = append(out, tbl.proposeClaim(t.params)...)
-		out = append(out, tbl.presignRefreshes()...)
+		out = append(out, tbl.presignAccusations()...)
 		out = append(out, tbl.proposeSettlement()...)
 		out = append(out, tbl.proposeReleases()...)
 		out = append(out, t.announceAgain(tbl, height)...)
@@ -1360,12 +1368,15 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 		schema.KindLeaving:
 		return tbl.deal(msg), nil
 
-	case schema.KindRefresh:
-		var body schema.Refresh
+	case schema.KindAccusation:
+		var body schema.Accusation
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}
-		return nil, tbl.adoptRefresh(body)
+		err := tbl.adoptAccusation(body)
+		reply := tbl.replyWith
+		tbl.replyWith = nil
+		return reply, err
 
 	case schema.KindSettle:
 		var body schema.Settle
@@ -1393,18 +1404,19 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}
-		if seat, ok := tbl.form.OurSeat(); ok && int(seat) == body.Duty.Seat {
-			// Claimed against. The answer was agreed in advance and needs
-			// nobody's permission now.
-			tbl.answerClaim(context.Background())
-			return nil, nil
-		}
-		if body.Sig != "" {
-			// A co-signature on something already proposed.
-			tbl.collectClaimSig(context.Background(), tbl.chain, body)
-			return nil, nil
-		}
+		// Nothing is co-signed here any more: an accusation is agreed before
+		// the dispute, so this only tells the accused sooner than the chain
+		// would.
 		return tbl.acceptClaim(body, tbl.netParams), nil
+
+	case schema.KindTake:
+		var body schema.Take
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		out := tbl.acceptTake(body)
+		tbl.finishTake(context.Background(), tbl.chain, body.Outpoint)
+		return out, nil
 
 	default:
 		// A kind this build does not know must not take the table down.

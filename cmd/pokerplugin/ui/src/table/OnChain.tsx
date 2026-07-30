@@ -30,11 +30,11 @@ const wording: Record<ChainEvent['kind'], string> = {
 export function OnChain({
   ledger,
   dealing,
-  refreshed,
+  accused,
 }: {
   ledger?: LedgerView
   dealing?: boolean
-  refreshed?: boolean
+  accused?: boolean
 }) {
   const events = [...(ledger?.events ?? [])].reverse()
   const claims = ledger?.claims ?? []
@@ -99,12 +99,12 @@ export function OnChain({
         </div>
       )}
 
-      {dealing && !refreshed && (
+      {dealing && !accused && (
         <p className="lede warn">
-          The answers to a future claim are still being gathered. Until every seat holds
-          one, a seat claimed against cannot answer — the signatures an answer needs
-          include the accusers', and they will not give them once they have started
-          accusing.
+          The table is still agreeing what to do about a seat that stops. Until every
+          seat has signed, a seat that goes quiet cannot be answered for at all - an
+          accusation needs the signature of the seat it accuses, and nobody would give
+          that once they were being accused. Answering one needs only your own key.
         </p>
       )}
 

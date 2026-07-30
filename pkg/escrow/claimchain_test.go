@@ -228,3 +228,21 @@ func mustAliveSig(t *testing.T, b *tableBond, tx *wire.MsgTx) []byte {
 	}
 	return sig
 }
+
+// A transaction's identity does not depend on its signatures, which is the
+// property the whole pre-agreed chain rests on: if signing changed the txid,
+// nothing spending an accusation's output could be agreed before it was signed.
+func TestATransactionsIdentityDoesNotDependOnItsSignatures(t *testing.T) {
+	b := postTableBond(t, 3)
+	d := accuseDraftFor(t, b, 100_000)
+	tx, err := BuildAccuse(d)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	before := tx.TxHash()
+
+	tx.TxIn[0].SignatureScript = mustAliveSig(t, b, tx)
+	if got := tx.TxHash(); got != before {
+		t.Fatalf("signing changed the transaction id from %s to %s", before, got)
+	}
+}

@@ -157,13 +157,15 @@ type Leaving struct {
 	Sig string `json:"sig"`
 }
 
-// Refresh is one member's signature on another seat's answer to a future claim.
+// Accusation is one member's signature on a future accusation against a seat.
 //
-// Gathered while the table is still cooperating, because the branch that answers
-// needs every member and the accusers will not sign once they have started. The
-// owner keeps the set and broadcasts it the day somebody says they have gone.
-type Refresh struct {
-	// Seat is whose bond this answers for.
+// Agreed while the table is still cooperating, because an accusation needs every
+// member's signature including the accused's, and the accused would not give it
+// once it is being accused. It pays into the claimed bond, where its target has
+// the window to answer with its own key alone - so what is gathered here is the
+// ability to accuse, and losing it costs nobody their defence.
+type Accusation struct {
+	// Seat is whose bond this accuses.
 	Seat uint32 `json:"seat"`
 	// Tx is the unsigned answer, hex-encoded, so everybody signs the same
 	// bytes rather than a description of them.
@@ -244,4 +246,20 @@ type Release struct {
 	Tx     string `json:"tx"`
 	Signer string `json:"signer"` // hex compressed session pubkey
 	Sig    string `json:"sig"`
+}
+
+// Take is one member's signature on taking a claimed bond whose window has closed.
+//
+// Not agreed in advance, unlike an accusation: the seats taking it are all willing
+// at the time, which is what being the accusers means. Proposed, co-signed and
+// broadcast, and the only condition on it is one the chain states.
+type Take struct {
+	// Seat is whose bond is being taken, and Outpoint is the claimed bond
+	// holding it.
+	Seat     uint32 `json:"seat"`
+	Outpoint string `json:"outpoint"`
+	Claimed  string `json:"claimed"` // hex claimed bond script
+	Tx       string `json:"tx"`      // hex unsigned transaction
+	Signer   string `json:"signer,omitempty"`
+	Sig      string `json:"sig,omitempty"`
 }

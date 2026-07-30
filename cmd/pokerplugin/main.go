@@ -264,6 +264,9 @@ func (p *plugin) watchChain(ctx context.Context) {
 			// Before the tick as well: a claim in the mempool is a
 			// thing to answer now, not next poll.
 			p.watchOwnBond(ctx)
+			// And the other side of a dispute: a claimed bond whose window
+			// has closed is one the table can take.
+			p.takeClaimed(ctx)
 			p.publish(ctx, p.tables.tick(tip.Height))
 			p.drawSeats(ctx, tip.Height)
 		}

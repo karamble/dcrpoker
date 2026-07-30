@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -9,7 +8,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
 
@@ -72,44 +70,72 @@ func (tbl *table) proposeClaim(params stdaddr.AddressParams) []outgoing {
 	}
 	seat, ours := tbl.form.OurSeat()
 	if !ours || int(seat) == duty.Seat {
-		// Nobody proposes a claim against themselves. If this peer is the
-		// one holding the table up, the answer is to act.
+		// Nobody accuses themselves. If this peer is the one holding the
+		// table up, the answer is to act.
 		return nil
 	}
 	if tbl.claims[duty] != nil {
-		// Already proposed. Saying it again would only produce a second
-		// transaction for the same thing, and signatures collected against
-		// one of them would not fit the other.
 		return nil
 	}
 
-	draft, bond, err := tbl.claimDraft(duty.Seat, params)
-	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot build a claim: %v", tbl.terms.SID, err)
+	// The accusation was agreed while everybody was still talking, and this
+	// is where it gets used. Nothing is gathered now: an accusation needs
+	// every member including the accused, who would not sign today.
+	at := tbl.bondedAt[uint32(duty.Seat)]
+	if at == "" {
+		at = tbl.bonded[uint32(duty.Seat)]
+	}
+	a := tbl.accuse[at]
+	if a == nil {
+		log.Printf("pokerplugin: table %s: no agreed accusation against seat %d at %s",
+			tbl.terms.SID, duty.Seat, at)
+		tbl.note(eventBlocked, fmt.Sprintf(
+			"seat %d has stopped, and this peer holds no agreed accusation against its bond at %s",
+			duty.Seat, at), "", seatp(duty.Seat))
 		return nil
 	}
-	tx, err := escrow.BuildClaim(draft)
+	terms, err := escrow.ParseTableBond(a.bond)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot build a claim: %v", tbl.terms.SID, err)
 		return nil
 	}
-	raw, err := tx.Bytes()
+	sigs := make([][]byte, 0, len(terms.Members))
+	for _, m := range terms.Members {
+		sig, ok := a.sigs[hex.EncodeToString(m)]
+		if !ok {
+			log.Printf("pokerplugin: table %s: the accusation against seat %d is short a signature",
+				tbl.terms.SID, duty.Seat)
+			tbl.note(eventBlocked, fmt.Sprintf(
+				"seat %d has stopped, and the agreed accusation is short a signature", duty.Seat),
+				"", seatp(duty.Seat))
+			return nil
+		}
+		sigs = append(sigs, sig)
+	}
+	done, err := escrow.FinishAlive(a.tx, a.bond, sigs, params)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+		log.Printf("pokerplugin: table %s: the agreed accusation does not satisfy the bond: %v",
+			tbl.terms.SID, err)
+		return nil
+	}
+	raw, err := done.Bytes()
+	if err != nil {
 		return nil
 	}
 
-	c := &claim{duty: duty, tx: tx, bond: bond, sigs: map[string][]byte{}}
+	c := &claim{duty: duty, tx: done, bond: a.bond, sigs: a.sigs, done: true}
 	tbl.claims[duty] = c
-	log.Printf("pokerplugin: table %s: proposing a claim - %s", tbl.terms.SID, duty)
-	tbl.note(eventProposed, fmt.Sprintf("proposed taking seat %d's bond: %s", duty.Seat, duty),
+	log.Printf("pokerplugin: table %s: accusing - %s", tbl.terms.SID, duty)
+	tbl.note(eventProposed, fmt.Sprintf("accused seat %d of leaving: %s", duty.Seat, duty),
 		"", seatp(duty.Seat))
 
+	// Said out loud as well as broadcast. The chain is what decides, and the
+	// accused watches it - but a peer that is listening should not have to
+	// wait for a confirmation to learn it is being accused.
 	return []outgoing{tbl.frame(schema.KindClaim, schema.Claim{
 		Seat:         uint32(duty.Seat),
 		Duty:         duty,
-		BondOutpoint: tbl.bonded[uint32(duty.Seat)],
-		BondScript:   hex.EncodeToString(bond),
+		BondOutpoint: at,
+		BondScript:   hex.EncodeToString(a.bond),
 		Tx:           hex.EncodeToString(raw),
 	}, gwire.ClassState)}
 }
@@ -119,71 +145,12 @@ type claim struct {
 	duty driver.Duty
 	tx   *wire.MsgTx
 	bond []byte
-	// sigs is each claiming seat's signature, by its key in hex.
+	// sigs is each signature the accusation carried, by its key in hex.
 	sigs map[string][]byte
 	done bool
-}
-
-// claimDraft works out what a claim against a seat would pay, and to whom.
-func (tbl *table) claimDraft(against int, params stdaddr.AddressParams) (escrow.ClaimDraft, []byte, error) {
-	outpoint := tbl.bonded[uint32(against)]
-	if outpoint == "" {
-		return escrow.ClaimDraft{}, nil, fmt.Errorf("seat %d has no bond on the chain", against)
-	}
-	b, err := tbl.bond(uint32(against), params)
-	if err != nil {
-		return escrow.ClaimDraft{}, nil, err
-	}
-	script, err := hex.DecodeString(b.ScriptHex)
-	if err != nil {
-		return escrow.ClaimDraft{}, nil, err
-	}
-	terms, err := escrow.ParseTableBond(script)
-	if err != nil {
-		return escrow.ClaimDraft{}, nil, err
-	}
-	seats, ok := tbl.form.Seats()
-	if !ok {
-		return escrow.ClaimDraft{}, nil, fmt.Errorf("this table has no seating")
-	}
-
-	// One payout per claiming seat, in the bond's own canonical order -
-	// which is what every co-signer will derive too, so they all build the
-	// same bytes.
-	pays := make([][]byte, 0, len(terms.Others))
-	for _, key := range terms.Others {
-		seat, ok := seatOf(seats, key)
-		if !ok {
-			return escrow.ClaimDraft{}, nil, fmt.Errorf("a bond names a key not at this table")
-		}
-		addr := tbl.payouts[seat]
-		if addr == "" {
-			return escrow.ClaimDraft{}, nil, fmt.Errorf(
-				"seat %d has not said where to pay it, so a claim cannot be built", seat)
-		}
-		pay, err := payScriptFor(addr, params)
-		if err != nil {
-			return escrow.ClaimDraft{}, nil, fmt.Errorf("seat %d payout: %w", seat, err)
-		}
-		pays = append(pays, pay)
-	}
-
-	txid, vout, err := splitOutpoint(outpoint)
-	if err != nil {
-		return escrow.ClaimDraft{}, nil, err
-	}
-	var h chainhash.Hash
-	if err := chainhash.Decode(&h, txid); err != nil {
-		return escrow.ClaimDraft{}, nil, fmt.Errorf("bond outpoint: %w", err)
-	}
-	prevout := wire.OutPoint{Hash: h, Index: vout, Tree: wire.TxTreeRegular}
-	return escrow.ClaimDraft{
-		Bond:       script,
-		Prevout:    prevout,
-		ValueAtoms: int64(escrow.MinBondAtoms),
-		PayScripts: pays,
-		FeeAtoms:   claimFee,
-	}, script, nil
+	// taken records that the claimed bond this produced has been forfeited,
+	// so the forfeiture is not proposed twice.
+	taken bool
 }
 
 func seatOf(seats map[uint32][]byte, key []byte) (uint32, bool) {
@@ -195,165 +162,29 @@ func seatOf(seats map[uint32][]byte, key []byte) (uint32, bool) {
 	return 0, false
 }
 
-// acceptClaim is what this peer does when somebody else proposes taking a bond.
+// acceptClaim is what this peer does when somebody says they have accused a seat.
 //
-// Three checks and then a signature. That the log really says the accused owes
-// what the claim names, against this peer's own copy. That the transaction is
-// the one this peer would have built, byte for byte. And that this peer is
-// actually named in the bond, because signing for a bond that cannot pay it is
-// signing somebody else's business.
-//
-// A refusal is silent. There is nothing to argue about and nobody to argue with:
-// the claimant will try again, and if it was wrong it will keep being refused.
+// Nothing is co-signed and nothing is weighed. The accusation was agreed before
+// the dispute and the chain decides it, so this message only saves the accused a
+// wait: if it is about us, answer now rather than when the accusation confirms.
+// The chain is watched as well, precisely because this can be withheld.
 func (tbl *table) acceptClaim(body schema.Claim, params stdaddr.AddressParams) []outgoing {
-	if err := body.Validate(); err != nil {
-		log.Printf("pokerplugin: table %s: claim: %v", tbl.terms.SID, err)
-		return nil
-	}
-	if tbl.play == nil {
-		return nil
-	}
 	seat, ours := tbl.form.OurSeat()
-	if !ours || int(seat) == body.Duty.Seat {
-		// A claim against this peer is answered, not co-signed.
+	if !ours {
 		return nil
 	}
-	// Does this peer's own log say the same thing?
-	if err := tbl.play.Agrees(body.Duty); err != nil {
-		log.Printf("pokerplugin: table %s: not co-signing a claim: %v", tbl.terms.SID, err)
-		tbl.note(eventRefused, fmt.Sprintf("did not co-sign a claim against seat %d: %v",
-			body.Duty.Seat, err), "", seatp(body.Duty.Seat))
+	if int(seat) != body.Duty.Seat {
+		// Somebody else is accused. Worth recording, since a table where a
+		// seat is being accused is a table about to end one way or another.
+		tbl.note(eventProposed, fmt.Sprintf("seat %d is accused of leaving: %s",
+			body.Duty.Seat, body.Duty), "", seatp(body.Duty.Seat))
 		return nil
 	}
-	// Is it the transaction this peer would have built?
-	raw, err := hex.DecodeString(body.Tx)
-	if err != nil {
-		return nil
-	}
-	tx := wire.NewMsgTx()
-	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
-		log.Printf("pokerplugin: table %s: claim transaction: %v", tbl.terms.SID, err)
-		return nil
-	}
-	draft, bond, err := tbl.claimDraft(body.Duty.Seat, params)
-	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
-		return nil
-	}
-	if err := escrow.CheckClaimDraft(tx, draft); err != nil {
-		log.Printf("pokerplugin: table %s: not co-signing a claim: %v", tbl.terms.SID, err)
-		tbl.note(eventRefused, fmt.Sprintf("a claim against seat %d was not the transaction this peer would have built: %v",
-			body.Duty.Seat, err), "", seatp(body.Duty.Seat))
-		return nil
-	}
-	// And is this peer one of the seats the bond can pay?
-	terms, err := escrow.ParseTableBond(bond)
-	if err != nil {
-		return nil
-	}
-	seats, _ := tbl.form.Seats()
-	if _, err := escrow.MemberIndex(terms, seats[seat]); err != nil {
-		log.Printf("pokerplugin: table %s: not co-signing a bond that cannot pay this seat", tbl.terms.SID)
-		tbl.note(eventRefused, fmt.Sprintf("did not co-sign a claim against seat %d: its bond cannot pay this seat",
-			body.Duty.Seat), "", seatp(body.Duty.Seat))
-		return nil
-	}
-
-	priv := tbl.session
-	if priv == nil {
-		log.Printf("pokerplugin: table %s: no session key to sign a claim with", tbl.terms.SID)
-		return nil
-	}
-	sig, err := escrow.SignBondSpend(tx, bond, priv)
-	if err != nil {
-		log.Printf("pokerplugin: table %s: signing a claim: %v", tbl.terms.SID, err)
-		return nil
-	}
-
-	c := tbl.claims[body.Duty]
-	if c == nil {
-		c = &claim{duty: body.Duty, tx: tx, bond: bond, sigs: map[string][]byte{}}
-		tbl.claims[body.Duty] = c
-	}
-	c.sigs[hex.EncodeToString(seats[seat])] = sig
-	tbl.note(eventCosigned, fmt.Sprintf("co-signed taking seat %d's bond: %s", body.Duty.Seat, body.Duty),
-		"", seatp(body.Duty.Seat))
-
-	return []outgoing{tbl.frame(schema.KindClaim, schema.Claim{
-		Seat:         uint32(body.Duty.Seat),
-		Duty:         body.Duty,
-		BondOutpoint: body.BondOutpoint,
-		BondScript:   body.BondScript,
-		Tx:           body.Tx,
-		Signer:       hex.EncodeToString(seats[seat]),
-		Sig:          hex.EncodeToString(sig),
-	}, gwire.ClassState)}
+	log.Printf("pokerplugin: table %s: accused of leaving, and answering", tbl.terms.SID)
+	tbl.answerClaim(context.Background())
+	return nil
 }
 
-// collectClaimSig records a co-signer's signature and broadcasts once they are
-// all in.
-func (tbl *table) collectClaimSig(ctx context.Context, chain broadcaster, body schema.Claim) {
-	c := tbl.claims[body.Duty]
-	if c == nil || c.done {
-		return
-	}
-	sig, err := hex.DecodeString(body.Sig)
-	if err != nil || len(sig) == 0 {
-		return
-	}
-	terms, err := escrow.ParseTableBond(c.bond)
-	if err != nil {
-		return
-	}
-	signer, err := hex.DecodeString(body.Signer)
-	if err != nil {
-		return
-	}
-	if _, err := escrow.MemberIndex(terms, signer); err != nil {
-		// A signature from somebody the bond cannot pay. Not evidence of
-		// anything, and not usable.
-		return
-	}
-	c.sigs[body.Signer] = sig
-
-	sigs := make([][]byte, 0, len(terms.Others))
-	for _, key := range terms.Others {
-		s, ok := c.sigs[hex.EncodeToString(key)]
-		if !ok {
-			return // still short of somebody
-		}
-		sigs = append(sigs, s)
-	}
-
-	done, err := escrow.FinishClaim(c.tx, c.bond, sigs, tbl.netParams)
-	if err != nil {
-		log.Printf("pokerplugin: table %s: a fully signed claim did not satisfy the bond: %v",
-			tbl.terms.SID, err)
-		tbl.note(eventBlocked, fmt.Sprintf("a fully signed claim against seat %d did not satisfy the bond: %v",
-			c.duty.Seat, err), "", seatp(c.duty.Seat))
-		return
-	}
-	raw, err := done.Bytes()
-	if err != nil {
-		return
-	}
-	c.done = true
-	txid, err := chain.Broadcast(ctx, hex.EncodeToString(raw))
-	if err != nil {
-		// The window is what matters, not this attempt. Another peer holds
-		// the same signatures and will broadcast the same transaction.
-		log.Printf("pokerplugin: table %s: could not broadcast a claim: %v", tbl.terms.SID, err)
-		tbl.note(eventBlocked, fmt.Sprintf("this peer could not send a claim against seat %d; another holds the same one: %v",
-			c.duty.Seat, err), "", seatp(c.duty.Seat))
-		return
-	}
-	log.Printf("pokerplugin: table %s: claimed seat %d's bond in %s - %s",
-		tbl.terms.SID, c.duty.Seat, txid, c.duty)
-	tbl.note(eventClaimed, fmt.Sprintf("took seat %d's bond: %s", c.duty.Seat, c.duty),
-		txid, seatp(c.duty.Seat))
-}
-
-// broadcaster is what a claim needs from the chain, and nothing more.
 type broadcaster interface {
 	Broadcast(ctx context.Context, rawTxHex string) (string, error)
 }

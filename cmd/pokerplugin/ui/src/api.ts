@@ -183,7 +183,7 @@ export type LedgerView = {
   live?: number[]
   roster?: SeatView[]
   payoutsMissing?: number[]
-  refreshed: boolean
+  accused: boolean
   claims?: ClaimView[]
   settlement?: SettleView
   events?: ChainEvent[]

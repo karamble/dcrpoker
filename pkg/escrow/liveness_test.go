@@ -29,7 +29,7 @@ type tableBond struct {
 func postTableBond(t *testing.T, n int) *tableBond {
 	t.Helper()
 	privs, pubs := memberKeys(t, n)
-	script, err := TableBondScript(pubs[0], pubs, testClaimBlocks, testLockBlocks)
+	script, err := TableBondScript(pubs[0], pubs, testLockBlocks)
 	if err != nil {
 		t.Fatalf("build bond: %v", err)
 	}
@@ -67,130 +67,6 @@ func TestATableThatEndsProperlyReleasesTheBond(t *testing.T) {
 	}
 }
 
-// A player who walks out loses the bond to the rest of the table, once the
-// window has passed.
-func TestAnAbsentPlayerLosesTheBond(t *testing.T) {
-	for _, n := range []int{2, 3, 6} {
-		b := postTableBond(t, n)
-		tx := spendTx(t, uint32(testClaimBlocks))
-		sig, err := ClaimSigScript(b.script, b.sign(t, tx, b.terms.Others))
-		if err != nil {
-			t.Fatalf("%d seats: claim sigscript: %v", n, err)
-		}
-		tx.TxIn[0].SignatureScript = sig
-		if err := execute(t, b.script, tx, csvFlags); err != nil {
-			t.Fatalf("%d seats: the table could not take an absent player's bond: %v", n, err)
-		}
-	}
-}
-
-// And not before the window has passed, so there is always time to answer.
-func TestAClaimCannotBeTakenBeforeTheWindow(t *testing.T) {
-	b := postTableBond(t, 3)
-	tx := spendTx(t, uint32(testClaimBlocks)-1)
-	sig, err := ClaimSigScript(b.script, b.sign(t, tx, b.terms.Others))
-	if err != nil {
-		t.Fatalf("claim sigscript: %v", err)
-	}
-	tx.TxIn[0].SignatureScript = sig
-	if err := execute(t, b.script, tx, csvFlags); err == nil {
-		t.Fatal("a bond was claimed a block before the window closed")
-	}
-}
-
-// The direction that protects the honest player, and the reason the window
-// exists: an answer has no timelock, so it confirms while a claim is still
-// waiting. Coming back and playing your turn beats an accusation every time.
-func TestAnAnswerBeatsAClaim(t *testing.T) {
-	b := postTableBond(t, 3)
-
-	// The claim cannot confirm yet.
-	claimTx := spendTx(t, uint32(testClaimBlocks))
-	claimSig, err := ClaimSigScript(b.script, b.sign(t, claimTx, b.terms.Others))
-	if err != nil {
-		t.Fatalf("claim sigscript: %v", err)
-	}
-	claimTx.TxIn[0].SignatureScript = claimSig
-	early := spendTx(t, 0)
-	early.TxIn[0].SignatureScript = claimSig
-	if err := execute(t, b.script, early, csvFlags); err == nil {
-		t.Fatal("a claim confirmed with no delay at all")
-	}
-
-	// The answer can, immediately - it spends the same output, so the claim
-	// is dead rather than merely outvoted.
-	answerTx := spendTx(t, 0)
-	answerSig, err := AliveSigScript(b.script, b.sign(t, answerTx, b.terms.Members))
-	if err != nil {
-		t.Fatalf("alive sigscript: %v", err)
-	}
-	answerTx.TxIn[0].SignatureScript = answerSig
-	if err := execute(t, b.script, answerTx, csvFlags); err != nil {
-		t.Fatalf("a player who came back could not answer the claim: %v", err)
-	}
-}
-
-// A table full of liars cannot take an honest player's bond, because the answer
-// is on chain and they have no way to stop it. This is what makes the race safe
-// where an adjudicated version would not be.
-func TestACollusionOfEverybodyElseStillCannotTakeTheBond(t *testing.T) {
-	b := postTableBond(t, 6)
-
-	// They can open a claim - nothing stops that, and nothing needs to.
-	claimTx := spendTx(t, uint32(testClaimBlocks))
-	claimSig, err := ClaimSigScript(b.script, b.sign(t, claimTx, b.terms.Others))
-	if err != nil {
-		t.Fatalf("claim sigscript: %v", err)
-	}
-	claimTx.TxIn[0].SignatureScript = claimSig
-	if err := execute(t, b.script, claimTx, csvFlags); err != nil {
-		t.Fatalf("a claim by every other member did not stand up on its own: %v", err)
-	}
-
-	// What they cannot do is stop the answer, which needs no delay.
-	answerTx := spendTx(t, 0)
-	answerSig, err := AliveSigScript(b.script, b.sign(t, answerTx, b.terms.Members))
-	if err != nil {
-		t.Fatalf("alive sigscript: %v", err)
-	}
-	answerTx.TxIn[0].SignatureScript = answerSig
-	if err := execute(t, b.script, answerTx, csvFlags); err != nil {
-		t.Fatalf("the accused could not answer a claim the whole table had signed: %v", err)
-	}
-}
-
-// One player must not be able to open a claim alone, or a claim becomes a way
-// to harass whoever you like.
-func TestOnePlayerCannotClaimAlone(t *testing.T) {
-	b := postTableBond(t, 6)
-	tx := spendTx(t, uint32(testClaimBlocks))
-
-	for i := range b.terms.Others {
-		// Everyone else signs; one abstains.
-		partial := make([][]byte, 0, len(b.terms.Others))
-		for j, m := range b.terms.Others {
-			if j == i {
-				continue
-			}
-			partial = append(partial, m)
-		}
-		sigs := b.sign(t, tx, partial)
-		// Pad so the sig script builds; the missing member's slot is filled
-		// with somebody else's signature, which must not satisfy the check.
-		sigs = append(sigs, sigs[0])
-		sig, err := ClaimSigScript(b.script, sigs)
-		if err != nil {
-			t.Fatalf("claim sigscript: %v", err)
-		}
-		tx.TxIn[0].SignatureScript = sig
-		if err := execute(t, b.script, tx, csvFlags); err == nil {
-			t.Fatalf("a claim stood up without member %d agreeing", i)
-		}
-	}
-}
-
-// The owner must not be able to take their own bond back mid-table by claiming
-// to be alive, or the bond is not locked up at all.
 func TestTheOwnerCannotReleaseTheBondAlone(t *testing.T) {
 	b := postTableBond(t, 3)
 	tx := spendTx(t, 0)
@@ -280,20 +156,15 @@ func TestTheTableBondBuilderRefusesUnsafeTerms(t *testing.T) {
 		name    string
 		owner   []byte
 		members [][]byte
-		claim   uint32
 		lock    uint32
 	}{
-		{"an owner who is not at the table", stranger, pubs, testClaimBlocks, testLockBlocks},
-		{"a table of one", pubs[0], pubs[:1], testClaimBlocks, testLockBlocks},
-		{"a claim nobody could answer", pubs[0], pubs, 0, testLockBlocks},
-		{"a lock under the minimum", pubs[0], pubs, testClaimBlocks, MinBondBlocks - 1},
-		{"a lock nothing could satisfy", pubs[0], pubs, testClaimBlocks, MaxCSVBlocks + 1},
-		// The one that would quietly undo the whole mechanism: if the owner's
-		// own way out matures no later than a claim, they simply outrun it.
-		{"a backstop no later than the claim", pubs[0], pubs, MinBondBlocks, MinBondBlocks},
+		{"an owner who is not at the table", stranger, pubs, testLockBlocks},
+		{"a table of one", pubs[0], pubs[:1], testLockBlocks},
+		{"a lock under the minimum", pubs[0], pubs, MinBondBlocks - 1},
+		{"a lock nothing could satisfy", pubs[0], pubs, MaxCSVBlocks + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := TableBondScript(tc.owner, tc.members, tc.claim, tc.lock); err == nil {
+			if _, err := TableBondScript(tc.owner, tc.members, tc.lock); err == nil {
 				t.Fatal("built a bond that should have been refused")
 			}
 		})
@@ -353,5 +224,33 @@ func TestABondReleaseIsRefusedUnlessItIsTheOneWeWouldBuild(t *testing.T) {
 	locked.TxIn[0].Sequence = 42
 	if err := CheckAliveDraft(locked, d); err == nil {
 		t.Fatal("a release carrying a timelock was accepted")
+	}
+}
+
+// Everybody else together cannot spend the bond at all.
+//
+// Stronger than it used to be, and worth its own test because of that. The bond
+// once had a branch the others could take on their own after a delay; now the only
+// branch that moves it needs every member, the owner included - so an accusation
+// is something the whole table agreed in advance, and a table that never agreed
+// one cannot manufacture it later.
+func TestEverybodyElseTogetherCannotSpendTheBond(t *testing.T) {
+	b := postTableBond(t, 3)
+	tx := spendTx(t, 0)
+
+	// The others' signatures in every members' slot: the most a collusion
+	// could assemble without the owner.
+	theirs := b.sign(t, tx, b.terms.Others)
+	all := make([][]byte, 0, len(b.terms.Members))
+	for i := range b.terms.Members {
+		all = append(all, theirs[i%len(theirs)])
+	}
+	sig, err := AliveSigScript(b.script, all)
+	if err != nil {
+		t.Fatalf("alive sigscript: %v", err)
+	}
+	tx.TxIn[0].SignatureScript = sig
+	if err := execute(t, b.script, tx, csvFlags); err == nil {
+		t.Fatal("everybody except the owner spent the bond, which leaves nothing to answer")
 	}
 }
