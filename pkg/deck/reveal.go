@@ -58,6 +58,54 @@ func NewKeyPair() *KeyPair {
 	return &KeyPair{Secret: x, Public: suite.Point().Mul(x, nil)}
 }
 
+// ValidKey reports whether one published point is a real contribution to a
+// joint key.
+//
+// Exported because a table has to judge a key when it is announced, well before
+// any deck is masked to it: a key refused here is never recorded, which leaves
+// the seat still owing one, and the duty machinery already knows what to do
+// about a seat that owes a card key. Refusing it later instead would mean
+// refusing at the point the deck is built, which strands the hand.
+func ValidKey(p kyber.Point) error {
+	if p == nil {
+		return fmt.Errorf("no card key")
+	}
+	// The identity adds nothing to a sum, so a seat publishing it takes no part
+	// in the masking while appearing to. It cannot be caught later: a zero
+	// secret is a real witness, so that seat's shares verify and every card
+	// still opens, from a joint key that is only the other seats' - who then
+	// hold its secret between them.
+	if p.Equal(suite.Point().Null()) {
+		return fmt.Errorf("the identity is not a card key")
+	}
+	return nil
+}
+
+// checkKeys is what a set of contributed card keys has to be before a deck can
+// be masked to it or opened from it.
+//
+// Both callers need all three refusals and both are subtly wrong without any one
+// of them, so the set is judged once here rather than twice by hand.
+func checkKeys(pubs []kyber.Point) error {
+	seen := make(map[string]bool, len(pubs))
+	for i, p := range pubs {
+		if err := ValidKey(p); err != nil {
+			return fmt.Errorf("player %d: %w", i, err)
+		}
+		k, err := keyOf(p)
+		if err != nil {
+			return err
+		}
+		// A duplicate key means one secret covers two seats, so the
+		// "every player must help" guarantee is off by one.
+		if seen[k] {
+			return fmt.Errorf("two players published the same card key")
+		}
+		seen[k] = true
+	}
+	return nil
+}
+
 // JointKey is the key a deck is masked under: the sum of every player's public
 // key, so that reading any card needs every player's share.
 //
@@ -65,26 +113,18 @@ func NewKeyPair() *KeyPair {
 // table can assemble it. That is the property that makes a dealer unnecessary,
 // and it is also why an absent player freezes the deck - a liveness cost taken
 // deliberately, answered with money rather than cryptography.
+//
+// That property is only as true as the keys are: every one must be a real
+// contribution, which is what checkKeys is for.
 func JointKey(pubs []kyber.Point) (kyber.Point, error) {
 	if len(pubs) == 0 {
 		return nil, fmt.Errorf("a deck needs at least one key to mask to")
 	}
-	seen := make(map[string]bool, len(pubs))
+	if err := checkKeys(pubs); err != nil {
+		return nil, err
+	}
 	joint := suite.Point().Null()
-	for i, p := range pubs {
-		if p == nil {
-			return nil, fmt.Errorf("player %d published no card key", i)
-		}
-		k, err := keyOf(p)
-		if err != nil {
-			return nil, err
-		}
-		// A duplicate key means one secret covers two seats, so the
-		// "every player must help" guarantee is off by one.
-		if seen[k] {
-			return nil, fmt.Errorf("two players published the same card key")
-		}
-		seen[k] = true
+	for _, p := range pubs {
 		joint = joint.Add(joint, p)
 	}
 	return joint, nil
@@ -244,6 +284,9 @@ func NewOpening(c Context, joint kyber.Point, m Masked, pubs []kyber.Point) (*Op
 	if len(pubs) == 0 {
 		return nil, fmt.Errorf("no keys to open with")
 	}
+	if err := checkKeys(pubs); err != nil {
+		return nil, err
+	}
 	o := &Opening{
 		ctx:   c,
 		joint: joint,
@@ -252,18 +295,12 @@ func NewOpening(c Context, joint kyber.Point, m Masked, pubs []kyber.Point) (*Op
 		have:  make(map[string]bool, len(pubs)),
 		sum:   suite.Point().Null(),
 	}
-	for i, p := range pubs {
-		if p == nil {
-			return nil, fmt.Errorf("player %d published no card key", i)
-		}
+	for _, p := range pubs {
 		k, err := keyOf(p)
 		if err != nil {
 			return nil, err
 		}
 		o.need[k] = p
-	}
-	if len(o.need) != len(pubs) {
-		return nil, fmt.Errorf("two players published the same card key")
 	}
 	return o, nil
 }

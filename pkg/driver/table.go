@@ -398,6 +398,12 @@ func (t *Table) onCardKey(m InCardKey) ([]Out, error) {
 	}); err != nil {
 		return nil, err
 	}
+	// Whether it is a key at all, after establishing whose it is, so that a seat
+	// refused here is one that provably signed what it sent. Nothing is
+	// recorded, so the seat goes on owing a card key and the duty stands.
+	if err := deck.ValidKey(m.Key); err != nil {
+		return nil, fmt.Errorf("seat %d: %w", m.Seat, err)
+	}
 	if m.Seat == t.cfg.Seat {
 		return nil, fmt.Errorf("this peer's own card key came back to it")
 	}

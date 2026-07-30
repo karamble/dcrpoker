@@ -294,7 +294,7 @@ func Shuffle(c Context, joint kyber.Point, in Deck) (out Deck, proofBytes []byte
 		pi[i] = i
 	}
 	for i := k - 1; i > 0; i-- {
-		j := int(randUint64(rand) % uint64(i+1))
+		j := int(uniformBelow(rand, uint64(i+1)))
 		pi[i], pi[j] = pi[j], pi[i]
 	}
 	beta := make([]kyber.Scalar, k)
@@ -325,6 +325,24 @@ func Shuffle(c Context, joint kyber.Point, in Deck) (out Deck, proofBytes []byte
 // randUint64 draws a uniform 64-bit value, as kyber's own shuffle does.
 func randUint64(rand cipher.Stream) uint64 {
 	return binary.BigEndian.Uint64(random.Bits(64, false, rand))
+}
+
+// uniformBelow draws a uniform value in [0, n), for n > 0.
+//
+// A 64-bit draw reduced modulo n is very slightly biased towards the low
+// values, because the last block of the range is incomplete. Over a deck that
+// bias is around 2^-58, far too small for an opponent to do anything with. It
+// is removed anyway: a shuffle is the function a poker implementation gets read
+// hardest, and there is no reason for it to say "near enough to uniform".
+func uniformBelow(rand cipher.Stream, n uint64) uint64 {
+	// The largest multiple of n a 64-bit draw covers. Anything at or above it
+	// is that incomplete block, and is redrawn rather than folded in.
+	limit := ^uint64(0) - ^uint64(0)%n
+	for {
+		if v := randUint64(rand); v < limit {
+			return v % n
+		}
+	}
 }
 
 // proofLen is how many bytes an honest shuffle proof over k cards occupies.

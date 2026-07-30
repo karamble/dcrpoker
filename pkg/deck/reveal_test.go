@@ -307,6 +307,53 @@ func TestATableWithADuplicateKeyIsRefused(t *testing.T) {
 	}
 }
 
+// The identity adds nothing to a sum, so a seat publishing it is absent from the
+// masking every other seat believes it is behind.
+//
+// The joint key collapses to the sum of the remaining seats, who then hold its
+// secret between them: heads-up that is one opponent, alone, able to open the
+// contributor's own hole cards.
+func TestATableWithAnIdentityKeyIsRefused(t *testing.T) {
+	kp := NewKeyPair()
+	id := suite.Point().Null()
+	if _, err := JointKey([]kyber.Point{kp.Public, id}); err == nil {
+		t.Fatal("a joint key was built over an identity player key")
+	}
+	if _, err := NewOpening(testContext(), kp.Public, Fresh(kp.Public)[0],
+		[]kyber.Point{kp.Public, id}); err == nil {
+		t.Fatal("an opening was started over an identity player key")
+	}
+}
+
+// Why that refusal has to happen when a key is admitted and cannot wait until it
+// shares: a zero secret is a legitimate witness.
+//
+// pub = 0*G and D = 0*C1 both hold, so the Rep conjunction proves exactly what
+// it claims and the share verifies. Nothing downstream can tell it from an
+// honest one, and the card still opens, because the sum it joins is unchanged.
+// A seat contributing the identity plays a whole hand without masking anything.
+func TestAZeroSecretProducesAShareThatVerifies(t *testing.T) {
+	honest := NewKeyPair()
+	zero := &KeyPair{Secret: suite.Scalar().Zero(), Public: suite.Point().Null()}
+
+	// What the joint key collapses to when the other seat contributes nothing.
+	joint := honest.Public
+	m := Fresh(joint)[0]
+
+	c := testContext()
+	c.Prover = zero.Public
+	s, err := Reveal(c, joint, zero, m)
+	if err != nil {
+		t.Fatalf("a zero secret could not produce a share: %v", err)
+	}
+	if !s.D.Equal(suite.Point().Null()) {
+		t.Fatal("a zero secret produced a share that is not the identity")
+	}
+	if err := VerifyShare(c, joint, zero.Public, m, s); err != nil {
+		t.Fatalf("the share was caught at share time, so the guard need not be at admission: %v", err)
+	}
+}
+
 // Corrupting a share proof, and misshaping it.
 func TestACorruptedShareProofIsRejected(t *testing.T) {
 	tb := seat(t, 2)

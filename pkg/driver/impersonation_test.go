@@ -107,6 +107,53 @@ func TestACardKeyCannotBeSentInAnotherSeatsName(t *testing.T) {
 	}
 }
 
+// A key that contributes nothing is not a card key.
+//
+// The identity leaves the joint key equal to the sum of the other seats, who
+// hold its secret between them, and it cannot be caught downstream: a zero
+// secret is a real witness, so that seat's shares verify and every card opens.
+// The hand would play, settle and audit clean with one seat unmasked.
+//
+// Refused here rather than where the deck is built, because a key that is never
+// recorded leaves the seat owing one, and a seat owing a card key is a duty the
+// table already knows how to press. Refusing at the deck instead would strand
+// the hand.
+func TestACardKeyThatContributesNothingIsRefused(t *testing.T) {
+	n := seatTable(t, 3, 1000)
+	if _, err := n.peers[0].Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// The identity, without reaching for the suite: any point less itself.
+	real := deck.NewKeyPair().Public
+	id := real.Clone()
+	id.Sub(real, real)
+
+	// Seat 1's own key, its own hand, its own signature. Nothing about the
+	// announcement is wrong except the key.
+	digest, err := cardKeyDigest(testMatch, 1, 1, id)
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+	sig, err := n.logs[1].SignCommitted(forfeit.DomainCardKey, 1, digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := n.peers[0].Handle(InCardKey{Seat: 1, Hand: 1, Key: id, Sig: sig}); err == nil {
+		t.Fatal("a table took the identity as seat 1's card key")
+	}
+
+	// Nothing was recorded, so the seat still owes a key and the existing
+	// machinery can act on it.
+	d, ok := n.peers[0].Owes(1)
+	if !ok {
+		t.Fatal("a seat whose card key was refused owes nothing")
+	}
+	if d.Kind != DutyCardKey {
+		t.Fatalf("a seat whose card key was refused owes %s, not a card key", d.Kind)
+	}
+}
+
 // Leaving is a seat's own decision. Once every seat has said it the table
 // settles, so an unsigned one lets anybody who can reach the table end somebody
 // else's game at a moment of their choosing.

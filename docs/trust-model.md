@@ -597,11 +597,36 @@ Ordered by what would bite first.
   without a seat means re-forming all three, which is a new table with carried
   stacks rather than this one with a gap.
 
-- **`MinBondAtoms` is a development value** and has to go back up before a bond
-  deters anybody. It is also too small to work at the table sizes the escrow
-  allows: at six seats a bond of the current minimum cannot fund even one
-  accusation (`escrow.AffordableDepth`), and dealing is not gated on that - the
-  table plays with an unenforceable bond and only a log line says so.
+- **Card keys carry no proof of possession.** `deck.JointKey` sums whatever
+  points the seats publish. A seat that waits until it has seen the others can
+  pick `r`, publish `r*G` minus their sum, and make the joint key one whose
+  secret it alone holds - every card at the table readable to it.
+
+  It gains nothing by doing so, and the reason is structural rather than a matter
+  of ordering. Knowing the joint secret means knowing the discrete log of the sum
+  of the other keys, which is exactly what knowing its own key's discrete log
+  would need, so such a seat can never produce a valid reveal share for any card
+  in any street. Dealing asks every seat for a share of every other seat's hole
+  cards before betting opens, so the hand cannot be dealt at all. The rogue key
+  buys the deck of a hand it has itself made undealable, with no way to peek and
+  then decide to continue. What remains is a wedged hand, which a seat can
+  already cause by staying silent.
+
+  A key that contributes *nothing* is refused, at announcement and again wherever
+  a deck is masked (`deck.ValidKey`): the identity would otherwise sum away to
+  leave the remaining seats holding the joint secret between them, and it could
+  not be caught downstream, because a zero secret produces shares that verify and
+  cards that open.
+
+  Proving possession properly needs a field on the key announcement and so a wire
+  break; it is planned for the next one, and would settle subgroup membership at
+  the same time, which is the other thing a published point is not checked for.
+
+- **`MinBondAtoms` is 0.01 DCR**, which funds the full accusation depth at every
+  table size the escrow allows (`escrow.AffordableDepth`). It is a real floor
+  rather than a development value, but it is a floor and not a considered stake:
+  what a bond has to be worth to deter a given table is a question about the
+  money at the table, and nothing here scales it.
 
 - **A wallet passphrase typed wrong permanently fails a spend.** Retrying works,
   but the spend should stay open the way an unreachable one does.

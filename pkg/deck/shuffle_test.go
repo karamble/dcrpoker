@@ -8,6 +8,29 @@ import (
 	"go.dedis.ch/kyber/v4/util/random"
 )
 
+// The permutation is drawn by redrawing past the incomplete final block rather
+// than reducing modulo the range, so the loop has to terminate and the result
+// has to stay inside the range it was asked for.
+//
+// The bias this replaces is around 2^-58 and no test could see it. What a test
+// can see is an off-by-one in the bound, which would be a real bug.
+func TestTheIndexDrawStaysInItsRange(t *testing.T) {
+	rand := random.New()
+	for _, n := range []uint64{1, 2, 3, 13, 52} {
+		seen := make(map[uint64]bool, n)
+		for range 2000 {
+			v := uniformBelow(rand, n)
+			if v >= n {
+				t.Fatalf("a draw below %d returned %d", n, v)
+			}
+			seen[v] = true
+		}
+		if uint64(len(seen)) != n {
+			t.Fatalf("a draw below %d reached only %d of its %d values", n, len(seen), n)
+		}
+	}
+}
+
 // The tests that matter.
 //
 // kyber's own shuffle tests are happy-path: they shuffle honestly and check the
