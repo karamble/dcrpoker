@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 )
 
@@ -50,7 +49,7 @@ func (p *plugin) watchBonds(ctx context.Context) {
 			if tbl.bonded[seat] == "" {
 				continue
 			}
-			ladder, _, err := tbl.bondLadder(seat)
+			r, err := tbl.bondLadder(seat)
 			if err != nil {
 				continue
 			}
@@ -58,11 +57,9 @@ func (p *plugin) watchBonds(ctx context.Context) {
 			if believed == "" {
 				believed = tbl.bonded[seat]
 			}
-			a := ask{sid: sid, seat: seat, ours: seat == mine, start: -1}
-			for i, acc := range ladder {
-				pos := acc.TxIn[0].PreviousOutPoint.String()
-				a.positions = append(a.positions, pos)
-				a.claimed = append(a.claimed, fmt.Sprintf("%s:0", acc.TxHash()))
+			a := ask{sid: sid, seat: seat, ours: seat == mine, start: -1,
+				positions: r.positions, claimed: r.claimed}
+			for i, pos := range a.positions {
 				if pos == believed {
 					a.start = i
 				}
@@ -78,7 +75,11 @@ func (p *plugin) watchBonds(ctx context.Context) {
 	p.tables.mu.Unlock()
 
 	for _, a := range asks {
-		at, answer := a.start, false
+		// landed says the walk found the bond rather than running out of
+		// ladder. Only a walk that found it may write down where it is: a
+		// bond that is at no rung at all has been released, forfeited or
+		// swept, and recording a position for it would be inventing one.
+		at, answer, landed := a.start, false, false
 		for ; at < len(a.positions); at++ {
 			found, err := p.onChain(ctx, a.positions[at])
 			if err != nil {
@@ -86,6 +87,7 @@ func (p *plugin) watchBonds(ctx context.Context) {
 				break
 			}
 			if found {
+				landed = true
 				// The bond is here. For our own, a mempool transaction
 				// spending it may be an accusation to answer before it
 				// confirms - or the cooperative release, which spends the
@@ -93,7 +95,10 @@ func (p *plugin) watchBonds(ctx context.Context) {
 				// output, so that appearing in the mempool view is what
 				// tells them apart, and answering a release would be
 				// broadcasting a spend of an output that will never exist.
-				if a.ours {
+				// Only where an accusation exists for this rung. On the last
+				// one nothing spends the bond, so a mempool spend of it can
+				// only be the release.
+				if a.ours && at < len(a.claimed) {
 					if gone, err := p.leavingMempool(ctx, a.positions[at]); err == nil && gone {
 						if seen, err := p.inMempoolView(ctx, a.claimed[at]); err == nil && seen {
 							answer = true
@@ -102,12 +107,18 @@ func (p *plugin) watchBonds(ctx context.Context) {
 				}
 				break
 			}
+			if at >= len(a.claimed) {
+				// The last rung, and the coin is not on it. Nothing spends
+				// this position, so there is nowhere further to walk.
+				break
+			}
 			claimed, err := p.onChain(ctx, a.claimed[at])
 			if err != nil {
 				at = -1
 				break
 			}
 			if claimed {
+				landed = true
 				// A mined accusation, and the window is counting. Ours is
 				// answered - unless the answer is already on its way, which
 				// looks like the claimed output leaving the mempool.
@@ -145,7 +156,7 @@ func (p *plugin) watchBonds(ctx context.Context) {
 			p.tables.mu.Unlock()
 			continue
 		}
-		if at > a.start && at < len(a.positions) {
+		if landed && at > a.start {
 			tbl.bondedAt[a.seat] = a.positions[at]
 			// The value shrank by two fees per answer, so what the chain
 			// says is there is re-read rather than remembered.

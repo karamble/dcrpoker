@@ -77,6 +77,9 @@ type table struct {
 	// chains caches derived accusation chains, keyed by seat and the outpoint
 	// they start from.
 	chains map[string][]*dcrwire.MsgTx
+	// rungs caches the derived ladder for a seat's bond, keyed by seat and
+	// the outpoint it was first posted to. See bondLadder.
+	rungs map[string]*rungs
 	// answerReady is an answer built and waiting for dispatchAnswers, which
 	// broadcasts outside the registry lock. Not persisted: an answer never
 	// dispatched is rebuilt by the next bond walk.

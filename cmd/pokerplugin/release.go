@@ -354,18 +354,28 @@ func (p *plugin) learnBondValues(ctx context.Context) {
 	var asks []ask
 	p.tables.mu.Lock()
 	for sid, tbl := range p.tables.m {
-		seat, ok := tbl.form.OurSeat()
-		if !ok || tbl.bondValue[seat] > 0 {
+		seats, ok := tbl.form.Seats()
+		if !ok {
 			continue
 		}
-		outpoint := tbl.bondedAt[seat]
-		if outpoint == "" {
-			outpoint = tbl.bonded[seat]
+		// Every seat, not only our own. A release names an amount for each
+		// bond it returns, and the walk forgets what a bond held the moment
+		// it finds it somewhere new - so a seat whose bond moved would have
+		// no amount to build a release from, and only its owner would ever
+		// go and ask. That leaves a bond nobody can release cooperatively.
+		for seat := range uint32(len(seats)) {
+			if tbl.bondValue[seat] > 0 {
+				continue
+			}
+			outpoint := tbl.bondedAt[seat]
+			if outpoint == "" {
+				outpoint = tbl.bonded[seat]
+			}
+			if outpoint == "" {
+				continue
+			}
+			asks = append(asks, ask{sid: sid, seat: seat, outpoint: outpoint})
 		}
-		if outpoint == "" {
-			continue
-		}
-		asks = append(asks, ask{sid: sid, seat: seat, outpoint: outpoint})
 	}
 	p.tables.mu.Unlock()
 

@@ -6,4 +6,7 @@ AGENTS.md
 .gomodcache
 .cache
 releases/
+# go build ./cmd/pokerplugin drops its output beside the source, not in
+# releases/, so a compile check leaves a binary the next commit would take.
+/pokerplugin
 cmd/pokerplugin/ui/node_modules
