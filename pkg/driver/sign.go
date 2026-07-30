@@ -39,7 +39,10 @@ import (
 // sent the first time, which is what the repair discipline needs.
 
 var (
-	cardKeyTag   = []byte("dcrpoker/deal/cardkey/v1")
+	// v2: the digest gained the possession proof, so the signature covers
+	// it - a Pop can be neither stripped from a signed announcement nor
+	// swapped for another. A tag names what it hashes.
+	cardKeyTag   = []byte("dcrpoker/deal/cardkey/v2")
 	shuffleTag   = []byte("dcrpoker/deal/shuffle/v1")
 	leavingTag   = []byte("dcrpoker/deal/leaving/v1")
 	challengeTag = []byte("dcrpoker/deal/challenge/v1")
@@ -79,8 +82,10 @@ func deckDigestBytes(d deck.Deck) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// cardKeyDigest is what a seat signs to say a deck key is its own.
-func cardKeyDigest(match string, hand uint64, seat int, key kyber.Point) ([32]byte, error) {
+// cardKeyDigest is what a seat signs to say a deck key is its own - the key
+// and its possession proof together, so neither can be replaced under the
+// other's signature.
+func cardKeyDigest(match string, hand uint64, seat int, key kyber.Point, pop []byte) ([32]byte, error) {
 	if key == nil {
 		return [32]byte{}, fmt.Errorf("no card key")
 	}
@@ -94,6 +99,7 @@ func cardKeyDigest(match string, hand uint64, seat int, key kyber.Point) ([32]by
 	num(h, hand)
 	num(h, uint64(seat))
 	field(h, kb)
+	field(h, pop)
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out, nil

@@ -188,21 +188,19 @@ func (t *Table) Chain() *gamelog.Chain { return t.chain }
 
 // OutCardKey announces this peer's deck key for one hand.
 //
-// Unsigned, deliberately. A seat that announced different keys to different
-// players would give them different joint keys, so the first shuffle would fail
-// to verify everywhere and the hand would never start - which is
-// indistinguishable from walking out, and is answered the same way, by the
-// claim on its bond. Adding a signature would let the same behaviour be named
-// rather than merely punished, and naming it buys nothing that the bond does
-// not already collect.
+// The signature and the proof answer two different impostors. Sig is this seat
+// saying the key is its own, checked against the escrow roster - without it a
+// card key is a claim anybody could make in anybody's name. Pop is the seat
+// proving it knows the key's discrete log - without it the last announcer can
+// choose r*G minus everyone else's sum and steer the joint key to a point it
+// alone controls. The signature covers the proof (see cardKeyDigest), so a Pop
+// can be neither stripped from a signed announcement nor swapped for another.
 type OutCardKey struct {
 	Seat int
 	Hand uint64
 	Key  kyber.Point
-	// Sig is this seat saying the key is its own - see sign.go. Without it
-	// a card key is a claim anybody could make, and the joint key is the
-	// sum of all of them.
-	Sig []byte
+	Pop  []byte
+	Sig  []byte
 }
 
 // InCardKey is another seat's deck key for a hand.
@@ -210,6 +208,7 @@ type InCardKey struct {
 	Seat int
 	Hand uint64
 	Key  kyber.Point
+	Pop  []byte
 	Sig  []byte
 }
 
@@ -328,7 +327,14 @@ func (t *Table) openHand() ([]Out, error) {
 	t.keys = make([]kyber.Point, t.seats)
 	t.keys[t.cfg.Seat] = t.card.Public
 
-	digest, err := cardKeyDigest(t.cfg.Match, t.hand, t.cfg.Seat, t.card.Public)
+	// Produced once, here, and cached with the frame: the proof is
+	// randomized, and a republished announcement must be byte-identical or a
+	// repeat would look like an equivocation.
+	pop, err := deck.ProvePossession(t.cfg.Match, t.hand, t.cfg.Seat, t.card)
+	if err != nil {
+		return nil, fmt.Errorf("prove card key possession: %w", err)
+	}
+	digest, err := cardKeyDigest(t.cfg.Match, t.hand, t.cfg.Seat, t.card.Public, pop)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +342,7 @@ func (t *Table) openHand() ([]Out, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign card key: %w", err)
 	}
-	return []Out{OutCardKey{Seat: t.cfg.Seat, Hand: t.hand, Key: t.card.Public, Sig: sig}}, nil
+	return []Out{OutCardKey{Seat: t.cfg.Seat, Hand: t.hand, Key: t.card.Public, Pop: pop, Sig: sig}}, nil
 }
 
 // Handle folds one message in.
@@ -394,7 +400,7 @@ func (t *Table) onCardKey(m InCardKey) ([]Out, error) {
 	// every seat's, so a key accepted for the wrong seat puts a secret
 	// nobody at this table holds into the one thing every card is masked to.
 	if err := t.checkDealt(m.Seat, m.Sig, func() ([32]byte, error) {
-		return cardKeyDigest(t.cfg.Match, m.Hand, m.Seat, m.Key)
+		return cardKeyDigest(t.cfg.Match, m.Hand, m.Seat, m.Key, m.Pop)
 	}); err != nil {
 		return nil, err
 	}
@@ -402,6 +408,13 @@ func (t *Table) onCardKey(m InCardKey) ([]Out, error) {
 	// refused here is one that provably signed what it sent. Nothing is
 	// recorded, so the seat goes on owing a card key and the duty stands.
 	if err := deck.ValidKey(m.Key); err != nil {
+		return nil, fmt.Errorf("seat %d: %w", m.Seat, err)
+	}
+	// And whether the announcer actually holds it. A key without possession
+	// is an equation about everybody else's keys, and the joint key must be
+	// a sum of secrets somebody has, one each. Refused the same way: nothing
+	// recorded, the duty stands.
+	if err := deck.VerifyPossession(t.cfg.Match, m.Hand, m.Seat, m.Key, m.Pop); err != nil {
 		return nil, fmt.Errorf("seat %d: %w", m.Seat, err)
 	}
 	if m.Seat == t.cfg.Seat {

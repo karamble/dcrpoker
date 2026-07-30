@@ -133,7 +133,11 @@ func TestAShareSurvivesTheWireAndStillVerifies(t *testing.T) {
 // peer computes a different joint key and nothing verifies anywhere.
 func TestACardKeySurvivesTheWire(t *testing.T) {
 	kp := deck.NewKeyPair()
-	body, err := CardKeyFrom(driver.OutCardKey{Seat: 2, Hand: 5, Key: kp.Public})
+	pop, err := deck.ProvePossession(dealMatch, 5, 2, kp)
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	body, err := CardKeyFrom(driver.OutCardKey{Seat: 2, Hand: 5, Key: kp.Public, Pop: pop})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -158,6 +162,9 @@ func TestACardKeySurvivesTheWire(t *testing.T) {
 	}
 	if !got.Key.Equal(kp.Public) {
 		t.Fatal("a card key came back as a different point")
+	}
+	if err := deck.VerifyPossession(dealMatch, 5, 2, got.Key, got.Pop); err != nil {
+		t.Fatalf("the possession proof did not survive the wire: %v", err)
 	}
 }
 

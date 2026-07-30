@@ -73,7 +73,10 @@ type CardKey struct {
 	Seat uint32 `json:"seat"`
 	Hand uint64 `json:"hand"`
 	Key  string `json:"key"`
-	Sig  string `json:"sig"`
+	// Pop is the possession proof: the announcer knows the key's discrete
+	// log, so the joint key is a sum of secrets somebody holds, one each.
+	Pop string `json:"pop"`
+	Sig string `json:"sig"`
 }
 
 // CardKeyFrom renders a key announcement.
@@ -82,7 +85,8 @@ func CardKeyFrom(m driver.OutCardKey) (CardKey, error) {
 	if err != nil {
 		return CardKey{}, fmt.Errorf("card key: %w", err)
 	}
-	return CardKey{Seat: uint32(m.Seat), Hand: m.Hand, Key: k, Sig: hex.EncodeToString(m.Sig)}, nil
+	return CardKey{Seat: uint32(m.Seat), Hand: m.Hand, Key: k,
+		Pop: b64(m.Pop), Sig: hex.EncodeToString(m.Sig)}, nil
 }
 
 // Into reads a key announcement back.
@@ -91,11 +95,20 @@ func (c CardKey) Into() (driver.InCardKey, error) {
 	if err != nil {
 		return driver.InCardKey{}, err
 	}
+	// Refused empty here; its exact length is the driver's question, since
+	// the honest size is measured there against a real proof.
+	if c.Pop == "" {
+		return driver.InCardKey{}, fmt.Errorf("card key carries no possession proof")
+	}
+	pop, err := unb64(c.Pop, "possession proof")
+	if err != nil {
+		return driver.InCardKey{}, err
+	}
 	sig, err := hex.DecodeString(c.Sig)
 	if err != nil {
 		return driver.InCardKey{}, fmt.Errorf("card key signature: %w", err)
 	}
-	return driver.InCardKey{Seat: int(c.Seat), Hand: c.Hand, Key: p, Sig: sig}, nil
+	return driver.InCardKey{Seat: int(c.Seat), Hand: c.Hand, Key: p, Pop: pop, Sig: sig}, nil
 }
 
 // Shuffle is one seat's permutation of the deck, and the proof it did nothing

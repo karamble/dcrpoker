@@ -87,22 +87,28 @@ func TestACardKeyCannotBeSentInAnotherSeatsName(t *testing.T) {
 	}
 
 	stranger := deck.NewKeyPair()
-	digest, err := cardKeyDigest(testMatch, 1, 1, stranger.Public)
+	pop, err := deck.ProvePossession(testMatch, 1, 1, stranger)
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	digest, err := cardKeyDigest(testMatch, 1, 1, stranger.Public, pop)
 	if err != nil {
 		t.Fatalf("digest: %v", err)
 	}
-	// Seat 2 signs it. Everything else about the announcement is correct.
+	// Seat 2 signs it. Everything else about the announcement is correct,
+	// including the possession proof - this test is about whose name is on
+	// it, not whether the key is held.
 	sig, err := n.logs[2].SignCommitted(forfeit.DomainCardKey, 1, digest[:])
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	forged := InCardKey{Seat: 1, Hand: 1, Key: stranger.Public, Sig: sig}
+	forged := InCardKey{Seat: 1, Hand: 1, Key: stranger.Public, Pop: pop, Sig: sig}
 	if _, err := n.peers[0].Handle(forged); err == nil {
 		t.Fatal("a table took a card key for seat 1 that seat 2 signed")
 	}
 
 	// Unsigned is refused too.
-	if _, err := n.peers[0].Handle(InCardKey{Seat: 1, Hand: 1, Key: stranger.Public}); err == nil {
+	if _, err := n.peers[0].Handle(InCardKey{Seat: 1, Hand: 1, Key: stranger.Public, Pop: pop}); err == nil {
 		t.Fatal("a table took an unsigned card key")
 	}
 }
@@ -129,9 +135,16 @@ func TestACardKeyThatContributesNothingIsRefused(t *testing.T) {
 	id := real.Clone()
 	id.Sub(real, real)
 
-	// Seat 1's own key, its own hand, its own signature. Nothing about the
-	// announcement is wrong except the key.
-	digest, err := cardKeyDigest(testMatch, 1, 1, id)
+	// Seat 1's own key, its own hand, its own signature - and even a real
+	// possession proof, since zero is a legitimate witness for the identity.
+	// Nothing about the announcement is wrong except the key, which is the
+	// point: ValidKey is the one guard that can refuse it.
+	zero := &deck.KeyPair{Secret: deck.Suite().Scalar().Zero(), Public: id}
+	pop, err := deck.ProvePossession(testMatch, 1, 1, zero)
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	digest, err := cardKeyDigest(testMatch, 1, 1, id, pop)
 	if err != nil {
 		t.Fatalf("digest: %v", err)
 	}
@@ -139,7 +152,7 @@ func TestACardKeyThatContributesNothingIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	if _, err := n.peers[0].Handle(InCardKey{Seat: 1, Hand: 1, Key: id, Sig: sig}); err == nil {
+	if _, err := n.peers[0].Handle(InCardKey{Seat: 1, Hand: 1, Key: id, Pop: pop, Sig: sig}); err == nil {
 		t.Fatal("a table took the identity as seat 1's card key")
 	}
 
@@ -258,4 +271,154 @@ func forgeShuffle(t *testing.T, n *net, seatNum int, from deck.Deck) (deck.Deck,
 		t.Fatalf("forge shuffle: %v", err)
 	}
 	return out, prf
+}
+
+// A key without possession is an equation about everybody else's keys. The
+// joint key must be a sum of secrets somebody holds, one each; a signature says
+// whose announcement this is, and only the proof says the announcer holds it.
+func TestACardKeyWithoutPossessionIsRefused(t *testing.T) {
+	n := seatTable(t, 3, 1000)
+	if _, err := n.peers[0].Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	kp := deck.NewKeyPair()
+	pop, err := deck.ProvePossession(testMatch, 1, 1, kp)
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+
+	// Correctly signed with no proof at all, then with a corrupted one. Both
+	// carry seat 1's own signature over exactly what they send, so the only
+	// thing wrong is possession.
+	for name, badPop := range map[string][]byte{
+		"no possession proof":        nil,
+		"a corrupted possession proof": append(append([]byte{}, pop[:len(pop)-1]...), pop[len(pop)-1]^1),
+	} {
+		digest, err := cardKeyDigest(testMatch, 1, 1, kp.Public, badPop)
+		if err != nil {
+			t.Fatalf("digest: %v", err)
+		}
+		sig, err := n.logs[1].SignCommitted(forfeit.DomainCardKey, 1, digest[:])
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		if _, err := n.peers[0].Handle(InCardKey{Seat: 1, Hand: 1, Key: kp.Public, Pop: badPop, Sig: sig}); err == nil {
+			t.Fatalf("a table took a card key with %s", name)
+		}
+	}
+
+	// Nothing was recorded, so the seat still owes a key.
+	d, ok := n.peers[0].Owes(1)
+	if !ok || d.Kind != DutyCardKey {
+		t.Fatalf("a seat whose card key was refused owes %v, not a card key", d)
+	}
+}
+
+// The rogue key, end to end. The last seat to announce computes
+// P_att = r*G - sum(others) to steer the joint key to r*G - but it knows r,
+// not dlog(P_att), so the strongest announcement it can sign carries either a
+// proof about the wrong point or no honest proof at all.
+func TestARogueCardKeyIsRefused(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	out, err := n.peers[0].Start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	honest := out[0].(OutCardKey).Key
+
+	r := deck.Suite().Scalar().Pick(deck.Suite().RandomStream())
+	rG := deck.Suite().Point().Mul(r, nil)
+	att := deck.Suite().Point().Sub(rG, honest)
+
+	// The attacker's only provable statement is about r*G; presented for the
+	// rogue point, signed by the attacker's own log key.
+	pop, err := deck.ProvePossession(testMatch, 1, 1, &deck.KeyPair{Secret: r, Public: rG})
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	digest, err := cardKeyDigest(testMatch, 1, 1, att, pop)
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+	sig, err := n.logs[1].SignCommitted(forfeit.DomainCardKey, 1, digest[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := n.peers[0].Handle(InCardKey{Seat: 1, Hand: 1, Key: att, Pop: pop, Sig: sig}); err == nil {
+		t.Fatal("a table took a card key its announcer cannot possibly hold")
+	}
+	if d, ok := n.peers[0].Owes(1); !ok || d.Kind != DutyCardKey {
+		t.Fatalf("the rogue announcer owes %v, not a card key", d)
+	}
+}
+
+// The signature covers the proof: stripping or swapping the Pop on a signed
+// announcement breaks the signature before possession is even considered.
+func TestStrippingThePopBreaksTheSignature(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	// Both started, so the receiver is on hand 1 and judges the frame rather
+	// than dropping it as stale.
+	if _, err := n.peers[0].Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := n.peers[1].Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	honest := n.peers[1].Republish()
+	var announced *OutCardKey
+	for _, m := range honest {
+		if ck, ok := m.Out.(OutCardKey); ok {
+			announced = &ck
+		}
+	}
+	if announced == nil {
+		t.Fatal("no card key announced")
+	}
+
+	stripped := InCardKey{Seat: announced.Seat, Hand: announced.Hand,
+		Key: announced.Key, Pop: nil, Sig: announced.Sig}
+	if _, err := n.peers[0].Handle(stripped); err == nil {
+		t.Fatal("an announcement with its possession proof stripped kept its signature")
+	}
+
+	// The refusal above would also come from the possession check alone, so
+	// say the property directly: two Pops make two digests, or the signature
+	// does not cover the proof and a relay could strip it and have the frame
+	// refused in the announcer's name rather than as a forgery.
+	with, err := cardKeyDigest(testMatch, announced.Hand, announced.Seat, announced.Key, announced.Pop)
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+	without, err := cardKeyDigest(testMatch, announced.Hand, announced.Seat, announced.Key, nil)
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+	if with == without {
+		t.Fatal("the digest ignores the possession proof, so the signature does not cover it")
+	}
+}
+
+// The proof is randomized and republish must be byte-identical, or a repeat
+// would read as an equivocation. Produced once in openHand, cached with the
+// frame.
+func TestARepublishedCardKeyIsByteIdentical(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	if _, err := n.peers[0].Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	take := func() OutCardKey {
+		for _, m := range n.peers[0].Republish() {
+			if ck, ok := m.Out.(OutCardKey); ok {
+				return ck
+			}
+		}
+		t.Fatal("no card key in the republish set")
+		return OutCardKey{}
+	}
+	first, second := take(), take()
+	if !bytes.Equal(first.Pop, second.Pop) || !bytes.Equal(first.Sig, second.Sig) {
+		t.Fatal("a republished card key differs from the first telling")
+	}
 }

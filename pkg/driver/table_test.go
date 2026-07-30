@@ -84,7 +84,7 @@ func (n *tnet) deliver() {
 func tableInbound(o Out) In {
 	switch m := o.(type) {
 	case OutCardKey:
-		return InCardKey{Seat: m.Seat, Hand: m.Hand, Key: m.Key, Sig: m.Sig}
+		return InCardKey{Seat: m.Seat, Hand: m.Hand, Key: m.Key, Pop: m.Pop, Sig: m.Sig}
 	case OutCheckpoint:
 		return InCheckpoint{Checkpoint: m.Checkpoint}
 	case OutLeaving:
