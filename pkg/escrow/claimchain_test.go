@@ -246,3 +246,95 @@ func TestATransactionsIdentityDoesNotDependOnItsSignatures(t *testing.T) {
 		t.Fatalf("signing changed the transaction id from %s to %s", before, got)
 	}
 }
+
+// The bond that has been ground down as far as it goes can still be answered,
+// and cannot be accused again.
+//
+// Every round of a disagreement costs the accused bond two fees, one for the
+// accusation and one for the answer, so a long wedge walks the bond down its
+// ladder. AffordableDepth bounds how many rounds are agreed, and it bounds them
+// on the accusation side: what it reserves is enough for a forfeiture to pay
+// every taking seat its minimum. The question that decides whether this
+// exchange can cost somebody a bond rather than only fees is the other side of
+// that boundary - at the last rung the ladder reaches, is the owner still able
+// to answer?
+//
+// The order of the two halves is the point. Answerable first: an owner who
+// cannot build an answer at the last rung loses the bond to a window it could
+// not act inside. Unaccusable second: one rung further on there is nothing left
+// to pay a taker, so no accusation is agreed and the grinding simply stops.
+func TestTheLastAffordableRungIsAnswerableAndThenUnaccusable(t *testing.T) {
+	// The live shape: two seats, so one taker, and the plugin's own fee.
+	const fee int64 = 10_000
+	b := postTableBond(t, 2)
+	terms, err := ParseTableBond(b.script)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(terms.Others) != 1 {
+		t.Fatalf("%d takers at a two seat table, want 1", len(terms.Others))
+	}
+
+	start := int64(MinBondAtoms)
+	depth := AffordableDepth(start, fee, len(terms.Others))
+	if depth < 1 {
+		t.Fatalf("a bond of %d funds no accusation at all", start)
+	}
+
+	d := accuseDraftFor(t, b, start)
+	d.FeeAtoms = fee
+	chain, err := BuildAccuseChain(d, depth)
+	if err != nil {
+		t.Fatalf("build the whole ladder: %v", err)
+	}
+	if len(chain) != depth {
+		t.Fatalf("the ladder is %d long, want the %d that were affordable", len(chain), depth)
+	}
+	claimed, err := d.ClaimedScript()
+	if err != nil {
+		t.Fatalf("claimed script: %v", err)
+	}
+
+	// The last rung: the owner answers it, with what that accusation left.
+	last := chain[len(chain)-1]
+	answer, err := BuildAnswer(AnswerDraft{
+		Claimed:    claimed,
+		Bond:       b.script,
+		Prevout:    wire.OutPoint{Hash: last.TxHash(), Index: 0, Tree: wire.TxTreeRegular},
+		ValueAtoms: last.TxOut[0].Value,
+		FeeAtoms:   fee,
+		Params:     d.Params,
+	})
+	if err != nil {
+		t.Fatalf("the owner cannot answer the last accusation the ladder agreed, "+
+			"so grinding a bond down takes it: %v", err)
+	}
+
+	// And the accusers could have taken it instead, each paid its minimum -
+	// which is what AffordableDepth reserved and what makes the last rung a
+	// real accusation rather than one nobody could collect on.
+	_, pay, err := Address(b.script, d.Params)
+	if err != nil {
+		t.Fatalf("address: %v", err)
+	}
+	take, err := BuildTake(TakeDraft{
+		Claimed:    claimed,
+		Prevout:    wire.OutPoint{Hash: last.TxHash(), Index: 0, Tree: wire.TxTreeRegular},
+		ValueAtoms: last.TxOut[0].Value,
+		PayScripts: [][]byte{pay},
+		FeeAtoms:   fee,
+	})
+	if err != nil {
+		t.Fatalf("the last accusation could never be collected on: %v", err)
+	}
+	if got := take.TxOut[0].Value; got < int64(MinShareAtoms) {
+		t.Fatalf("taking the last rung pays %d, under the %d minimum", got, MinShareAtoms)
+	}
+
+	// One rung further on, where that answer leaves the bond, nothing more is
+	// affordable - so the grinding stops rather than running the bond to dust.
+	next := answer.TxOut[0].Value
+	if got := AffordableDepth(next, fee, len(terms.Others)); got != 0 {
+		t.Fatalf("a bond of %d past the last rung still funds %d accusations", next, got)
+	}
+}
