@@ -74,9 +74,6 @@ type table struct {
 	accuse map[string]*accusation
 	// takes is each proposed forfeiture, by the claimed bond it spends.
 	takes map[string]*take
-	// chains caches derived accusation chains, keyed by seat and the outpoint
-	// they start from.
-	chains map[string][]*dcrwire.MsgTx
 	// rungs caches the derived ladder for a seat's bond, keyed by seat and
 	// the outpoint it was first posted to. See bondLadder.
 	rungs map[string]*rungs

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"path/filepath"
@@ -278,5 +279,51 @@ func TestABondThatIsGoneMovesNoBelief(t *testing.T) {
 	a.watchBonds(context.Background())
 	if at := tbl.bondedAt[theirs]; at != before {
 		t.Fatalf("a bond that is on no rung moved the belief to %q", at)
+	}
+}
+
+// The accusation for a bond is the ladder's own entry for where it sits, at
+// every rung, and there is none past the end.
+//
+// It used to be built a second time from a draft rather than looked up, which
+// agreed with the ladder by construction and by nothing else: a fee or a draft
+// field changing on one side would have given two peers different transactions
+// to sign and nothing to say which was meant. Derived once, that cannot happen -
+// and this says so, because "derived once" is only true while nobody adds a
+// second derivation back.
+func TestTheAccusationIsTheLadderEntryForWhereTheBondSits(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	advance(t, h, 2, a, b)
+
+	tbl := a.tables.m[terms.SID]
+	theirs := theirSeat(t, tbl)
+	r, err := tbl.bondLadder(theirs)
+	if err != nil {
+		t.Fatalf("ladder: %v", err)
+	}
+
+	for i := range r.accuse {
+		tbl.bondedAt[theirs] = r.positions[i]
+		chain, script, err := tbl.accuseChain(theirs)
+		if err != nil {
+			t.Fatalf("rung %d: %v", i, err)
+		}
+		if len(chain) != 1 {
+			t.Fatalf("rung %d gave %d accusations, want the one against this rung", i, len(chain))
+		}
+		if chain[0].TxHash() != r.accuse[i].TxHash() {
+			t.Fatalf("rung %d builds a different accusation than the ladder holds", i)
+		}
+		if !bytes.Equal(script, r.script) {
+			t.Fatalf("rung %d names a different bond script", i)
+		}
+	}
+
+	// And the rung where the ladder runs out has no accusation at all, which
+	// is what stops the grinding rather than a bond ground to dust.
+	tbl.bondedAt[theirs] = r.positions[len(r.positions)-1]
+	if _, _, err := tbl.accuseChain(theirs); err == nil {
+		t.Fatal("the end of the ladder produced an accusation, so the grinding never stops")
 	}
 }

@@ -117,37 +117,35 @@ func (tbl *table) presignAccusations() []outgoing {
 // every tick by everything that wants to know whether a seat can be accused. When
 // the bond moves the key moves with it, so there is nothing to invalidate.
 func (tbl *table) accuseChain(seat uint32) ([]*wire.MsgTx, []byte, error) {
-	d, bond, err := tbl.accuseDraft(seat)
+	r, err := tbl.bondLadder(seat)
 	if err != nil {
 		return nil, nil, err
 	}
-	key := fmt.Sprintf("%d/%s", seat, d.Prevout)
-	if held, ok := tbl.chains[key]; ok {
-		return held, bond, nil
+	outpoint := tbl.bondedAt[seat]
+	if outpoint == "" {
+		outpoint = tbl.bonded[seat]
 	}
-	terms, err := escrow.ParseTableBond(bond)
+	prevout, err := outpointOf(outpoint)
 	if err != nil {
 		return nil, nil, err
 	}
-	if escrow.AffordableDepth(d.ValueAtoms, d.FeeAtoms, len(terms.Others)) < 1 {
-		return nil, nil, fmt.Errorf(
-			"a bond of %d cannot fund one accusation at a fee of %d paying %d seats",
-			d.ValueAtoms, d.FeeAtoms, len(terms.Others))
+	// One, against where the bond sits now, looked up rather than rebuilt. A
+	// deeper chain was agreed up front when the answer needed signatures
+	// gathered in advance; it does not any more. Answering moves the bond,
+	// every peer re-derives the accusation against the new output, and the seat
+	// that answered signs it - which it will, having just proved it is there.
+	//
+	// Taken from the ladder because deriving it a second way is a second thing
+	// to keep in step: the two agree today, and a fee or a draft field changing
+	// on one side would give two peers different transactions to sign with
+	// nothing to say which was meant.
+	for i, a := range r.accuse {
+		if a.TxIn[0].PreviousOutPoint == prevout {
+			return r.accuse[i : i+1], r.script, nil
+		}
 	}
-	// One, against where the bond sits now. A deeper chain was agreed up front
-	// when the answer needed signatures gathered in advance; it does not any
-	// more. Answering moves the bond, every peer re-derives the accusation
-	// against the new output, and the seat that answered signs it - which it
-	// will, having just proved it is there.
-	chain, err := escrow.BuildAccuseChain(d, 1)
-	if err != nil {
-		return nil, nil, err
-	}
-	if tbl.chains == nil {
-		tbl.chains = map[string][]*wire.MsgTx{}
-	}
-	tbl.chains[key] = chain
-	return chain, bond, nil
+	return nil, nil, fmt.Errorf(
+		"seat %d's bond sits at %s, which no agreed accusation reaches", seat, outpoint)
 }
 
 // accuseDraft describes an accusation: a seat's bond moved into the claimed bond,
