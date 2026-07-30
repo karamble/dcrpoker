@@ -361,6 +361,15 @@ func (t *tables) ourDeposit(sid string) (seat uint32, dep membership.Deposit, te
 		return 0, membership.Deposit{}, membership.Terms{}, "",
 			fmt.Errorf("table %s has not settled, so it has no deposit script yet", sid)
 	}
+	// A table that has dealt is past funding for good, and its funded entry
+	// is cleared once the chain pays the stake back out - so without this a
+	// settled, played, paid-out table would re-offer its deposit and take a
+	// second buy-in, recoverable only through the stake's own days-long
+	// refund. Dealt is persisted, so this holds across a restart.
+	if tbl.dealt || tbl.finished {
+		return 0, membership.Deposit{}, membership.Terms{}, "",
+			fmt.Errorf("table %s has already dealt, so it takes no more stake", sid)
+	}
 	seat, ok := tbl.form.OurSeat()
 	if !ok {
 		return 0, membership.Deposit{}, membership.Terms{}, "",

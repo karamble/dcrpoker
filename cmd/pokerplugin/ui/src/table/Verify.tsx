@@ -28,11 +28,15 @@ export function Verify({
   hand?: HandView
   names: Map<number, string>
 }) {
+  // Collapsed by default: the rail is where a curious player checks the
+  // deck and the escrow, not something they need in their way to play. It
+  // opens on a click and then remembers the choice, so somebody who wants it
+  // open keeps it.
   const [open, setOpen] = useState<boolean>(() => {
     try {
-      return window.localStorage.getItem(RAIL_KEY) !== 'closed'
+      return window.localStorage.getItem(RAIL_KEY) === 'open'
     } catch {
-      return true
+      return false
     }
   })
   const toggle = () => {
@@ -47,6 +51,7 @@ export function Verify({
   }
 
   const [challengePending, setChallengePending] = useState(false)
+  const [challengeError, setChallengeError] = useState<string | undefined>(undefined)
   const roster = ledger?.roster ?? table.roster ?? []
   const who = (seat: number) => names.get(seat) || `seat ${seat}`
   const settled = ledger?.settled ?? table.settled
@@ -127,9 +132,10 @@ export function Verify({
               disabled={challengePending || haveOpenChallenge}
               onClick={() => {
                 setChallengePending(true)
+                setChallengeError(undefined)
                 api
                   .challenge(table.sid, settled.hand)
-                  .catch(() => {})
+                  .catch((e) => setChallengeError(e instanceof Error ? e.message : String(e)))
                   .finally(() => setChallengePending(false))
               }}
             >
@@ -140,6 +146,9 @@ export function Verify({
               Refusing costs the bond — and the challenged hand shows its cards to this
               table, folds included, yours too.
             </span>
+            {challengeError && (
+              <span className="vr-note warn">The challenge did not reach the table: {challengeError}</span>
+            )}
           </>
         )}
       </section>

@@ -167,10 +167,17 @@ func (t *tables) Ledger(sid string) (*ledgerView, error) {
 // ledger is the report itself. Requires the registry lock.
 func (tbl *table) ledger(height int64, names map[string]string) *ledgerView {
 	v := &ledgerView{
-		SID:     tbl.terms.SID,
-		Height:  height,
-		Roster:  tbl.seatViews(names),
-		Accused: tbl.accused,
+		SID:    tbl.terms.SID,
+		Height: height,
+		Roster: tbl.seatViews(names),
+		// Reported live, not from the latch: tbl.accused is written only
+		// where presignAccusations runs to the end, and the tick that
+		// completes the set exits early at the ready-check, so the flag
+		// could stay false on a table whose chains are all fully signed -
+		// which showed the "still agreeing what to do about a seat that
+		// stops" warning through an entire game that had agreed before the
+		// first hand. The chains themselves are the truth.
+		Accused: tbl.accused || tbl.accusationsReady(),
 		Events:  append([]chainEvent(nil), tbl.events...),
 	}
 	v.Challenges = tbl.challengeViews()

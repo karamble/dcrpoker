@@ -184,6 +184,12 @@ func (t *tables) ourBond(sid string) (seat uint32, b membership.TableBond, alrea
 	if !ok {
 		return 0, membership.TableBond{}, "", fmt.Errorf("this table has no seating yet")
 	}
+	// The same guard the stake has: a table that has dealt takes no more
+	// bond, and its bonded entry is cleared once the chain releases it, so
+	// without this a played-out table would ask for a second one.
+	if tbl.dealt || tbl.finished {
+		return 0, membership.TableBond{}, "", fmt.Errorf("this table has already dealt, so it takes no more bond")
+	}
 	b, err = tbl.bond(seat, t.params)
 	if err != nil {
 		return 0, membership.TableBond{}, "", err

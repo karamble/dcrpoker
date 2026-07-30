@@ -8,6 +8,7 @@ import (
 	"github.com/vctt94/pokerbisonrelay/pkg/driver"
 	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
 
 // The dispute over a refused shuffle, end to end.
@@ -286,5 +287,91 @@ func TestAComplaintSurvivesARestart(t *testing.T) {
 	back.tables.mu.Unlock()
 	if len(repeats) != 1 || repeats[0].kind != schema.KindShuffleComplaint {
 		t.Fatalf("the restarted complainer repeats %d frames, want its complaint", len(repeats))
+	}
+}
+// A table that is over cannot lapse. The chain-truth clearing empties the coin
+// maps as the settlement and the releases confirm - correctly, and gated on
+// the table being finished or over - and the lapse checks judge those same
+// maps. A live table that played to its end was re-labelled "only 1 of 2 seats
+// were funded" the moment its spent stake was forgotten; the lapse gate has to
+// mirror the clearing gate, or every table anybody wins ends as a lie.
+func TestATableThatIsOverCannotLapse(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	_ = b
+
+	a.tables.mu.Lock()
+	tbl := a.tables.m[terms.SID]
+	tbl.play.VoidWedgedHand()
+	// What the chain-truth clearing does once the payout and the releases
+	// confirm.
+	tbl.funded = map[uint32]string{}
+	tbl.bonded = map[uint32]string{}
+	a.tables.mu.Unlock()
+
+	a.tables.tick(int64(membership.BondingDeadline(terms)) + 10)
+
+	a.tables.mu.Lock()
+	got := tbl.form.State()
+	a.tables.mu.Unlock()
+	if got != membership.Settled {
+		t.Fatalf("a table that was over lapsed to %v with its maps emptied by the payout", got)
+	}
+}
+
+// A table that has dealt takes no more money. Its funded and bonded entries
+// are cleared once the chain pays the stake and releases the bonds, and
+// without a guard the fund path would read the empty entry as "not yet paid"
+// and ask for a second buy-in - recoverable only through the stake's own
+// days-long refund. This is the live incident from table 0e1873cd, where a
+// won, paid-out table sat live re-offering its deposit.
+func TestADealtTableTakesNoMoreMoney(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+
+	// The chain has paid out and released, so the maps are empty - exactly
+	// what the outpoint watchers leave behind.
+	a.tables.mu.Lock()
+	tbl := a.tables.m[terms.SID]
+	tbl.funded = map[uint32]string{}
+	tbl.bonded = map[uint32]string{}
+	a.tables.mu.Unlock()
+
+	if _, _, _, _, err := a.tables.ourDeposit(terms.SID); err == nil {
+		t.Fatal("a dealt table offered a second deposit")
+	}
+	if _, _, _, err := a.tables.ourBond(terms.SID); err == nil {
+		t.Fatal("a dealt table offered a second bond")
+	}
+}
+
+// A table whose game is over becomes a receipt on the next tick, whether or
+// not anybody pressed leave. Before this, finished was set only by leave, so a
+// table that played to its end and paid its winner sat live forever - the
+// accusation warning never cleared, the rail walked back to "pay your stake",
+// and the fund path re-offered a deposit once the chain emptied the maps. This
+// is the tick that retires it.
+func TestAnOverTableBecomesAReceiptOnTheNextTick(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+
+	a.tables.mu.Lock()
+	tbl := a.tables.m[terms.SID]
+	if tbl.finished {
+		t.Fatal("a dealing table is already finished")
+	}
+	tbl.play.VoidWedgedHand() // the game is over, nobody left
+	a.tables.mu.Unlock()
+
+	a.tables.tick(int64(terms.Until) + 100)
+
+	a.tables.mu.Lock()
+	fin := a.tables.m[terms.SID].finished
+	a.tables.mu.Unlock()
+	if !fin {
+		t.Fatal("a table whose game ended did not become a receipt on the next tick")
 	}
 }

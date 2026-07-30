@@ -1079,6 +1079,20 @@ func (t *tables) tick(height int64) []outgoing {
 			// the last chance to write them down that does not
 			// depend on somebody pressing leave.
 			t.archive(tbl)
+			// And it is finished, whether or not anybody pressed
+			// leave. The game is over: nothing here will deal, fund,
+			// bond or accuse again, and the receipt machinery is what
+			// says so - the retire when its coin clears, the silence
+			// on every funding-phase repeat, the refusal to take a
+			// second buy-in. Without this a table that played to its
+			// end, paid its winner and released its bonds sat live
+			// forever, re-offering a deposit and warning about a seat
+			// that stopped. Persisted, so it survives a restart the
+			// same way a table somebody left does.
+			if !tbl.finished {
+				tbl.finished = true
+				t.persist(tbl)
+			}
 		}
 		out = append(out, tbl.askAgain(height)...)
 		out = append(out, tbl.proposeClaim(t.params)...)
@@ -1093,11 +1107,15 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, t.announcePayoutAgain(tbl, height)...)
 		out = append(out, t.exchangeHeads(tbl)...)
 		out = append(out, t.republishStalled(tbl, height)...)
-		// A receipt cannot lapse: its deadlines are history, and its maps
-		// empty as the chain pays out - seen live as a healthy settled
-		// receipt re-labelled "only 0 of 2 seats were bonded" the moment
-		// its released bonds were forgotten.
-		if !tbl.finished &&
+		// A table that is over cannot lapse: its deadlines are history,
+		// and its maps empty as the chain pays out. The gate mirrors the
+		// clearing's own - finished OR the game being over - because the
+		// mismatch was paid for twice: a receipt re-labelled "only 0 of 2
+		// seats were bonded" the moment its released bonds were forgotten,
+		// and then a healthy table that played to its end, paid its winner
+		// and released its bonds re-labelled "only 1 of 2 seats were
+		// funded" the moment its spent stake was.
+		if !tbl.finished && (tbl.play == nil || !tbl.play.Over()) &&
 			(tbl.fundingLapsed(height) || tbl.bondingLapsed(height) || tbl.commitLapsed(height)) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)

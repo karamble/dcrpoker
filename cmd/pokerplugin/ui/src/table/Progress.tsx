@@ -268,8 +268,14 @@ export function Progress({
 
   // The current step is the first unfinished one. A table that is dealing has
   // finished all of them, and stays on the last rather than falling off the end.
+  //
+  // A table that is over short-circuits to the last step regardless of the
+  // earlier predicates: once the payout and the releases confirm, the backend
+  // clears the funded and bonded entries, so the fund and bond steps read
+  // not-done again and the rail would otherwise walk backwards to "pay your
+  // stake" on a table that has already paid out. Terminal wins.
   const at = steps.findIndex((s) => !s.done)
-  const current = at === -1 ? steps.length - 1 : at
+  const current = table.over ? steps.length - 1 : at === -1 ? steps.length - 1 : at
 
   return (
     <section className="card">

@@ -35,10 +35,12 @@ export function OnChain({
   ledger,
   dealing,
   accused,
+  over,
 }: {
   ledger?: LedgerView
   dealing?: boolean
   accused?: boolean
+  over?: boolean
 }) {
   const events = [...(ledger?.events ?? [])].reverse()
   const claims = ledger?.claims ?? []
@@ -174,7 +176,7 @@ export function OnChain({
         </div>
       )}
 
-      {dealing && !accused && (
+      {dealing && !over && !accused && (
         <p className="lede warn">
           The table is still agreeing what to do about a seat that stops. Until every
           seat has signed, a seat that goes quiet cannot be answered for at all - an
