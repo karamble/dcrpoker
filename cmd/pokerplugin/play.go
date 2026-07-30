@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 
@@ -291,6 +292,15 @@ func (tbl *table) deal(msg *schema.Message) []outgoing {
 	}
 	out, err := tbl.play.Handle(in)
 	if err != nil {
+		// One error is acted on, because it is itself evidence: a signed
+		// shuffle that failed verification. The driver kept the input it
+		// verified against and the frame it refused, and the dispute over
+		// them is how the wedge this used to leave gets resolved.
+		var refused *driver.ErrShuffleRefused
+		if errors.As(err, &refused) {
+			log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+			return tbl.openComplaintFrom(refused.Refusal)
+		}
 		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
 		return nil
 	}

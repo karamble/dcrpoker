@@ -49,7 +49,6 @@ var (
 	secretsTag   = []byte("dcrpoker/deal/secrets/v1")
 
 	shuffleComplaintTag = []byte("dcrpoker/deal/shufflecomplaint/v1")
-	shuffleAnswerTag    = []byte("dcrpoker/deal/shuffleanswer/v1")
 )
 
 // field writes a length-prefixed field, so no two different frames can hash the
@@ -210,39 +209,6 @@ func ShuffleComplaintDigest(match string, hand uint64, by int, round uint32,
 	num(h, uint64(round))
 	field(h, db)
 	field(h, refused[:])
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out, nil
-}
-
-// ShuffleAnswerDigest is what a disputed shuffler signs to give its shuffle
-// secret away. Its own digest rather than SecretsDigest, which hard-requires
-// the card key - an answer must reveal the shuffle half and nothing more.
-func ShuffleAnswerDigest(match string, hand uint64, seat int, round uint32,
-	s *deck.ShuffleSecret) ([32]byte, error) {
-	if s == nil {
-		return [32]byte{}, fmt.Errorf("nothing to sign: no shuffle secret")
-	}
-	h := sha256.New()
-	field(h, shuffleAnswerTag)
-	field(h, []byte(match))
-	num(h, hand)
-	num(h, uint64(seat))
-	num(h, uint64(round))
-	var pi bytes.Buffer
-	for _, j := range s.Pi {
-		_ = binary.Write(&pi, binary.BigEndian, uint32(j))
-	}
-	field(h, pi.Bytes())
-	var beta bytes.Buffer
-	for i, b := range s.Beta {
-		bb, err := b.MarshalBinary()
-		if err != nil {
-			return [32]byte{}, fmt.Errorf("blinding factor %d: %w", i, err)
-		}
-		field(&beta, bb)
-	}
-	field(h, beta.Bytes())
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out, nil

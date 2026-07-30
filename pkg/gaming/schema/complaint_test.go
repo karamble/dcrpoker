@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"go.dedis.ch/kyber/v4"
-	"go.dedis.ch/kyber/v4/util/random"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/deck"
 )
@@ -61,44 +60,6 @@ func TestAShuffleComplaintSurvivesTheWire(t *testing.T) {
 	}
 }
 
-// The answer pins every length, exactly as the challenge secrets do: a
-// permutation that is not deck-sized and blinding factors that are not
-// 52 scalars are refused by the decoder, before any verdict is asked.
-func TestAShuffleAnswerPinsItsLengths(t *testing.T) {
-	_, _, _, _, sec := disputed(t)
-
-	body, err := ShuffleAnswerFrom(1, 3, 1, sec, []byte{0xcc})
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if got, _, err := body.Into(); err != nil || len(got.Pi) != deck.Size || len(got.Beta) != deck.Size {
-		t.Fatalf("an honest answer did not round-trip: %v", err)
-	}
-
-	short := body
-	short.Pi = body.Pi[:deck.Size-1]
-	if _, _, err := short.Into(); err == nil {
-		t.Fatal("a short permutation was read")
-	}
-	truncated := body
-	truncated.Beta = body.Beta[:len(body.Beta)-8]
-	if _, _, err := truncated.Into(); err == nil {
-		t.Fatal("truncated blinding factors were read")
-	}
-	if _, err := ShuffleAnswerFrom(1, 3, 1, &deck.ShuffleSecret{
-		Pi:   sec.Pi[:3],
-		Beta: sec.Beta,
-	}, nil); err == nil {
-		t.Fatal("a short secret was rendered")
-	}
-	if _, err := ShuffleAnswerFrom(1, 3, 1, &deck.ShuffleSecret{
-		Pi:   sec.Pi,
-		Beta: []kyber.Scalar{deck.Suite().Scalar().Pick(random.New())},
-	}, nil); err == nil {
-		t.Fatal("short blinding factors were rendered")
-	}
-}
-
 // The stored dispute round-trips exactly - it answers and judges after a
 // restart, so what is read back must be what was written down.
 func TestAComplaintViewRoundTrips(t *testing.T) {
@@ -129,7 +90,7 @@ func TestAComplaintViewRoundTrips(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if back.Hand != 3 || back.Round != 1 || back.By != 0 || len(back.Steps) != 1 ||
-		back.Complaint.Input != c.Input || back.Answer != nil {
+		back.Complaint.Input != c.Input {
 		t.Fatal("the stored dispute did not round-trip")
 	}
 }

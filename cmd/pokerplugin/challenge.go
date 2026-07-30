@@ -659,6 +659,12 @@ func (tbl *table) resultInDoubt() bool {
 	if tbl.challengeOpen() {
 		return true
 	}
+	// A shuffle dispute deliberately holds nothing here: its verdict is
+	// instant and local - the complaint carries everything - so there is no
+	// waiting state, and the verdicts do not join the loop below because a
+	// dispute's hand moved no money and is voided. The boundary being paid
+	// predates the wedge, and the named seat is answered by its withheld
+	// bond release instead.
 	for _, v := range tbl.judged {
 		if v == verdictWrong || v == verdictCheat {
 			return true

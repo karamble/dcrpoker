@@ -179,14 +179,11 @@ const (
 
 	// KindShuffleComplaint is a seat disputing a shuffle it verified and
 	// refused: the input deck it verified against, and the signed frame it
-	// refused, whole - so a peer that lost the original still reaches the
-	// verdict. It obliges the shuffler to answer with its shuffle secret.
+	// refused, whole. Everything a verdict needs travels in the complaint -
+	// a peer re-runs the shuffle proof against the claimed input and names
+	// whoever was wrong, so nothing answers a complaint and nothing needs
+	// to.
 	KindShuffleComplaint Kind = "shuffle_complaint"
-	// KindShuffleAnswer is the disputed shuffler's shuffle secret for the
-	// round, and nothing more - not the card key, which a dispute has no
-	// business costing. Every peer recomputes the shuffle from it and names
-	// whoever was wrong.
-	KindShuffleAnswer Kind = "shuffle_answer"
 )
 
 // Message is the envelope every payload travels in.

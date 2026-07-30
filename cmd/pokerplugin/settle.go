@@ -10,6 +10,7 @@ import (
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/wire"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/driver"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	gwire "github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
@@ -567,7 +568,17 @@ func (tbl *table) settleDraft() (escrow.SettleDraft, error) {
 	}
 	hand, stacks := tbl.play.Settled()
 	if hand == 0 {
-		return escrow.SettleDraft{}, fmt.Errorf("no hand has been agreed yet")
+		// Hand zero is the opening position - the stakes - and settling
+		// there is only ever right when the table is over for a reason
+		// every peer reached identically: everybody left, or a proven
+		// wedge. Ordinary play can never take this branch, because a
+		// table that is not over refuses here and a table that ended at a
+		// real boundary has hand > 0. Without it a hand-one wedge had no
+		// cooperative payout at all - both seats fell back to their
+		// refund timelocks over money nobody disputed.
+		if !tbl.play.Over() || tbl.play.VoidCause() == driver.VoidNone {
+			return escrow.SettleDraft{}, fmt.Errorf("no hand has been agreed yet")
+		}
 	}
 	seats, ok := tbl.form.Seats()
 	if !ok {

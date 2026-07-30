@@ -109,12 +109,12 @@ const (
 	// its position determines. Position-signed on purpose: a complainer
 	// that shifts its story signs two different complaints at one position,
 	// and equivocation publishes its key. The deterrent is free.
+	//
+	// There is no answer domain. The complaint carries the refused frame
+	// whole, so every peer reaches the verdict from the complaint alone -
+	// nothing is owed back, and a domain for a message nobody ever needs
+	// to send would be dead enforcement.
 	DomainShuffleComplaint Domain = "shufflecomplaint"
-	// DomainShuffleAnswer is the disputed shuffler giving its shuffle
-	// secret away. The blinding factors were drawn fresh, so the position
-	// does not fix the bytes and the nonce must commit to them - the same
-	// reasoning as DomainSecrets.
-	DomainShuffleAnswer Domain = "shuffleanswer"
 )
 
 // Which nonce a domain takes, as a property of the domain and not a choice at the
@@ -123,10 +123,9 @@ const (
 // same position can carry different bytes on a second attempt, and signing both
 // publishes the key.
 var committedDomains = map[Domain]bool{
-	DomainCardKey:       true,
-	DomainShuffle:       true,
-	DomainSecrets:       true,
-	DomainShuffleAnswer: true,
+	DomainCardKey: true,
+	DomainShuffle: true,
+	DomainSecrets: true,
 }
 
 var knownDomains = map[Domain]bool{
@@ -139,7 +138,6 @@ var knownDomains = map[Domain]bool{
 	DomainChallenge:        true,
 	DomainSecrets:          true,
 	DomainShuffleComplaint: true,
-	DomainShuffleAnswer:    true,
 }
 
 // Committed reports whether this domain commits to the message in its nonce.

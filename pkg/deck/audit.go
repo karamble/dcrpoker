@@ -335,66 +335,13 @@ func VerifySecrets(h *Hand, seat int, s *Secrets) error {
 	return nil
 }
 
-// VerifyShuffleSecret checks one player's shuffle secret alone, against a
-// transcript that may stop mid-hand.
-//
-// The shuffle half of VerifySecrets, split out for the dispute over a refused
-// shuffle: a wedged hand has fewer shuffles than seats by definition, so the
-// full-hand guard is loosened to "shuffles recorded through this seat" - which
-// is all this ever reads - and the card key is deliberately not asked for. A
-// dispute must expose no more than it has to: heads-up the permutations
-// already compose to the whole deck, but at three or more seats revealing a
-// card key is strictly worse than revealing a permutation.
-//
-// Same contract as VerifySecrets: nil means the secret reproduces the deck the
-// player published, a *Cheat names the player whose secret does not, and a
-// plain error is a transcript too malformed to ask.
-func VerifyShuffleSecret(h *Hand, seat int, s *ShuffleSecret) error {
-	n := len(h.Pubs)
-	switch {
-	case n == 0:
-		return fmt.Errorf("a hand with no players")
-	case seat < 0 || seat >= n:
-		return fmt.Errorf("a hand with %d players has no seat %d", n, seat)
-	case seat >= len(h.Steps):
-		return fmt.Errorf("the transcript records shuffles only through seat %d, not seat %d",
-			len(h.Steps)-1, seat)
-	case s == nil:
-		return fmt.Errorf("player %d published no shuffle secret", seat)
-	}
-	who := h.Pubs[seat]
-
-	joint, err := JointKey(h.Pubs)
-	if err != nil {
-		return err
-	}
-	// The deck this player shuffled: the public starting deck for the first
-	// seat, the previous seat's published deck for everyone after.
-	prev := Fresh(joint)
-	if seat > 0 {
-		prev = h.Steps[seat-1].Deck
-	}
-	if err := checkPerm(s.Pi, len(prev)); err != nil {
-		return &Cheat{By: who, Reason: err.Error()}
-	}
-	if len(s.Beta) != len(prev) {
-		return &Cheat{By: who, Reason: fmt.Sprintf(
-			"published %d blinding factors for a deck of %d", len(s.Beta), len(prev))}
-	}
-	if len(h.Steps[seat].Deck) != len(prev) {
-		return fmt.Errorf("the transcript records seat %d shuffling %d cards into %d",
-			seat, len(prev), len(h.Steps[seat].Deck))
-	}
-	if !sameDeck(remask(prev, joint, s.Pi, s.Beta), h.Steps[seat].Deck) {
-		return &Cheat{By: who, Reason: "published secrets that do not produce the deck they published"}
-	}
-	return nil
-}
-
 // SameDeck reports whether two decks are the same masking, card for card.
 //
-// Exported for the dispute over a refused shuffle, whose first stage is
-// exactly this question asked of two claimed input decks.
+// Exported for the dispute over a refused shuffle, whose first question is
+// exactly this, asked of two claimed input decks. There is deliberately no
+// exported shuffle-secret check beside it: the complaint carries the refused
+// frame whole, so the verdict re-runs the shuffle proof itself and no secret
+// ever needs to move.
 func SameDeck(a, b Deck) bool { return sameDeck(a, b) }
 
 // auditShares checks each published share against the key its author has now

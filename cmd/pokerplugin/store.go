@@ -85,6 +85,20 @@ type record struct {
 	// payout while it is open, and a hand that could be reopened for ever
 	// would be a way to hold the table's money without ever owing anything.
 	Judged []recordedVerdict `json:"judged,omitempty"`
+	// Complaints is every shuffle dispute already judged, for the same
+	// reason as Judged: a dispute that could be reopened after a restart
+	// could be reopened forever. The evidence lives in the complaints area.
+	Complaints []recordedComplaint `json:"complaints,omitempty"`
+	// Cheats is the seats an audit or a dispute has named. It is what
+	// withholds a named seat's bond release, and a restart must not launder
+	// a cheat.
+	Cheats []uint32 `json:"cheats,omitempty"`
+}
+
+// recordedComplaint is one judged shuffle dispute.
+type recordedComplaint struct {
+	Hand    uint64 `json:"hand"`
+	Verdict string `json:"verdict"`
 }
 
 // recordedChallenge is one open challenge.
@@ -202,7 +216,69 @@ func (s *store) deleteHands(sid string) error {
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	// The dispute evidence follows the hand secrets out: the table it
+	// argued about is gone, and a complaint with no table is history the
+	// record already summarises.
+	if dir, err := s.complaintsDir(sid); err == nil {
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// The disputes area: one file per disputed hand, holding the evidence a
+// verdict is recomputed from - a wedged hand never produced a hand record, so
+// the dispute keeps its own. Nothing secret lives here: a complaint carries
+// only signed frames and public decks.
+
+func (s *store) complaintsDir(sid string) (string, error) {
+	if !sidRe.MatchString(sid) {
+		return "", fmt.Errorf("session id %q is not a name this can store", sid)
+	}
+	return filepath.Join(s.dir, "..", "complaints", sid), nil
+}
+
+func (s *store) saveComplaint(sid string, hand uint64, blob []byte) error {
+	dir, err := s.complaintsDir(sid)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return writeDurable(filepath.Join(dir, fmt.Sprintf("%d.json", hand)), blob)
+}
+
+// loadComplaints is every stored dispute of one table, for resuming.
+func (s *store) loadComplaints(sid string) (map[uint64][]byte, error) {
+	dir, err := s.complaintsDir(sid)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[uint64][]byte{}
+	for _, e := range entries {
+		var hand uint64
+		if _, err := fmt.Sscanf(e.Name(), "%d.json", &hand); err != nil || hand == 0 {
+			continue
+		}
+		blob, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out[hand] = blob
+	}
+	return out, nil
 }
 
 // used reports whether this player has ever sat at a table.

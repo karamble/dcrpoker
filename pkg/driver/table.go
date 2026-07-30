@@ -114,10 +114,6 @@ type Table struct {
 	challenges   map[uint64]map[int]bool
 	challengedBy map[int]uint64
 
-	// complaints is which seat owes the answer for each disputed shuffle,
-	// by hand. See OpenComplaint.
-	complaints map[uint64]int
-
 	over bool
 	// void is why a table that is over never finished its last hand, if it
 	// did not. It is what lets a stakes-back settlement at hand zero be

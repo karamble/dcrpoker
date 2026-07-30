@@ -179,42 +179,6 @@ func TestARefusedShuffleLeavesTheEvidence(t *testing.T) {
 	}
 }
 
-// A complained-about shuffler owes the answer above everything else, at a table
-// that is over as much as at one that is not - the dispute is exactly for the
-// state where the game cannot press anybody.
-func TestAComplainedShufflerOwesTheAnswer(t *testing.T) {
-	n := wedgedOnAProof(t)
-	tb := n.peers[0]
-
-	if err := tb.OpenComplaint(1, 1); err != nil {
-		t.Fatalf("open complaint: %v", err)
-	}
-	d, ok := tb.Owes(1)
-	if !ok || d.Kind != DutyShuffleAnswer {
-		t.Fatalf("the disputed shuffler owes %v, want the answer", d)
-	}
-
-	const start uint32 = 1_100_000
-	tb.AtHeight(start)
-	tb.AtHeight(start + 8)
-	if got, ok := tb.Claimable(3); !ok || got.Kind != DutyShuffleAnswer {
-		t.Fatalf("the unanswered dispute never became claimable: %v", got)
-	}
-
-	// The table ending does not discharge it - that is the whole point of a
-	// duty the bond backs.
-	tb.VoidWedgedHand()
-	tb.AtHeight(start + 16)
-	if got, ok := tb.Claimable(3); !ok || got.Kind != DutyShuffleAnswer {
-		t.Fatalf("a table being over silenced the dispute: %v", got)
-	}
-
-	tb.CloseComplaint(1)
-	if _, ok := tb.Owes(1); ok {
-		t.Fatal("a closed complaint is still owed")
-	}
-}
-
 // A proven wedge ends the table with no unanimity at all: no seat left, and it
 // still settles at the boundary everybody signed, with the cause recorded so
 // settlement at hand zero knows it is allowed.
@@ -241,11 +205,9 @@ func TestAProvenWedgeEndsTheTableWithoutUnanimity(t *testing.T) {
 	}
 }
 
-// The dispute digests separate every field, and the two domains take the
-// nonces their content demands: a complaint's content is fixed by its
-// position, so shifting the story is equivocation and publishes the key; an
-// answer carries freshly drawn blinding factors, so its nonce must commit to
-// the bytes or signing a rebuild would.
+// The complaint digest separates every field, and its domain is
+// position-signed: an honest complainer's content is fixed by where it
+// stands, so shifting the story is equivocation and publishes the key.
 func TestDisputeDigestsSeparateTheirFields(t *testing.T) {
 	n := wedgedOnAProof(t)
 	d := n.peers[0].Hand()
@@ -276,29 +238,7 @@ func TestDisputeDigestsSeparateTheirFields(t *testing.T) {
 		}
 	}
 
-	if !forfeit.DomainShuffleAnswer.Committed() {
-		t.Fatal("the answer carries fresh blinding factors and its nonce does not commit to them")
-	}
 	if forfeit.DomainShuffleComplaint.Committed() {
 		t.Fatal("a complaint's content is fixed by its position; a committed nonce would waive the equivocation punishment")
-	}
-
-	_, _, sec, ok := n.peers[1].Hand().OwnShuffleSecret()
-	if !ok {
-		t.Fatal("the shuffler holds no secret")
-	}
-	a1, err := ShuffleAnswerDigest(testMatch, 1, 1, 1, sec)
-	if err != nil {
-		t.Fatalf("answer digest: %v", err)
-	}
-	a2, err := ShuffleAnswerDigest(testMatch, 1, 1, 2, sec)
-	if err != nil {
-		t.Fatalf("answer digest: %v", err)
-	}
-	if a1 == a2 {
-		t.Fatal("the answer digest ignores the round")
-	}
-	if _, err := ShuffleAnswerDigest(testMatch, 1, 1, 1, nil); err == nil {
-		t.Fatal("an empty answer was signable")
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -97,6 +98,14 @@ type table struct {
 	judged    map[uint64]string
 	cheats    map[uint32]bool
 	forfeited map[uint32]bool
+
+	// compl is every open shuffle dispute, and complJudged every dispute
+	// already answered for. Both persisted for the same reasons the
+	// challenge pair are: the answer a dispute obliges and the settlement
+	// it blocks must survive a restart, and a dispute that could be
+	// reopened forever would hold the table's money forever.
+	compl       map[uint64]*complaintCase
+	complJudged map[uint64]string
 
 	// replyWith is what adopting a message decided to say back, collected
 	// because the adopt path returns an error rather than frames.
@@ -507,6 +516,12 @@ func (tbl *table) record() *record {
 	for hand, verdict := range tbl.judged {
 		rec.Judged = append(rec.Judged, recordedVerdict{Hand: hand, Verdict: verdict})
 	}
+	for hand, verdict := range tbl.complJudged {
+		rec.Complaints = append(rec.Complaints, recordedComplaint{Hand: hand, Verdict: verdict})
+	}
+	for seat := range tbl.cheats {
+		rec.Cheats = append(rec.Cheats, seat)
+	}
 	if len(tbl.bonded) > 0 {
 		rec.Bonded = make(map[uint32]string, len(tbl.bonded))
 		for seat, outpoint := range tbl.bonded {
@@ -704,6 +719,43 @@ func (tbl *table) resume(rec *record) error {
 			tbl.judged = map[uint64]string{}
 		}
 		tbl.judged[j.Hand] = j.Verdict
+	}
+	for _, c := range rec.Complaints {
+		if c.Verdict == "" {
+			continue
+		}
+		if tbl.complJudged == nil {
+			tbl.complJudged = map[uint64]string{}
+		}
+		tbl.complJudged[c.Hand] = c.Verdict
+	}
+	// The evidence blobs come back too, so a judged dispute keeps being
+	// said until the table itself is gone - the counterparty may not have
+	// reached the verdict yet, and the settlement the void enables needs
+	// both sides to have.
+	if tbl.st != nil {
+		if blobs, err := tbl.st.loadComplaints(tbl.terms.SID); err == nil {
+			for hand, blob := range blobs {
+				var view schema.ComplaintView
+				if err := json.Unmarshal(blob, &view); err != nil {
+					continue
+				}
+				cc, err := decodeComplaintCase(&view)
+				if err != nil {
+					continue
+				}
+				if tbl.compl == nil {
+					tbl.compl = map[uint64]*complaintCase{}
+				}
+				tbl.compl[hand] = cc
+			}
+		}
+	}
+	for _, seat := range rec.Cheats {
+		if tbl.cheats == nil {
+			tbl.cheats = map[uint32]bool{}
+		}
+		tbl.cheats[seat] = true
 	}
 	for i, wj := range rec.Joins {
 		j, err := wj.Into()
@@ -1033,6 +1085,7 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, tbl.presignAccusations()...)
 		out = append(out, tbl.repeatChallenges()...)
 		out = append(out, tbl.answerChallenges()...)
+		out = append(out, tbl.repeatComplaints()...)
 		out = append(out, tbl.proposeSettlement()...)
 		out = append(out, tbl.proposeReleases()...)
 		out = append(out, t.announceAgain(tbl, height)...)
@@ -1613,6 +1666,13 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 			return nil, err
 		}
 		return tbl.acceptSecrets(body), nil
+
+	case schema.KindShuffleComplaint:
+		var body schema.ShuffleComplaint
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		return tbl.acceptComplaint(body), nil
 
 	case schema.KindTake:
 		var body schema.Take

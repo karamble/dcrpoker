@@ -284,9 +284,6 @@ func (d *Driver) RefusedShuffle() (*ShuffleRefusal, bool) {
 	return d.refusal, d.refusal != nil
 }
 
-// Joint is the key this hand's deck is masked under.
-func (d *Driver) Joint() kyber.Point { return d.joint }
-
 // Keys is every seat's card key for this hand, in seat order.
 func (d *Driver) Keys() []kyber.Point {
 	return append([]kyber.Point(nil), d.cfg.CardKeys...)
@@ -309,16 +306,6 @@ func (d *Driver) PriorDeck(round int) (deck.Deck, error) {
 // Steps is the shuffles this peer has accepted so far, in order.
 func (d *Driver) Steps() []deck.Step {
 	return append([]deck.Step(nil), d.rec.Hand.Steps...)
-}
-
-// OwnShuffleSecret is this peer's own shuffle for the hand: the round it
-// shuffled in, the deck it published, and the secret that produces it. ok is
-// false until this peer has shuffled.
-func (d *Driver) OwnShuffleSecret() (round int, out deck.Deck, sec *deck.ShuffleSecret, ok bool) {
-	if d.rec.Secrets.Shuffle == nil || d.cfg.Seat >= len(d.rec.Hand.Steps) {
-		return 0, nil, nil, false
-	}
-	return d.cfg.Seat, d.rec.Hand.Steps[d.cfg.Seat].Deck, d.rec.Secrets.Shuffle, true
 }
 
 // Out is something to send to the rest of the table.
