@@ -47,6 +47,10 @@ const (
 	// DutyReveal is a challenged hand's secrets. Owed by every seat the
 	// moment any seat challenges, discharged by revealing.
 	DutyReveal DutyKind = "reveal"
+	// DutyShuffleAnswer is a disputed shuffle's secret. Owed by the shuffler
+	// of a complained-about round, discharged by publishing the secret so
+	// every peer can recompute the shuffle and name whoever was wrong.
+	DutyShuffleAnswer DutyKind = "shuffleanswer"
 )
 
 // Duty is one thing the log says a seat still has to do.
@@ -75,6 +79,8 @@ func (d Duty) String() string {
 		return fmt.Sprintf("seat %d owes a checkpoint for hand %d", d.Seat, d.Hand)
 	case DutyReveal:
 		return fmt.Sprintf("seat %d owes its deck secrets for challenged hand %d", d.Seat, d.Hand)
+	case DutyShuffleAnswer:
+		return fmt.Sprintf("seat %d owes its shuffle secret for disputed hand %d", d.Seat, d.Hand)
 	}
 	return fmt.Sprintf("seat %d owes %q", d.Seat, d.Kind)
 }
@@ -97,6 +103,15 @@ func (d Duty) String() string {
 func (t *Table) Owes(seat int) (Duty, bool) {
 	if t == nil || seat < 0 || seat >= t.seats {
 		return Duty{}, false
+	}
+	// A disputed shuffle's answer, first of everything: it is what unwedges
+	// a hand that cannot otherwise move, and like a reveal it must outrank
+	// the game or playing on - or the table being over - would reset its
+	// count forever.
+	for _, hand := range t.openComplaints() {
+		if t.complaints[hand] == seat {
+			return Duty{Seat: seat, Kind: DutyShuffleAnswer, Hand: hand}, true
+		}
 	}
 	for _, hand := range t.openChallenges() {
 		if !t.challenges[hand][seat] {
@@ -227,10 +242,10 @@ func (t *Table) Claimable(after uint32) (Duty, bool) {
 	if t == nil {
 		return Duty{}, false
 	}
-	if t.over && len(t.challenges) == 0 {
+	if t.over && len(t.challenges) == 0 && len(t.complaints) == 0 {
 		// Nothing is owed at a table that ended cleanly. An open challenge
-		// is the one exception: the reveal it obliges is owed precisely
-		// when the game no longer holds anybody here.
+		// or an open shuffle dispute is the exception: what either obliges
+		// is owed precisely when the game no longer holds anybody here.
 		return Duty{}, false
 	}
 	for seat := range t.seats {
@@ -338,6 +353,54 @@ func (t *Table) openChallenges() []uint64 {
 
 // OpenChallenges is the exported view of the same list.
 func (t *Table) OpenChallenges() []uint64 { return t.openChallenges() }
+
+// A shuffle dispute, as the duty machinery sees it.
+//
+// The evidence, the signatures and the verdict live with the plugin; what
+// belongs here is only which seat owes the answer, because that is what Owes
+// and Claimable answer from. Alive when t.over for the same reason a challenge
+// is: the bond is what a dispute leans on, and the bond outlives the game.
+
+// OpenComplaint records that a seat's shuffle for a hand is disputed and the
+// shuffler owes its secret. A repeat is not an error; this channel repeats
+// everything.
+func (t *Table) OpenComplaint(hand uint64, shuffler int) error {
+	if shuffler < 0 || shuffler >= t.seats {
+		return fmt.Errorf("seat %d is not at this table", shuffler)
+	}
+	if open, ok := t.complaints[hand]; ok {
+		if open == shuffler {
+			return nil
+		}
+		return fmt.Errorf("hand %d's dispute names seat %d, not seat %d", hand, open, shuffler)
+	}
+	if t.complaints == nil {
+		t.complaints = map[uint64]int{}
+	}
+	t.complaints[hand] = shuffler
+	return nil
+}
+
+// CloseComplaint ends a dispute whatever resolved it - the answer arriving and
+// being judged, or the refusal answered by the bond.
+func (t *Table) CloseComplaint(hand uint64) { delete(t.complaints, hand) }
+
+// openComplaints is every disputed hand still waiting on an answer, lowest
+// first, so two peers naming a duty name the same one.
+func (t *Table) openComplaints() []uint64 {
+	if len(t.complaints) == 0 {
+		return nil
+	}
+	out := make([]uint64, 0, len(t.complaints))
+	for hand := range t.complaints {
+		out = append(out, hand)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// OpenComplaints is the exported view of the same list.
+func (t *Table) OpenComplaints() []uint64 { return t.openComplaints() }
 
 // noteDuties records what each seat owes and since when.
 //

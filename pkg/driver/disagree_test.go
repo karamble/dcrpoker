@@ -1,8 +1,10 @@
 package driver
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/deck"
 	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 )
 
@@ -72,8 +74,15 @@ func wedgedOnAProof(t *testing.T) *tnet {
 	}
 	bad := append([]byte(nil), theirs.Proof...)
 	bad[len(bad)/2] ^= 0xff
-	if _, err := n.peers[0].Handle(shuffleAs(t, 1, 1, n.logs[1], theirs.Deck, bad)); err == nil {
+	_, err := n.peers[0].Handle(shuffleAs(t, 1, 1, n.logs[1], theirs.Deck, bad))
+	if err == nil {
 		t.Fatal("a shuffle whose proof does not verify was accepted")
+	}
+	// Typed, so the layer that can publish knows there is evidence to
+	// publish - every other error stays an error.
+	var refused *ErrShuffleRefused
+	if !errors.As(err, &refused) {
+		t.Fatalf("a refused shuffle came back as a plain error: %v", err)
 	}
 
 	return n
@@ -136,5 +145,98 @@ func TestLeavingAWedgedHandTakesEverybody(t *testing.T) {
 	}
 	if last, _ := n.peers[0].Settled(); last != 0 {
 		t.Fatalf("it settled at hand %d, and no boundary was ever signed", last)
+	}
+}
+
+// A refusal keeps what only that moment holds: the input this peer verified
+// against and the signed frame it refused. Nothing advances - the refusal is
+// evidence, not progress.
+func TestARefusedShuffleLeavesTheEvidence(t *testing.T) {
+	n := wedgedOnAProof(t)
+	d := n.peers[0].Hand()
+
+	ref, ok := d.RefusedShuffle()
+	if !ok {
+		t.Fatal("a refused shuffle left no evidence")
+	}
+	if ref.Seat != 1 || ref.Round != 1 {
+		t.Fatalf("the evidence names seat %d round %d, want seat 1 round 1", ref.Seat, ref.Round)
+	}
+	if len(ref.Deck) == 0 || len(ref.Proof) == 0 || len(ref.Sig) == 0 {
+		t.Fatal("the evidence is missing the refused frame")
+	}
+	prior, err := d.PriorDeck(ref.Round)
+	if err != nil {
+		t.Fatalf("prior deck: %v", err)
+	}
+	if !deck.SameDeck(ref.Input, prior) {
+		t.Fatal("the recorded input is not the deck this peer verified against")
+	}
+	// And the refusal consumed nothing: the peer still counts one accepted
+	// shuffle, so a corrected retelling could still land.
+	if d.Shuffled() != 1 {
+		t.Fatalf("the round moved to %d on a refusal", d.Shuffled())
+	}
+}
+
+// A complained-about shuffler owes the answer above everything else, at a table
+// that is over as much as at one that is not - the dispute is exactly for the
+// state where the game cannot press anybody.
+func TestAComplainedShufflerOwesTheAnswer(t *testing.T) {
+	n := wedgedOnAProof(t)
+	tb := n.peers[0]
+
+	if err := tb.OpenComplaint(1, 1); err != nil {
+		t.Fatalf("open complaint: %v", err)
+	}
+	d, ok := tb.Owes(1)
+	if !ok || d.Kind != DutyShuffleAnswer {
+		t.Fatalf("the disputed shuffler owes %v, want the answer", d)
+	}
+
+	const start uint32 = 1_100_000
+	tb.AtHeight(start)
+	tb.AtHeight(start + 8)
+	if got, ok := tb.Claimable(3); !ok || got.Kind != DutyShuffleAnswer {
+		t.Fatalf("the unanswered dispute never became claimable: %v", got)
+	}
+
+	// The table ending does not discharge it - that is the whole point of a
+	// duty the bond backs.
+	tb.VoidWedgedHand()
+	tb.AtHeight(start + 16)
+	if got, ok := tb.Claimable(3); !ok || got.Kind != DutyShuffleAnswer {
+		t.Fatalf("a table being over silenced the dispute: %v", got)
+	}
+
+	tb.CloseComplaint(1)
+	if _, ok := tb.Owes(1); ok {
+		t.Fatal("a closed complaint is still owed")
+	}
+}
+
+// A proven wedge ends the table with no unanimity at all: no seat left, and it
+// still settles at the boundary everybody signed, with the cause recorded so
+// settlement at hand zero knows it is allowed.
+func TestAProvenWedgeEndsTheTableWithoutUnanimity(t *testing.T) {
+	n := wedgedOnAProof(t)
+	tb := n.peers[0]
+
+	if tb.Over() {
+		t.Fatal("the table ended before anything was proven")
+	}
+	tb.VoidWedgedHand()
+	if !tb.Over() {
+		t.Fatal("a proven wedge did not end the table")
+	}
+	if tb.VoidCause() != VoidWedge {
+		t.Fatalf("the void cause is %v, want the wedge", tb.VoidCause())
+	}
+	last, stacks := tb.Settled()
+	if last != 0 {
+		t.Fatalf("it settled at hand %d, and no boundary was ever signed", last)
+	}
+	if len(stacks) != 2 || stacks[0] != 1000 || stacks[1] != 1000 {
+		t.Fatalf("hand zero's stacks are %v, want the stakes back", stacks)
 	}
 }

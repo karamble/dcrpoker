@@ -146,6 +146,44 @@ type Driver struct {
 	// secrets as it plays, because nothing else keeps them. See record.go.
 	rec       *HandRecord
 	recShares map[int][]kyber.Point
+
+	// refusal is the evidence of a shuffle this peer verified and refused:
+	// the input deck it verified against, and the signed frame it refused.
+	// Recorded because this is the one moment anything holds both - the
+	// deck and round do not advance on a refusal, so this is evidence, not
+	// progress, and the dispute over it is opened a layer up.
+	refusal *ShuffleRefusal
+}
+
+// ShuffleRefusal is what a peer refused and what it refused it against.
+type ShuffleRefusal struct {
+	// Seat and Round are whose shuffle failed and when.
+	Seat  int
+	Round int
+	// Input is the deck this peer verified the shuffle against - its own,
+	// built from every shuffle it accepted before this one.
+	Input deck.Deck
+	// Deck, Proof and Sig are the refused frame, whole. The signature was
+	// verified before the proof was, so the refusal is against a shuffle
+	// its seat provably signed.
+	Deck  deck.Deck
+	Proof []byte
+	Sig   []byte
+}
+
+// ErrShuffleRefused says a signed shuffle arrived and its proof did not verify
+// against this peer's deck.
+//
+// A typed error rather than a recorded verdict, deliberately: a proof failing
+// here means either the proof is forged or the two peers hold different input
+// decks, and this layer cannot tell which - that is what the dispute exists to
+// decide, and the dispute belongs to the layer that can publish. What this
+// layer does is keep the evidence and say clearly that there is some.
+type ErrShuffleRefused struct{ Refusal *ShuffleRefusal }
+
+func (e *ErrShuffleRefused) Error() string {
+	return fmt.Sprintf("seat %d's shuffle did not verify against this peer's deck at round %d",
+		e.Refusal.Seat, e.Refusal.Round)
 }
 
 type heldShare struct {
@@ -240,6 +278,48 @@ func (d *Driver) Shuffled() int { return d.round }
 
 // State is the betting, as folded from the log so far.
 func (d *Driver) State() *replay.State { return d.state }
+
+// RefusedShuffle is the evidence of a shuffle this peer refused, if it has.
+func (d *Driver) RefusedShuffle() (*ShuffleRefusal, bool) {
+	return d.refusal, d.refusal != nil
+}
+
+// Joint is the key this hand's deck is masked under.
+func (d *Driver) Joint() kyber.Point { return d.joint }
+
+// Keys is every seat's card key for this hand, in seat order.
+func (d *Driver) Keys() []kyber.Point {
+	return append([]kyber.Point(nil), d.cfg.CardKeys...)
+}
+
+// PriorDeck is the input to one round's shuffle, as this peer verified it: the
+// public starting deck for round zero, and the deck the previous seat
+// published - and this peer accepted - for every round after.
+func (d *Driver) PriorDeck(round int) (deck.Deck, error) {
+	if round == 0 {
+		return deck.Fresh(d.joint), nil
+	}
+	if round < 0 || round-1 >= len(d.rec.Hand.Steps) {
+		return nil, fmt.Errorf("this peer holds shuffles through round %d, not %d",
+			len(d.rec.Hand.Steps), round)
+	}
+	return d.rec.Hand.Steps[round-1].Deck, nil
+}
+
+// Steps is the shuffles this peer has accepted so far, in order.
+func (d *Driver) Steps() []deck.Step {
+	return append([]deck.Step(nil), d.rec.Hand.Steps...)
+}
+
+// OwnShuffleSecret is this peer's own shuffle for the hand: the round it
+// shuffled in, the deck it published, and the secret that produces it. ok is
+// false until this peer has shuffled.
+func (d *Driver) OwnShuffleSecret() (round int, out deck.Deck, sec *deck.ShuffleSecret, ok bool) {
+	if d.rec.Secrets.Shuffle == nil || d.cfg.Seat >= len(d.rec.Hand.Steps) {
+		return 0, nil, nil, false
+	}
+	return d.cfg.Seat, d.rec.Hand.Steps[d.cfg.Seat].Deck, d.rec.Secrets.Shuffle, true
+}
 
 // Out is something to send to the rest of the table.
 type Out interface{ out() }
@@ -510,7 +590,20 @@ func (d *Driver) onShuffle(m InShuffle) ([]Out, error) {
 	// Verified before it is built on, every time. An unverified shuffle is an
 	// unconstrained one and the whole guarantee is gone.
 	if err := deck.VerifyShuffle(ctx, d.joint, d.deck, m.Deck, m.Proof); err != nil {
-		return nil, fmt.Errorf("seat %d's shuffle: %w", m.Seat, err)
+		// Keep what only this moment holds: the input this peer verified
+		// against and the signed frame it refused. Nothing advances - the
+		// deck and round are exactly as they were - so this is evidence,
+		// and the typed error is what tells the layer above there is some.
+		d.refusal = &ShuffleRefusal{
+			Seat:  m.Seat,
+			Round: d.round,
+			Input: append(deck.Deck(nil), d.deck...),
+			Deck:  m.Deck,
+			Proof: m.Proof,
+			Sig:   m.Sig,
+		}
+		return nil, fmt.Errorf("seat %d's shuffle: %w: %w",
+			m.Seat, &ErrShuffleRefused{Refusal: d.refusal}, err)
 	}
 	d.noteStep(d.cfg.CardKeys[m.Seat], m.Deck, m.Proof)
 	d.deck = m.Deck

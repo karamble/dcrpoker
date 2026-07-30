@@ -114,8 +114,33 @@ type Table struct {
 	challenges   map[uint64]map[int]bool
 	challengedBy map[int]uint64
 
+	// complaints is which seat owes the answer for each disputed shuffle,
+	// by hand. See OpenComplaint.
+	complaints map[uint64]int
+
 	over bool
+	// void is why a table that is over never finished its last hand, if it
+	// did not. It is what lets a stakes-back settlement at hand zero be
+	// reachable exactly when the stop was proven or unanimous, and never as
+	// an ordinary path.
+	void VoidCause
 }
+
+// VoidCause is why a hand in progress was voided, if one was.
+type VoidCause int
+
+const (
+	// VoidNone: nothing was voided; the table ended at a boundary.
+	VoidNone VoidCause = iota
+	// VoidAllLeft: every seat asked to leave, the unanimous stop.
+	VoidAllLeft
+	// VoidWedge: a shuffle dispute was resolved - either side named, or the
+	// silence claimed - which proves the hand could never finish. The proof
+	// is what replaces unanimity: every peer reaches the same verdict from
+	// published material, so every peer voids the same hand at the same
+	// boundary without asking anybody.
+	VoidWedge
+)
 
 // NewTable seats this peer.
 func NewTable(cfg TableConfig) (*Table, error) {
@@ -563,7 +588,29 @@ func (t *Table) stopIfEverybodyLeft() {
 	}
 	t.over = true
 	t.hands = nil
+	t.void = VoidAllLeft
 }
+
+// VoidWedgedHand ends the table at the last signed boundary because the hand
+// in progress is proven unable to finish.
+//
+// The proof replaces the unanimity stopIfEverybodyLeft requires. Unanimity
+// exists so a player losing the hand cannot void it by getting up - but a
+// resolved shuffle dispute is a verdict every peer reaches identically from
+// published material, and either way it resolves the deck is exposed and the
+// hand is dead. Called only when such a verdict lands, never on suspicion:
+// the caller is what holds the published evidence.
+func (t *Table) VoidWedgedHand() {
+	if t.over {
+		return
+	}
+	t.over = true
+	t.hands = nil
+	t.void = VoidWedge
+}
+
+// VoidCause reports why the hand in progress was voided, if one was.
+func (t *Table) VoidCause() VoidCause { return t.void }
 
 // autoFold folds this seat's hand if it is leaving and it is its turn.
 func (t *Table) autoFold() ([]Out, error) {
