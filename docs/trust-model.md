@@ -597,39 +597,36 @@ Ordered by what would bite first.
   without a seat means re-forming all three, which is a new table with carried
   stacks rather than this one with a gap.
 
-- **Card keys carry no proof of possession.** `deck.JointKey` sums whatever
-  points the seats publish. A seat that waits until it has seen the others can
-  pick `r`, publish `r*G` minus their sum, and make the joint key one whose
-  secret it alone holds - every card at the table readable to it.
+- **Card keys carry a possession proof** (schema version 5). Every announcement
+  proves, via `Rep("pub","x","G")` through `proof.HashProve`, that its announcer
+  knows the key's discrete log; the proof is folded into the signed digest, so
+  it can be neither stripped nor swapped, and a key without one is refused with
+  the seat still owing a card key. The rogue key - `r*G` minus everybody else's
+  sum, steering the joint key to a point one seat controls - is refused at the
+  door rather than left to fail algebraically later. Because the base point
+  generates the prime-order subgroup, nothing of small order has a Rep witness;
+  the sole degenerate witness is the identity (`x = 0`), which `deck.ValidKey`
+  refuses before the proof is consulted. Possession plus that refusal is the
+  whole check, and no separate cofactor test is wanted.
 
-  It gains nothing by doing so, and the reason is algebraic rather than a matter
-  of ordering. Knowing the joint secret means knowing the discrete log of the sum
-  of the other keys, which is exactly what knowing its own key's discrete log
-  would need, so such a seat can produce no valid reveal share for any card in
-  any street - not for the hole cards dealt before the first bet, and not for
-  anything later. Reordering the deal would change nothing. The rogue key buys
-  the deck of a hand it has itself made undealable, with no way to peek and then
-  decide to continue. What remains is a wedged hand, which a seat can already
-  cause by staying silent.
-
-  That argument rests on two things, and neither is enforced by anything that
-  would notice if it changed.
+  Two invariants still carry the deeper guarantee, and neither is enforced by
+  anything that would notice if it changed.
 
   The first is that **the set of keys summed into the joint key is the set of
   seats whose share is required to open every slot.** Today both come from one
   field with a single call site each, so they cannot disagree. A seat sitting in
   the joint key without owing a share for every slot - a sit-out, a spectator
   key, a layout with an asymmetric share set - would open exactly the gap the
-  algebra otherwise closes.
+  possession proof and the algebra otherwise close.
 
   The second is that **the reveal predicate is sound.** A seat holding the joint
   secret can compute the correct share value from the shares the others publish;
   it is stopped by the proof and by nothing else. That proof is a conjunction of
   Rep statements over a shared secret run through `proof.HashProve`, whose
   verifier re-derives the challenge. It is deliberately not kyber's `proof/dleq`,
-  whose verifier does not, and which `dleq_check_test.go` forges to show it. Were
-  that ever to regress, the rogue key would stop being self-defeating and become
-  a seat quietly reading every hole card at a live table.
+  whose verifier does not, and which `dleq_check_test.go` forges to show it. The
+  possession proof leans on the same `HashProve` soundness; were it ever to
+  regress, both checks would fail together.
 
   A key that contributes *nothing* is refused, at announcement and again wherever
   a deck is masked (`deck.ValidKey`): the identity would otherwise sum away to
@@ -637,13 +634,23 @@ Ordered by what would bite first.
   not be caught downstream, because a zero secret produces shares that verify and
   cards that open.
 
-  Proving possession needs a field on the key announcement and so a wire break;
-  it is planned for the next one. It also completes the question of what a
-  published point may be: `Rep("pub", "x", "G")` proves `pub = x*G`, and because
-  the base point generates the prime-order subgroup, nothing of small order has
-  such a witness - except the identity, which is `0*G` and is refused already. A
-  possession proof plus that refusal is the whole check, and no separate cofactor
-  test is wanted.
+- **A refused shuffle is a dispute every peer judges identically** (schema
+  version 5). A signed shuffle whose proof fails verification used to wedge the
+  hand with no exit short of unanimity, which the seat that was down had every
+  reason to refuse. The refuser now publishes a complaint carrying the refused
+  frame whole - deck, proof, the shuffler's signature - and the input deck it
+  verified against. That is everything a verdict needs: the claimed input is
+  checked against the judge's own signed upstream, then the shuffle proof is
+  re-run. Input false or proof valid, the complainer is named; proof invalid,
+  the shuffler signed a frame honest software never emits, and is named.
+  Nothing secret ever moves, nobody owes an answer, and the named seat's
+  punishment is its withheld bond release. The verdict proves the hand can
+  never finish, so it is void and the table settles at the last signed
+  boundary without unanimity - including at hand zero, the stakes back, which
+  is reachable exactly when a table is over for a proven or unanimous reason
+  and never in ordinary play. The complaint signs by position: an honest
+  complainer's content is fixed by where it stands, so shifting the story
+  signs twice at one position and publishes its key.
 
 - **`MinBondAtoms` is 0.01 DCR**, which funds the full accusation depth at every
   table size the escrow allows (`escrow.AffordableDepth`). It is a real floor

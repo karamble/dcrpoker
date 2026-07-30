@@ -1546,3 +1546,102 @@ func TestACommittedTableAbortsAtTheFundingDeadline(t *testing.T) {
 		t.Fatal("the abandonment was not written down, so a restart would resurrect the wait")
 	}
 }
+
+// A version bump must not orphan coin. The four receipts on the live boxes
+// were recorded under version 4; a version 5 binary reads the stored terms and
+// believes them - nothing on the receipt path pins GameVer - so the outpoints
+// stay visible. What the bump does refuse is playing: a fresh join of the same
+// session computes version 5 terms, which are different terms.
+func TestAVersionFourReceiptResumesUnderVersionFive(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+
+	// The terms as a version 4 binary recorded them.
+	terms := inviteTerms(inv)
+	terms.GameVer = schema.Version - 1
+
+	dir := t.TempDir()
+	p := h.restart(t, dir, "tok")
+
+	// A genuinely settled version 4 table, built the way a version 4 binary
+	// would have built it: this identity's own credentials, a full roster,
+	// both commits, a drawn seating. Every signature is over the version 4
+	// terms, exactly as on disk on the live boxes.
+	creds, err := p.id.credentials(terms.SID)
+	if err != nil {
+		t.Fatalf("credentials: %v", err)
+	}
+	other := h.lend(t, "bb")
+	f, err := membership.NewFormation(terms, creds)
+	if err != nil {
+		t.Fatalf("formation: %v", err)
+	}
+	j1, err := membership.SignJoin(terms, other)
+	if err != nil {
+		t.Fatalf("sign join: %v", err)
+	}
+	if err := f.AddJoin(j1); err != nil {
+		t.Fatalf("add join: %v", err)
+	}
+	c0, err := f.Bind()
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	c1, err := membership.SignCommit(terms, c0.Roster, other.Session)
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	if err := f.AddCommit(c1); err != nil {
+		t.Fatalf("add commit: %v", err)
+	}
+	beacon := make([]byte, 32)
+	for i := range beacon {
+		beacon[i] = byte(i + 3)
+	}
+	if err := f.SetBeacon(beacon); err != nil {
+		t.Fatalf("seat: %v", err)
+	}
+
+	rec := &record{
+		Terms:  schema.TermsFrom(terms),
+		GCID:   testGC,
+		Bound:  true,
+		Roster: hex.EncodeToString(c0.Roster[:]),
+		Beacon: hex.EncodeToString(beacon),
+		Funded: map[uint32]string{0: "aa11:0", 1: "bb22:0"},
+		Bonded: map[uint32]string{0: "cc33:0", 1: "dd44:0"},
+		Dealt:  true,
+	}
+	for _, j := range f.Joins() {
+		rec.Joins = append(rec.Joins, schema.JoinFrom(j))
+	}
+	for _, c := range f.Commits() {
+		rec.Commits = append(rec.Commits, schema.CommitFrom(c))
+	}
+	if err := p.tables.store.save(terms.SID, rec); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	back := h.restart(t, dir, "tok")
+	tbl := back.tables.m[terms.SID]
+	if tbl == nil {
+		t.Fatal("a version 4 receipt did not come back under version 5")
+	}
+	if !tbl.finished {
+		t.Fatal("a dealt version 4 record came back live")
+	}
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		t.Fatal("the receipt holds no seat")
+	}
+	if tbl.funded[seat] == "" || tbl.bonded[seat] == "" {
+		t.Fatal("the receipt lost its outpoints, which are the whole reason it exists")
+	}
+
+	// Playing it again is refused: accepting the same invitation now stamps
+	// version 5 terms, and the stored session was joined under different
+	// terms.
+	if _, err := back.tables.join(inv, testGC, back.id); err == nil {
+		t.Fatal("a version 4 session was joined fresh by a version 5 binary")
+	}
+}

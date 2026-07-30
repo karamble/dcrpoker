@@ -45,7 +45,15 @@ import (
 // 4 adds audit on challenge: any seat may demand a settled hand be recomputed
 // from every seat's deck secrets, and refusing to reveal is answered by the
 // claim. A peer on 3 cannot be asked to reveal, so the two do not play together.
-const Version = 4
+//
+// 5 adds the card-key possession proof and the shuffle dispute. A card key now
+// carries a Schnorr proof that its announcer knows its discrete log, folded
+// into the signed digest - a key without one is refused, so 4 and 5 do not
+// play together. And a signed shuffle that fails verification can be disputed
+// with a complaint that carries everything a verdict needs; every peer judges
+// it identically, the hand is void, and the table settles at the last signed
+// boundary without unanimity.
+const Version = 5
 
 // Game is the routing key for poker traffic.
 const Game = "poker"
