@@ -602,15 +602,34 @@ Ordered by what would bite first.
   pick `r`, publish `r*G` minus their sum, and make the joint key one whose
   secret it alone holds - every card at the table readable to it.
 
-  It gains nothing by doing so, and the reason is structural rather than a matter
+  It gains nothing by doing so, and the reason is algebraic rather than a matter
   of ordering. Knowing the joint secret means knowing the discrete log of the sum
   of the other keys, which is exactly what knowing its own key's discrete log
-  would need, so such a seat can never produce a valid reveal share for any card
-  in any street. Dealing asks every seat for a share of every other seat's hole
-  cards before betting opens, so the hand cannot be dealt at all. The rogue key
-  buys the deck of a hand it has itself made undealable, with no way to peek and
-  then decide to continue. What remains is a wedged hand, which a seat can
-  already cause by staying silent.
+  would need, so such a seat can produce no valid reveal share for any card in
+  any street - not for the hole cards dealt before the first bet, and not for
+  anything later. Reordering the deal would change nothing. The rogue key buys
+  the deck of a hand it has itself made undealable, with no way to peek and then
+  decide to continue. What remains is a wedged hand, which a seat can already
+  cause by staying silent.
+
+  That argument rests on two things, and neither is enforced by anything that
+  would notice if it changed.
+
+  The first is that **the set of keys summed into the joint key is the set of
+  seats whose share is required to open every slot.** Today both come from one
+  field with a single call site each, so they cannot disagree. A seat sitting in
+  the joint key without owing a share for every slot - a sit-out, a spectator
+  key, a layout with an asymmetric share set - would open exactly the gap the
+  algebra otherwise closes.
+
+  The second is that **the reveal predicate is sound.** A seat holding the joint
+  secret can compute the correct share value from the shares the others publish;
+  it is stopped by the proof and by nothing else. That proof is a conjunction of
+  Rep statements over a shared secret run through `proof.HashProve`, whose
+  verifier re-derives the challenge. It is deliberately not kyber's `proof/dleq`,
+  whose verifier does not, and which `dleq_check_test.go` forges to show it. Were
+  that ever to regress, the rogue key would stop being self-defeating and become
+  a seat quietly reading every hole card at a live table.
 
   A key that contributes *nothing* is refused, at announcement and again wherever
   a deck is masked (`deck.ValidKey`): the identity would otherwise sum away to
@@ -618,9 +637,13 @@ Ordered by what would bite first.
   not be caught downstream, because a zero secret produces shares that verify and
   cards that open.
 
-  Proving possession properly needs a field on the key announcement and so a wire
-  break; it is planned for the next one, and would settle subgroup membership at
-  the same time, which is the other thing a published point is not checked for.
+  Proving possession needs a field on the key announcement and so a wire break;
+  it is planned for the next one. It also completes the question of what a
+  published point may be: `Rep("pub", "x", "G")` proves `pub = x*G`, and because
+  the base point generates the prime-order subgroup, nothing of small order has
+  such a witness - except the identity, which is `0*G` and is refused already. A
+  possession proof plus that refusal is the whole check, and no separate cofactor
+  test is wanted.
 
 - **`MinBondAtoms` is 0.01 DCR**, which funds the full accusation depth at every
   table size the escrow allows (`escrow.AffordableDepth`). It is a real floor
