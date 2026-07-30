@@ -426,3 +426,79 @@ func TestAMisreadCardIsThisMachinesFaultAndNotTheHands(t *testing.T) {
 		t.Fatal("a card this peer misread named somebody else")
 	}
 }
+
+// A wedged hand has fewer shuffles than seats by definition, and the dispute
+// over one asks about exactly the shuffles that were recorded. The shuffle-only
+// check answers for any seat the transcript reaches - and refuses to speculate
+// about the ones it does not.
+func TestAShuffleSecretVerifiesAgainstAPartialHand(t *testing.T) {
+	h, secrets := play(t, 3)
+
+	// The hand stops after the second shuffle: seat 2's never arrived.
+	partial := &Hand{Match: h.Match, Hand: h.Hand, Pubs: h.Pubs, Steps: h.Steps[:2]}
+
+	for seat := 0; seat < 2; seat++ {
+		if err := VerifyShuffleSecret(partial, seat, secrets[seat].Shuffle); err != nil {
+			t.Fatalf("seat %d's honest secret was refused against a partial hand: %v", seat, err)
+		}
+	}
+	if err := VerifyShuffleSecret(partial, 2, secrets[2].Shuffle); err == nil {
+		t.Fatal("a secret was judged for a shuffle the transcript never recorded")
+	}
+}
+
+// The shuffle-only check keeps the full check's teeth: a secret that does not
+// reproduce the published deck names its publisher, and so does anything that
+// is not a permutation.
+func TestAShuffleSecretThatDoesNotReproduceItsDeckIsACheat(t *testing.T) {
+	h, secrets := play(t, 2)
+
+	var cheat *Cheat
+	wrong := &ShuffleSecret{Pi: secrets[1].Shuffle.Pi, Beta: secrets[0].Shuffle.Beta}
+	if err := VerifyShuffleSecret(h, 1, wrong); !errors.As(err, &cheat) {
+		t.Fatalf("borrowed blinding factors were not called a cheat: %v", err)
+	}
+
+	swapped := &ShuffleSecret{
+		Pi:   append([]int(nil), secrets[1].Shuffle.Pi...),
+		Beta: secrets[1].Shuffle.Beta,
+	}
+	swapped.Pi[0], swapped.Pi[1] = swapped.Pi[1], swapped.Pi[0]
+	if err := VerifyShuffleSecret(h, 1, swapped); !errors.As(err, &cheat) {
+		t.Fatalf("a doctored permutation was not called a cheat: %v", err)
+	}
+
+	notPerm := &ShuffleSecret{Pi: make([]int, Size), Beta: secrets[1].Shuffle.Beta}
+	if err := VerifyShuffleSecret(h, 1, notPerm); !errors.As(err, &cheat) {
+		t.Fatalf("a non-permutation was not called a cheat: %v", err)
+	}
+}
+
+// No card key crosses the check. Heads-up the permutations already compose to
+// the whole deck, but at three or more seats a card key is strictly more than
+// a dispute needs to reveal - so the shuffle-only check must stay useful with
+// nothing but the shuffle secret in hand.
+func TestAShuffleSecretNeedsNoCardKey(t *testing.T) {
+	h, secrets := play(t, 3)
+	for seat := range secrets {
+		if err := VerifyShuffleSecret(h, seat, secrets[seat].Shuffle); err != nil {
+			t.Fatalf("seat %d: %v", seat, err)
+		}
+	}
+}
+
+// SameDeck is the whole of the dispute's first stage: the two claimed input
+// decks either are or are not the same masking.
+func TestSameDeckIsCardForCard(t *testing.T) {
+	h, _ := play(t, 2)
+	a, b := h.Steps[0].Deck, h.Steps[1].Deck
+	if !SameDeck(a, a) {
+		t.Fatal("a deck is not the same as itself")
+	}
+	if SameDeck(a, b) {
+		t.Fatal("two different maskings were called the same deck")
+	}
+	if SameDeck(a, a[:len(a)-1]) {
+		t.Fatal("a shorter deck was called the same")
+	}
+}
