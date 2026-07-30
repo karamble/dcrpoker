@@ -240,3 +240,65 @@ func TestAProvenWedgeEndsTheTableWithoutUnanimity(t *testing.T) {
 		t.Fatalf("hand zero's stacks are %v, want the stakes back", stacks)
 	}
 }
+
+// The dispute digests separate every field, and the two domains take the
+// nonces their content demands: a complaint's content is fixed by its
+// position, so shifting the story is equivocation and publishes the key; an
+// answer carries freshly drawn blinding factors, so its nonce must commit to
+// the bytes or signing a rebuild would.
+func TestDisputeDigestsSeparateTheirFields(t *testing.T) {
+	n := wedgedOnAProof(t)
+	d := n.peers[0].Hand()
+	ref, _ := d.RefusedShuffle()
+
+	refused, err := ShuffleFrameDigest(testMatch, 1, ref.Seat, ref.Deck, ref.Proof)
+	if err != nil {
+		t.Fatalf("frame digest: %v", err)
+	}
+	base, err := ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round), ref.Input, refused)
+	if err != nil {
+		t.Fatalf("complaint digest: %v", err)
+	}
+	other := [32]byte{1}
+	for name, variant := range map[string]func() ([32]byte, error){
+		"another hand":  func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 2, 0, uint32(ref.Round), ref.Input, refused) },
+		"another seat":  func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 1, 1, uint32(ref.Round), ref.Input, refused) },
+		"another round": func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round)+1, ref.Input, refused) },
+		"another input": func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round), ref.Deck, refused) },
+		"another frame": func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round), ref.Input, other) },
+	} {
+		got, err := variant()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got == base {
+			t.Fatalf("the complaint digest ignores %s", name)
+		}
+	}
+
+	if !forfeit.DomainShuffleAnswer.Committed() {
+		t.Fatal("the answer carries fresh blinding factors and its nonce does not commit to them")
+	}
+	if forfeit.DomainShuffleComplaint.Committed() {
+		t.Fatal("a complaint's content is fixed by its position; a committed nonce would waive the equivocation punishment")
+	}
+
+	_, _, sec, ok := n.peers[1].Hand().OwnShuffleSecret()
+	if !ok {
+		t.Fatal("the shuffler holds no secret")
+	}
+	a1, err := ShuffleAnswerDigest(testMatch, 1, 1, 1, sec)
+	if err != nil {
+		t.Fatalf("answer digest: %v", err)
+	}
+	a2, err := ShuffleAnswerDigest(testMatch, 1, 1, 2, sec)
+	if err != nil {
+		t.Fatalf("answer digest: %v", err)
+	}
+	if a1 == a2 {
+		t.Fatal("the answer digest ignores the round")
+	}
+	if _, err := ShuffleAnswerDigest(testMatch, 1, 1, 1, nil); err == nil {
+		t.Fatal("an empty answer was signable")
+	}
+}

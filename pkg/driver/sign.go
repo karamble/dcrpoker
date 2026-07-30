@@ -47,6 +47,9 @@ var (
 	leavingTag   = []byte("dcrpoker/deal/leaving/v1")
 	challengeTag = []byte("dcrpoker/deal/challenge/v1")
 	secretsTag   = []byte("dcrpoker/deal/secrets/v1")
+
+	shuffleComplaintTag = []byte("dcrpoker/deal/shufflecomplaint/v1")
+	shuffleAnswerTag    = []byte("dcrpoker/deal/shuffleanswer/v1")
 )
 
 // field writes a length-prefixed field, so no two different frames can hash the
@@ -184,6 +187,71 @@ func SecretsDigest(match string, hand uint64, seat int, s *deck.Secrets) ([32]by
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out, nil
+}
+
+// ShuffleComplaintDigest is what a seat signs to dispute a shuffle it refused.
+//
+// It binds the claimed input deck and the shuffleDigest of the frame being
+// disputed, so a complaint is about exactly one signed shuffle and exactly one
+// claimed input - a complainer cannot later say it meant a different one
+// without signing a second complaint at the same position, which publishes
+// its key.
+func ShuffleComplaintDigest(match string, hand uint64, by int, round uint32,
+	input deck.Deck, refused [32]byte) ([32]byte, error) {
+	db, err := deckDigestBytes(input)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("claimed input: %w", err)
+	}
+	h := sha256.New()
+	field(h, shuffleComplaintTag)
+	field(h, []byte(match))
+	num(h, hand)
+	num(h, uint64(by))
+	num(h, uint64(round))
+	field(h, db)
+	field(h, refused[:])
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out, nil
+}
+
+// ShuffleAnswerDigest is what a disputed shuffler signs to give its shuffle
+// secret away. Its own digest rather than SecretsDigest, which hard-requires
+// the card key - an answer must reveal the shuffle half and nothing more.
+func ShuffleAnswerDigest(match string, hand uint64, seat int, round uint32,
+	s *deck.ShuffleSecret) ([32]byte, error) {
+	if s == nil {
+		return [32]byte{}, fmt.Errorf("nothing to sign: no shuffle secret")
+	}
+	h := sha256.New()
+	field(h, shuffleAnswerTag)
+	field(h, []byte(match))
+	num(h, hand)
+	num(h, uint64(seat))
+	num(h, uint64(round))
+	var pi bytes.Buffer
+	for _, j := range s.Pi {
+		_ = binary.Write(&pi, binary.BigEndian, uint32(j))
+	}
+	field(h, pi.Bytes())
+	var beta bytes.Buffer
+	for i, b := range s.Beta {
+		bb, err := b.MarshalBinary()
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("blinding factor %d: %w", i, err)
+		}
+		field(&beta, bb)
+	}
+	field(h, beta.Bytes())
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out, nil
+}
+
+// ShuffleFrameDigest is the digest of a signed shuffle frame, exported so a
+// complaint can name exactly which frame it disputes.
+func ShuffleFrameDigest(match string, hand uint64, seat int, d deck.Deck, proof []byte) ([32]byte, error) {
+	return shuffleDigest(match, hand, seat, d, proof)
 }
 
 // VerifySeatSig checks a signature against the roster key a seat committed,

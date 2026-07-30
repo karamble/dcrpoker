@@ -176,6 +176,17 @@ const (
 	// KindSecrets is one seat giving a challenged hand's secrets away -
 	// worthless to anybody but an auditor, which is the point.
 	KindSecrets Kind = "secrets"
+
+	// KindShuffleComplaint is a seat disputing a shuffle it verified and
+	// refused: the input deck it verified against, and the signed frame it
+	// refused, whole - so a peer that lost the original still reaches the
+	// verdict. It obliges the shuffler to answer with its shuffle secret.
+	KindShuffleComplaint Kind = "shuffle_complaint"
+	// KindShuffleAnswer is the disputed shuffler's shuffle secret for the
+	// round, and nothing more - not the card key, which a dispute has no
+	// business costing. Every peer recomputes the shuffle from it and names
+	// whoever was wrong.
+	KindShuffleAnswer Kind = "shuffle_answer"
 )
 
 // Message is the envelope every payload travels in.

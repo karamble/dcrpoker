@@ -102,6 +102,19 @@ const (
 	// secrets were drawn fresh, so the position does not fix the bytes and
 	// the nonce must commit to them.
 	DomainSecrets Domain = "secrets"
+
+	// DomainShuffleComplaint is a seat disputing a shuffle it refused: one
+	// per hand, its content fixed by the position - for an honest refuser
+	// the claimed input deck is exactly the deck it verified against, which
+	// its position determines. Position-signed on purpose: a complainer
+	// that shifts its story signs two different complaints at one position,
+	// and equivocation publishes its key. The deterrent is free.
+	DomainShuffleComplaint Domain = "shufflecomplaint"
+	// DomainShuffleAnswer is the disputed shuffler giving its shuffle
+	// secret away. The blinding factors were drawn fresh, so the position
+	// does not fix the bytes and the nonce must commit to them - the same
+	// reasoning as DomainSecrets.
+	DomainShuffleAnswer Domain = "shuffleanswer"
 )
 
 // Which nonce a domain takes, as a property of the domain and not a choice at the
@@ -110,20 +123,23 @@ const (
 // same position can carry different bytes on a second attempt, and signing both
 // publishes the key.
 var committedDomains = map[Domain]bool{
-	DomainCardKey: true,
-	DomainShuffle: true,
-	DomainSecrets: true,
+	DomainCardKey:       true,
+	DomainShuffle:       true,
+	DomainSecrets:       true,
+	DomainShuffleAnswer: true,
 }
 
 var knownDomains = map[Domain]bool{
-	DomainEntry:      true,
-	DomainHead:       true,
-	DomainCheckpoint: true,
-	DomainCardKey:    true,
-	DomainShuffle:    true,
-	DomainLeaving:    true,
-	DomainChallenge:  true,
-	DomainSecrets:    true,
+	DomainEntry:            true,
+	DomainHead:             true,
+	DomainCheckpoint:       true,
+	DomainCardKey:          true,
+	DomainShuffle:          true,
+	DomainLeaving:          true,
+	DomainChallenge:        true,
+	DomainSecrets:          true,
+	DomainShuffleComplaint: true,
+	DomainShuffleAnswer:    true,
 }
 
 // Committed reports whether this domain commits to the message in its nonce.
