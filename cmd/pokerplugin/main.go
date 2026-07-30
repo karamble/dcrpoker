@@ -267,14 +267,14 @@ func (p *plugin) watchChain(ctx context.Context) {
 			// Our own stake and bond are written down when they are paid
 			// rather than when they confirm, so this is what lets a table
 			// this box paid for start dealing.
-			p.confirmOurPayments(ctx)
+			p.confirmOurPayments(ctx, tip.Height)
 			// Before the tick as well: a bond that moved is a thing to
 			// learn now, and a claim against ours a thing to answer now.
 			p.watchBonds(ctx)
 			// The bookend of confirmOurPayments: a stake the chain has
 			// paid back out is forgotten, which is what finally lets a
 			// receipt whose coin is all accounted for be dropped.
-			p.forgetSpentStakes(ctx)
+			p.forgetSpentStakes(ctx, tip.Height)
 			// And the other side of a dispute: a claimed bond whose window
 			// has closed is one the table can take.
 			p.takeClaimed(ctx)

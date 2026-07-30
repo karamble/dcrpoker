@@ -158,9 +158,56 @@ func TestAStakeIsOnlyForgottenOnceTheTableIsOver(t *testing.T) {
 	h.spent[stake] = true
 	h.mu.Unlock()
 
-	a.forgetSpentStakes(context.Background())
+	a.forgetSpentStakes(context.Background(), 0)
 	if got := tbl.funded[seat]; got != stake {
 		t.Fatalf("a live table's stake became %q because the chain view blinked", got)
 	}
 	_ = b
+}
+
+// A payment's standing only changes when a block arrives, so a payment that
+// never confirms must cost one question a block, not one a poll, forever -
+// unbounded repetition of a question whose answer cannot have changed is the
+// buried-join fault one layer down.
+func TestOurPaymentsAreAskedAboutOncePerBlock(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	_ = b
+
+	tbl := a.tables.m[terms.SID]
+	seat, _ := tbl.form.OurSeat()
+	stake, bond := tbl.funded[seat], tbl.bonded[seat]
+
+	// Un-confirm our own payments, and make the chain agree: both outputs
+	// exist and sit under the depth they need, so every ask comes back
+	// "not yet" for as long as this test cares to ask.
+	a.tables.mu.Lock()
+	tbl.ourStakeSeen, tbl.ourBondSeen = false, false
+	tbl.confirmAskedAt = 0
+	a.tables.mu.Unlock()
+	h.mu.Lock()
+	h.shallow[stake], h.shallow[bond] = 0, 0
+	askedBefore := h.asked[stake] + h.asked[bond]
+	h.mu.Unlock()
+
+	askedNow := func() int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.asked[stake] + h.asked[bond] - askedBefore
+	}
+
+	at := testHeight.Load() + 100
+	a.confirmOurPayments(context.Background(), at)
+	if got := askedNow(); got != 2 {
+		t.Fatalf("asked %d questions at a fresh height, want the stake and the bond", got)
+	}
+	a.confirmOurPayments(context.Background(), at)
+	a.confirmOurPayments(context.Background(), at)
+	if got := askedNow(); got != 2 {
+		t.Fatalf("asked %d questions after two more polls at one height; the answer cannot have changed", got)
+	}
+	a.confirmOurPayments(context.Background(), at+1)
+	if got := askedNow(); got != 4 {
+		t.Fatalf("asked %d questions after a new block, want the pair again", got)
+	}
 }

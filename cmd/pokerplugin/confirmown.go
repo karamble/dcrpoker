@@ -41,8 +41,12 @@ func (tbl *table) ourMoneyConfirmed() bool {
 // dealing when it agrees.
 //
 // Shaped like learnBondValues: gather under the lock, ask the chain without it
-// so one slow answer cannot stall every other table, then apply.
-func (p *plugin) confirmOurPayments(ctx context.Context) {
+// so one slow answer cannot stall every other table, then apply. Once a block
+// rather than once a poll - confirmations only arrive with a block, so asking
+// again at the same height re-asks a question whose answer cannot have
+// changed, and a payment that never confirms would otherwise be asked about
+// every poll forever.
+func (p *plugin) confirmOurPayments(ctx context.Context, height int64) {
 	type ask struct {
 		sid     string
 		seat    uint32
@@ -60,6 +64,9 @@ func (p *plugin) confirmOurPayments(ctx context.Context) {
 		if !ok || tbl.finished {
 			continue
 		}
+		if height > 0 && height <= tbl.confirmAskedAt {
+			continue
+		}
 		a := ask{sid: sid, seat: seat, buyIn: tbl.terms.BuyInAtoms}
 		if out := tbl.funded[seat]; out != "" && !tbl.ourStakeSeen {
 			if want, err := tbl.deposit(seat, p.tables.params); err == nil {
@@ -74,6 +81,7 @@ func (p *plugin) confirmOurPayments(ctx context.Context) {
 		if a.stake == "" && a.bond == "" {
 			continue
 		}
+		tbl.confirmAskedAt = height
 		asks = append(asks, a)
 	}
 	p.tables.mu.Unlock()
@@ -140,7 +148,11 @@ func (p *plugin) confirmOurPayments(ctx context.Context) {
 // transaction was evicted unmined. That is absent from both views too, and
 // clearing it forgets a payment that never happened - which loses nothing,
 // because an unmined payment's inputs never left this player's wallet.
-func (p *plugin) forgetSpentStakes(ctx context.Context) {
+//
+// Once a block, like confirmOurPayments and for the same reason: an outpoint
+// only leaves the chain when a block arrives, and a receipt whose coin never
+// moves would otherwise be asked about every poll for as long as it is held.
+func (p *plugin) forgetSpentStakes(ctx context.Context, height int64) {
 	type ask struct {
 		sid   string
 		seat  uint32
@@ -153,10 +165,14 @@ func (p *plugin) forgetSpentStakes(ctx context.Context) {
 		if !tbl.finished && (tbl.play == nil || !tbl.play.Over()) {
 			continue
 		}
+		if height > 0 && height <= tbl.forgetAskedAt {
+			continue
+		}
 		seat, ok := tbl.form.OurSeat()
 		if !ok || tbl.funded[seat] == "" {
 			continue
 		}
+		tbl.forgetAskedAt = height
 		asks = append(asks, ask{sid: sid, seat: seat, stake: tbl.funded[seat]})
 	}
 	p.tables.mu.Unlock()

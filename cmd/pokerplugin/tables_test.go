@@ -61,6 +61,10 @@ type hub struct {
 	// gone and coin that must not be forgotten.
 	unmined map[string]string
 
+	// asked counts outpoint lookups by outpoint, so a test can prove a
+	// question is asked once a block rather than once a poll.
+	asked map[string]int
+
 	// confs is how deep this chain says every output is. Settable because
 	// maturity is the one thing a script engine cannot check, so the only way
 	// to test a timelocked branch on both sides of its lock is to move the
@@ -226,6 +230,7 @@ func newHub(t *testing.T) *hub {
 		spent:   make(map[string]bool),
 		pending: make(map[string]bool),
 		unmined: make(map[string]string),
+		asked:   make(map[string]int),
 		shallow: make(map[string]int64),
 	}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +238,7 @@ func newHub(t *testing.T) *hub {
 			q := r.URL.Query()
 			key := q.Get("txid") + ":" + q.Get("vout")
 			h.mu.Lock()
+			h.asked[key]++
 			pkScript, gone := h.bonds[key], h.spent[key]
 			if q.Get("mempool") == "1" && h.pending[key] {
 				gone = true
@@ -1082,6 +1088,17 @@ func TestAFinishedReceiptSaysNothing(t *testing.T) {
 	}
 	if out := back.tables.resync(); len(out) != 0 {
 		t.Fatalf("a finished receipt asked to be caught up with %d messages", len(out))
+	}
+
+	// Nor does it lapse. Its bonded map is one seat short here - as it will
+	// be for real once released bonds are forgotten - and past the bonding
+	// deadline an ungated bondingLapsed would re-label this healthy settled
+	// receipt "only 1 of 2 seats were bonded". Seen live at f351160c.
+	if out := back.tables.tick(int64(membership.BondingDeadline(terms)) + 1); len(out) != 0 {
+		t.Fatalf("a finished receipt spoke at the bonding deadline: %s", out[0].kind)
+	}
+	if got := tbl.form.State(); got != membership.Settled {
+		t.Fatalf("a finished receipt lapsed to %v", got)
 	}
 }
 

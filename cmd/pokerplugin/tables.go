@@ -147,6 +147,17 @@ type table struct {
 	// player can lose at cards, a bond is what they lose for not playing.
 	bonded map[uint32]string
 
+	// confirmAskedAt is the height our own payments were last checked
+	// against the chain, and forgetAskedAt the same for whether a spent
+	// stake has left it. An outpoint's standing only changes when a block
+	// arrives, so asking between blocks learns nothing - and a payment that
+	// will never confirm used to be asked about every poll forever, which is
+	// the buried-join fault one layer down: unbounded repetition of a
+	// question whose answer cannot have changed. The price is block
+	// granularity on a node hiccup, which the next block pays off.
+	confirmAskedAt int64
+	forgetAskedAt  int64
+
 	// ourStakeSeen and ourBondSeen are whether the chain has confirmed our
 	// own two payments.
 	//
@@ -1029,7 +1040,12 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, t.announcePayoutAgain(tbl, height)...)
 		out = append(out, t.exchangeHeads(tbl)...)
 		out = append(out, t.republishStalled(tbl, height)...)
-		if tbl.fundingLapsed(height) || tbl.bondingLapsed(height) || tbl.commitLapsed(height) {
+		// A receipt cannot lapse: its deadlines are history, and its maps
+		// empty as the chain pays out - seen live as a healthy settled
+		// receipt re-labelled "only 0 of 2 seats were bonded" the moment
+		// its released bonds were forgotten.
+		if !tbl.finished &&
+			(tbl.fundingLapsed(height) || tbl.bondingLapsed(height) || tbl.commitLapsed(height)) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)
 		}

@@ -155,9 +155,9 @@ func tickAll(peers ...*plugin) {
 		// harness that only ticked the table would leave the plugin unable
 		// to build anything that needs an amount from the chain.
 		p.learnBondValues(context.Background())
-		p.confirmOurPayments(context.Background())
+		p.confirmOurPayments(context.Background(), h)
 		p.watchBonds(context.Background())
-		p.forgetSpentStakes(context.Background())
+		p.forgetSpentStakes(context.Background(), h)
 		p.takeClaimed(context.Background())
 		p.publish(context.Background(), p.tables.tick(h))
 	}

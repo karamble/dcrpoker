@@ -395,7 +395,7 @@ func TestABondGoneFromTheChainClearsTheReceipt(t *testing.T) {
 	h.spent[stake] = true
 	h.mu.Unlock()
 
-	back.forgetSpentStakes(context.Background())
+	back.forgetSpentStakes(context.Background(), 0)
 	if back.tables.m[terms.SID] != nil {
 		t.Fatal("a receipt holding nothing is still being kept")
 	}

@@ -331,3 +331,27 @@ func atSomebodysTurn(p *plugin) bool {
 	}
 	return false
 }
+
+// startPlaying is reachable from three places - a stake confirming, a bond
+// confirming, and the chain agreeing about our own payments - and each has its
+// own publish path. The property that keeps them from dealing twice is the
+// guard at the top: a table with a driver has nothing to start. Pinned here
+// because three call sites make it a property to check, not one to read.
+func TestATableIsStartedExactlyOnce(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	a.tables.mu.Lock()
+	defer a.tables.mu.Unlock()
+	tbl := a.tables.m[terms.SID]
+	if tbl == nil || tbl.play == nil {
+		t.Fatal("not dealing")
+	}
+	prev := tbl.play
+	if out := tbl.startPlaying(); len(out) != 0 {
+		t.Fatalf("a dealing table started again and said %d things", len(out))
+	}
+	if tbl.play != prev {
+		t.Fatal("a second start replaced the driver mid-hand")
+	}
+}
