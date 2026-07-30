@@ -430,5 +430,5 @@ func TestTheTableWaitsForEverySeatToSignTheBoundary(t *testing.T) {
 // that has restarted.
 type forgetful struct{}
 
-func (forgetful) Used(forfeit.Position) ([32]byte, bool) { return [32]byte{}, false }
-func (forgetful) Record(forfeit.Position, [32]byte)      {}
+func (forgetful) Used(forfeit.Position) ([32]byte, bool)  { return [32]byte{}, false }
+func (forgetful) Record(forfeit.Position, [32]byte) error { return nil }

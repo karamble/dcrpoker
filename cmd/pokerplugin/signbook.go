@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
-	"log"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
 )
@@ -41,16 +40,18 @@ func (b *signBook) Used(p forfeit.Position) ([32]byte, bool) {
 	return out, true
 }
 
-func (b *signBook) Record(p forfeit.Position, digest [32]byte) {
+func (b *signBook) Record(p forfeit.Position, digest [32]byte) error {
 	if b.tbl.signed == nil {
 		b.tbl.signed = map[string]string{}
 	}
 	b.tbl.signed[b.key(p)] = hex.EncodeToString(digest[:])
-	// Written here rather than on the next tick: a signature that has left
-	// this process while the book has not reached the disk is the state this
-	// exists to prevent.
+	// Written here rather than on the next tick, and a failure refuses the
+	// signature: one that has left this process while the book has not
+	// reached the disk is the state this exists to prevent. The entry stays
+	// in memory so the same digest can try again and a different one is
+	// still refused meanwhile.
 	if err := b.tbl.save(); err != nil {
-		log.Printf("pokerplugin: table %s: could not record signing at %s: %v",
-			b.tbl.terms.SID, b.key(p), err)
+		return fmt.Errorf("the book did not reach the disk: %w", err)
 	}
+	return nil
 }

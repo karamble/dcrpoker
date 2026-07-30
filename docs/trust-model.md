@@ -128,31 +128,38 @@ derived from the settled seating:
 flowchart LR
     bond["Table bond<br/>escrow.TableBondScript"]
     bond --> alive["Alive<br/>every member<br/>no timelock"]
-    bond --> claim["Claim<br/>every member except the owner<br/>after the window"]
     bond --> backstop["Backstop<br/>the owner alone<br/>after a long lock"]
 
-    alive --> back["bond returns<br/>(into an identical bond)"]
-    claim --> forfeit["forfeited to<br/>the seats who stayed"]
-    backstop --> back2["owner recovers<br/>if the table simply died"]
+    alive --> released["released when<br/>the table ends"]
+    alive --> claimed["Claimed bond<br/>escrow.ClaimedBondScript<br/>the accusation, pre-signed"]
+    backstop --> recover["owner recovers<br/>if the table simply died"]
+
+    claimed --> answered["Answer<br/>the owner alone, at once<br/>back into a bond"]
+    claimed --> taken["Forfeit<br/>every other member<br/>after the window"]
 ```
 
-**An answer is meant to beat a claim because it carries no timelock**, so that the
-accused need not be believed, or heard, or fast - only still there. That is the
-design, and the implementation does not have it yet: the claim's lock is relative to
-the bond output, which is confirmed before the table deals, so by the time anybody
-abandons it is long satisfied and both branches are spendable at once. Whoever
-broadcasts first wins and the claimant picks the moment. Closing it means the delay
-running from the accusation - the claim spending into an intermediate output that
-its owner can take immediately with an answer and the claimant only after the
-window. See section 8.
+**An answer beats an accusation because the window is the accusation's own.** An
+accusation does not take the bond; it moves it into the claimed bond, whose delay
+is `OP_CHECKSEQUENCEVERIFY` on the output the accusation itself creates, so the
+window opens when the accusation confirms. Inside it only the owner can spend,
+with one signature; the accusers can spend only after it closes. The accused need
+not be believed, or heard, or fast - only still there.
 
-The trap in that shape: the alive branch needs the *accusers'* signatures, and they
-will not sign once they have started claiming. So an answer assembled at the time
-cannot exist. It has to be agreed in advance and kept by its
-owner, and it pays the bond back into an identical bond so holding one early is
-worth nothing. A chain of them is pre-agreed at once, which Decred permits because
-a transaction's identity is its prefix and signatures live in the witness - so
-every outpoint in the chain is known before anything is signed.
+The bond script has no branch the other members can take alone. Such a branch
+would sit behind a lock counting from the bond output, confirmed before the table
+deals and long satisfied by the time anybody abandons, so the others could take
+the bond at a moment of their choosing with no window at all. Instead every spend
+of the bond carries the owner's own signature, which makes an accusation a
+transaction the owner pre-signed. What must be agreed in advance is therefore the
+accusation, by everybody: Decred has no covenants, so `escrow.CheckAccuseDraft`
+is the only thing that can require an accusation's output to be the claimed bond,
+and it stands exactly where a covenant would. Losing that agreement costs the
+ability to accuse; the ability to answer needs nothing but the seed.
+
+Answering pays back into an identical bond, so answering keeps a seat bonded, and
+the next accusation spends an output knowable in advance - a transaction's
+identity is its prefix and signatures live in the witness, so accusations against
+where the bond will sit after each answer can be agreed before anything moves.
 
 ### Settlement
 
@@ -178,7 +185,7 @@ stateDiagram-v2
     Registering --> Registering: bond-backed joins arrive
     Registering --> Seating: unanimous commits, or the height passes
     Seating --> Funding: seats drawn from a later block's hash
-    Funding --> Abandoned: FundingDeadline passes
+    Funding --> Abandoned: the funding or bonding deadline passes
     Funding --> Dealing: every stake and table bond confirmed
     Dealing --> Dealing: hand, checkpoint, next hand
     Dealing --> Settling: a seat leaves, or somebody is broke
@@ -214,8 +221,8 @@ stake mid-hand.
 exist yet while anybody is still choosing a key. Seat 0 carries the first button,
 so key order would have let a member grind for position.
 
-**Deadlines are heights, never clocks.** The admission window, the funding
-deadline, the dispute window - all of them. A clock is one machine's opinion, and
+**Deadlines are heights, never clocks.** The admission window, the funding and
+bonding deadlines, the dispute window - all of them. A clock is one machine's opinion, and
 money moving on an opinion is money moving on whoever's clock runs fast.
 
 ---
@@ -339,20 +346,25 @@ sequenceDiagram
     participant Q as The seat it is waiting on
     Note over P: the log says seat Q owes the entry at seq 9
     P->>P: wait the window, then wait it again
-    P->>Chain: broadcast a claim on Q's table bond
-    Q->>Chain: spend the same output - the answer
-    Note over Chain: intended: the answer wins, being untimelocked
-    Note over P,Q: as built: both are spendable, so it is a race
+    P->>Chain: broadcast the accusation everybody pre-signed
+    Note over Chain: the bond moves into the claimed bond
+    Q->>Chain: one signature of Q's own answers it
+    Note over P,Q: no answer inside the window forfeits the bond
 ```
 
-A claim names an **obligation the log says a seat owes**, which every peer derives
-identically - not a person, and not an accusation. What decides it is a race, not
-a judgement. Silence convicts nobody who is present.
+An accusation names an **obligation the log says a seat owes**, which every peer
+derives identically - not a person, and not a judgement. What decides it is the
+window: the answer is the owner's own signature and nothing else, so silence
+convicts nobody who is present.
 
-One property there is load-bearing: **a seat that owes nothing cannot be claimed
-against at all.** Without it, a player who *stalls* could wait for their opponent
-to give up and then claim the bond of the person who stopped playing because of
-them - and heads-up there is no third party to refuse.
+A seat that owes nothing can still be accused - the accusations are signed in
+advance, and nothing on chain reads the log. What a spurious one achieves is
+bounded: the bond comes straight back, and the lasting cost is the two
+transaction fees each round takes out of the accused's bond, capped by how many
+rounds the bond can fund at all (`escrow.AffordableDepth`). The accuser gains
+nothing either way, and the griefs that matter - stalling until an honest peer
+gives up, a connection reset that looks like abandonment - end the same way,
+with the seat that is present answering automatically.
 
 ---
 
@@ -389,7 +401,7 @@ looked exactly like a peer misbehaving.
 Traffic rides Bison Relay as an envelope over ordinary messages:
 
 ```
---gaming[v=1,game=poker,gv=2,sid=<hex>,mid=<hex>,seq=<n>/<total>,exp=<unix>]--<base64>
+--gaming[v=1,game=poker,gv=3,sid=<hex>,mid=<hex>,seq=<n>/<total>,exp=<unix>]--<base64>
 ```
 
 `v` versions the framing and `gv` the game, separately, so a breaking change to
@@ -508,7 +520,10 @@ Ordered by what would bite first.
   stacks rather than this one with a gap.
 
 - **`MinBondAtoms` is a development value** and has to go back up before a bond
-  deters anybody.
+  deters anybody. It is also too small to work at the table sizes the escrow
+  allows: at six seats a bond of the current minimum cannot fund even one
+  accusation (`escrow.AffordableDepth`), and dealing is not gated on that - the
+  table plays with an unenforceable bond and only a log line says so.
 
 - **A wallet passphrase typed wrong permanently fails a spend.** Retrying works,
   but the spend should stay open the way an unreachable one does.
@@ -519,27 +534,16 @@ Ordered by what would bite first.
   contested claim, or any hostile participant. The first is where the deck's
   liveness cost actually appears; the second is not a bug but the design working
   - a reset and an abandonment are deliberately indistinguishable, which is why
-  the accused holds an answer in advance. **Exercise the answer path before the
-  claim path.**
+  an answer is one signature needing nothing but the seed. **Exercise the answer
+  path before the claim path.**
 
-- **A claim is not actually delayed, so an answer does not actually win.** The
-  claim branch carries `<ClaimBlocks> OP_CHECKSEQUENCEVERIFY`, which is relative to
-  the bond output. That output is confirmed before the table will deal, so the lock
-  is satisfied long before anybody abandons: both branches are immediately
-  spendable and the first broadcast wins, timed by the claimant. The fix is a lock
-  that runs from the accusation, which means the claim spending into an intermediate
-  output with claimant-after-the-window and owner-immediately-with-an-answer
-  branches - the Lightning `to_local` shape. It changes the bond script, so it is a
-  format change.
-
-  The trigger was the other half and is now closed. `answerClaim` ran only when a
-  claim frame arrived over the group chat, so an opponent who sent nothing accused
-  in silence - which is exactly the KX-reset case this document says to exercise
-  first. The chain is asked instead: an output that a mempool transaction is
-  spending is still in the confirmed set, so the confirmed-only view finds it while
-  the mempool-aware view does not, and that disagreement is somebody's claim waiting
-  to be mined. It makes an unannounced claim contested rather than free; it cannot
-  make it lost, since a claim mined directly is seen too late.
+- **A seat can only be accused once the accusations are signed, and they are
+  signed after bonding.** The chain of accusations is co-signed on the first
+  polls after the bonds confirm, and dealing does not wait for it - so a seat
+  that goes quiet between posting its bond and signing the set cannot be accused
+  at all, and its bond waits for the owner's own backstop. Closing it means a
+  table that does not deal until every accusation is signed, which couples
+  dealing to that exchange rather than to funding alone.
 
 - **Some tests wait on the wall clock, and starve.** Repairs are paced in blocks
   where the thing being waited on is on-chain and in wall-clock where it is not
@@ -588,7 +592,8 @@ answer to somebody merely slow is to leave, which costs at most one folded hand.
 
 **Reading "only attributable faults may affect funds" as "abandonment cannot be
 punished".** The constraint is right and the conclusion does not follow. See the
-claim race in section 5: nothing attributes abandonment, and a bond still moves.
+accusation window in section 5: nothing attributes abandonment, and a bond still
+moves.
 
 **Commit-reveal deck seeding.** It stops deck *prediction* and not deck
 *observation*, so it is strictly weaker than mental poker - worth skipping rather

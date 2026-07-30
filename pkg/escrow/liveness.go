@@ -16,41 +16,39 @@ import (
 // asleep - it is sized for a reconnect, and anyone who wanted longer wanted a
 // correspondence game.
 //
-// It is also the whole grace period. A player who comes back inside it plays
-// their turn, the claim dies, and the game carries on as if nothing happened.
+// It is also the whole grace period. An owner present inside it answers with
+// one signature of their own, the bond comes back, and the game carries on.
 const ClaimBlocks uint32 = 3
 
 // TableBondScript builds a bond that a table can take from a player who walks
 // out of a hand.
 //
-//	OP_IF        <every member> 2 OP_CHECKSIGALTVERIFY ...      # alive
-//	OP_ELSE OP_IF <claim> CSV DROP <every other member> ...      # claim
-//	OP_ELSE       <lock> CSV DROP <owner> 2 OP_CHECKSIGALTVERIFY # backstop
+//	OP_IF   <every member> 2 OP_CHECKSIGALTVERIFY ...           # alive
+//	OP_ELSE <lock> CSV DROP <owner> 2 OP_CHECKSIGALTVERIFY      # backstop
 //
-// Three ways out, and the shape of them is the design.
+// Two ways out, and the branch that is not here is the design.
 //
 // **Alive** needs every member's signature, the owner included, and has no
-// timelock. It does two jobs: it releases the bond when a table ends normally,
-// and it is how an accused player answers a claim. Because it needs everyone, the
-// owner cannot use it to walk off with their own bond mid-table.
-//
-// It does *not* currently beat an accusation, and this is the gap to close. The
-// claim's timelock is relative to the bond output, which is confirmed before the
-// table deals - so by the time anybody abandons, the lock is long satisfied and
-// both branches are spendable at once. Whoever broadcasts first wins, and the
-// claimant chooses when to start. For the answer to have the priority described
-// below, the delay has to run from the accusation rather than from the bond: the
-// claim would spend into an intermediate output carrying the lock, which its
-// owner can take at once with an answer and the claimant only after the window.
-//
-// **Claim** needs every member except the owner, after ClaimBlocks. That is the
-// forfeiture: the others take the bond and divide it. Requiring all of them is
-// what stops one player opening claims for sport.
+// timelock. Every ordinary spend is this branch - the release when a table ends,
+// and the accusation when a seat goes quiet - and which of those happens is
+// decided by which pre-signed transaction exists, not by the script.
 //
 // **Backstop** is the owner alone after a long lock, so a table that simply
 // dissolves does not strand anybody's coin forever.
 //
-// # Why abandonment is decided by a race and not by a proof
+// There is deliberately no branch the other members can take without the owner.
+// Its CSV would count from this output, which confirms before the table deals,
+// so the lock would be long satisfied by the time anybody abandoned - the others
+// could take the bond at a moment of their choosing, with no window for an
+// answer. Instead the bond only moves with the owner's signature among the rest,
+// so an accusation has to be a transaction the owner agreed to in advance. The
+// owner signs willingly because its one output is ClaimedBondScript: spendable
+// by the owner alone at once, and by the accusers only after ClaimBlocks of a
+// window that opens when the accusation confirms, because that is the output its
+// CSV counts from. CheckAccuseDraft is what holds a pre-signed accusation to
+// that output, standing where a covenant would if Decred had them.
+//
+// # Why abandonment is decided by a window and not by a proof
 //
 // Nothing can prove a player left. A seat that goes quiet and a seat whose
 // messages are being dropped look identical from outside, and heads-up the only
@@ -59,18 +57,17 @@ const ClaimBlocks uint32 = 3
 //
 // So it is not adjudicated. Abandonment is *defined* as failing to answer on
 // chain inside the window, which is a fact rather than a claim: the accused
-// answers to Decred, not to their opponent. Collusion buys nothing for the same
-// reason - a table full of liars can open a claim, and one uncensorable answer
-// kills it.
+// answers to Decred, not to their opponent. The answer needs no signature but
+// the owner's, so the ability to answer survives losing everything but the
+// seed, and collusion buys nothing - a table full of liars can accuse, and one
+// uncensorable answer keeps the bond.
 //
-// Two things have to be true for that, and one is not yet. The window has to give
-// the accused time, which needs the intermediate output described above. And the
-// accused has to learn it is accused: answerClaim runs only when a claim frame
-// arrives over the group chat, so an opponent who withholds every message does in
-// fact withhold the accusation. Watching the chain instead does not close it,
-// since the host reports an outpoint as absent whether it is spent, unconfirmed
-// or never existed, and reveals nothing about a spend waiting in the mempool - by
-// the time a claim is visible it has confirmed.
+// An accusation withheld from the group chat is not therefore hidden. The
+// window opens at confirmation, on the chain the accused watches: a spend still
+// in the mempool shows as the confirmed view holding an output the mempool view
+// says is gone, and one already mined is the window opening, not the window
+// missed. What remains is the ordinary requirement that the accused be running
+// inside the window, which is what a bond is for.
 //
 // # Why this is not the forfeiture in forfeit.go
 //
@@ -138,8 +135,8 @@ func withoutKey(members [][]byte, key []byte) [][]byte {
 	return out
 }
 
-// AliveSigScript spends the branch that answers a claim, and the same branch
-// that releases every bond when a table ends properly.
+// AliveSigScript spends the branch every pre-agreed spend uses - the release
+// when a table ends, and the accusation.
 //
 // Signatures are in canonical member order - the same order the script checks
 // them in, and the same order CanonicalMembers puts them in, so every player
@@ -150,7 +147,7 @@ func AliveSigScript(bond []byte, sigs [][]byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(sigs) != len(terms.Members) {
-		return nil, fmt.Errorf("answering a claim needs all %d members' signatures, not %d",
+		return nil, fmt.Errorf("this branch needs all %d members' signatures, not %d",
 			len(terms.Members), len(sigs))
 	}
 	return branchSigScript(bond, sigs, txscript.OP_1)
@@ -203,8 +200,8 @@ type TableBondTerms struct {
 // ParseTableBond reads a table bond back.
 //
 // Every player runs this on every other player's bond before the first hand. A
-// bond that does not name this table's exact roster is one whose claim branch
-// these players could never satisfy - it looks like a bond, holds real coin, and
+// bond that does not name this table's exact roster is one no accusation these
+// players pre-sign could ever spend - it looks like a bond, holds real coin, and
 // could never be taken from anybody.
 func ParseTableBond(bond []byte) (*TableBondTerms, error) {
 	tokenizer := txscript.MakeScriptTokenizer(scriptVersion, bond)

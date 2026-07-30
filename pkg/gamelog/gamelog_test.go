@@ -367,5 +367,5 @@ func cheating(k *forfeit.LogKey) *forfeit.LogKey {
 
 type noMemory struct{}
 
-func (noMemory) Used(forfeit.Position) ([32]byte, bool) { return [32]byte{}, false }
-func (noMemory) Record(forfeit.Position, [32]byte)      {}
+func (noMemory) Used(forfeit.Position) ([32]byte, bool)  { return [32]byte{}, false }
+func (noMemory) Record(forfeit.Position, [32]byte) error { return nil }

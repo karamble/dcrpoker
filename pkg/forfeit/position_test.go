@@ -2,6 +2,7 @@ package forfeit
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/decred/dcrd/crypto/blake256"
@@ -144,5 +145,45 @@ func TestADomainCannotBeSignedBothWays(t *testing.T) {
 	}
 	if _, err := k.Sign(DomainCardKey, 1, digest[:]); err == nil {
 		t.Fatal("a card key was signed with a position nonce, which is what publishes the key")
+	}
+}
+
+// failingBook remembers in memory and cannot reach whatever should outlive it.
+type failingBook struct {
+	mem  memoryBook
+	fail error
+}
+
+func (b *failingBook) Used(p Position) ([32]byte, bool) { return b.mem.Used(p) }
+func (b *failingBook) Record(p Position, digest [32]byte) error {
+	b.mem.Record(p, digest)
+	return b.fail
+}
+
+// A position the book could not record is a position that must not be signed.
+// Otherwise a signature leaves the process while the only durable memory of it
+// failed - a full disk would quietly disarm the book, and a restart after it
+// would sign the position again over whatever the new deck says.
+func TestAPositionTheBookCannotRecordIsNotSigned(t *testing.T) {
+	k := testKey(t)
+	book := &failingBook{fail: errors.New("disk full")}
+	k.Remember(book)
+	digest := digestOf("an entry")
+
+	if _, err := k.Sign(DomainEntry, 7, digest[:]); err == nil {
+		t.Fatal("signed a position the book failed to record")
+	}
+
+	// Once the book can write again, the same message signs fine: the failure
+	// refused a signature, it did not burn the position.
+	book.fail = nil
+	if _, err := k.Sign(DomainEntry, 7, digest[:]); err != nil {
+		t.Fatalf("sign after the book recovered: %v", err)
+	}
+	// And a different message there is still refused, exactly as if the
+	// failure had never happened.
+	other := digestOf("a different entry")
+	if _, err := k.Sign(DomainEntry, 7, other[:]); err == nil {
+		t.Fatal("a failed record weakened the one-position-one-message rule")
 	}
 }

@@ -129,10 +129,11 @@ the order anybody expects:
    is an outpoint this peer found or it is *not seen by this peer* - never
    "unfunded", because that would turn this peer's own limited view into a claim
    about somebody else.
-3. **What happened on chain** - claims, answers, refusals, the payout. A claim
-   is **reported, never prompted**: the answer was agreed in advance and is
-   broadcast without asking, so there is no dialog to build and no countdown.
-   The one line allowed to alarm is *claimed against, holding no answer*.
+3. **What happened on chain** - accusations, answers, refusals, the payout. An
+   accusation against this seat is **reported, never prompted**: the answer is
+   one signature of this seat's own and is broadcast without asking, so there
+   is no dialog to build and no countdown. The one line allowed to alarm is
+   *accused, and the answer will not broadcast*.
 4. **The felt.** Last. It is 2D SVG; a card this peer cannot read is drawn
    differently from a slot with nothing in it, because the difference between
    those is the difference between waiting and being stuck.

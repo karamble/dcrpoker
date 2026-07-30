@@ -35,9 +35,13 @@ type LogKey struct {
 
 // Book remembers what a key signed at each position. One that does not outlive
 // the process is a key with no memory of what it has already put its name to.
+//
+// A Record that fails means the position was not remembered, and a signature
+// over an unremembered position is exactly what the book exists to prevent - so
+// the failure refuses the signature rather than being noted somewhere.
 type Book interface {
 	Used(p Position) ([32]byte, bool)
-	Record(p Position, digest [32]byte)
+	Record(p Position, digest [32]byte) error
 }
 
 // memoryBook catches the mistake within one process, and no further.
@@ -48,11 +52,12 @@ func (b *memoryBook) Used(p Position) ([32]byte, bool) {
 	return d, ok
 }
 
-func (b *memoryBook) Record(p Position, digest [32]byte) {
+func (b *memoryBook) Record(p Position, digest [32]byte) error {
 	if b.at == nil {
 		b.at = map[Position][32]byte{}
 	}
 	b.at[p] = digest
+	return nil
 }
 
 // Remember gives this key a book that outlives the process.
@@ -117,12 +122,14 @@ func (k *LogKey) Sign(d Domain, seq uint64, hash []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%s/%d was already signed over a different message; "+
 			"signing it again would publish this key", d, seq)
 	}
-	sig, err := Sign(k.priv, p, hash)
-	if err != nil {
-		return nil, err
+	// Recorded before it is signed, never after. A failure between the two
+	// leaves a position remembered and nothing signed, which costs nothing:
+	// the same digest may be signed again. The other order can return a
+	// signature the book never heard of.
+	if err := k.book.Record(p, digest); err != nil {
+		return nil, fmt.Errorf("%s/%d cannot be recorded, so it will not be signed: %w", d, seq, err)
 	}
-	k.book.Record(p, digest)
-	return sig, nil
+	return Sign(k.priv, p, hash)
 }
 
 // SignCommitted signs content its position does not determine. Two different
