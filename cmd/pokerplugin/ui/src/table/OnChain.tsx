@@ -44,10 +44,28 @@ export function OnChain({
   const claims = ledger?.claims ?? []
   const settlement = ledger?.settlement
   const challenges = ledger?.challenges ?? []
+  const disputes = ledger?.disputes ?? []
 
   return (
     <section className="card">
       <h2>On the chain</h2>
+
+      {disputes.map((d) => (
+        <div key={`dp${d.hand}`} className="banner">
+          <div>
+            <strong className="alarm">
+              Hand {d.hand}'s shuffle was disputed — seat {d.named}{' '}
+              {d.named === d.shuffler
+                ? 'signed a shuffle that does not verify'
+                : 'refused a shuffle that verifies'}
+              .
+            </strong>{' '}
+            Every peer reaches this verdict from the complaint alone. The hand is void,
+            the table settles at the last signed boundary, and seat {d.named}'s bond
+            release is withheld.
+          </div>
+        </div>
+      ))}
 
       {challenges.map((ch) => (
         <div

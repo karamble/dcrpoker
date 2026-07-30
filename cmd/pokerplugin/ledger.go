@@ -55,6 +55,22 @@ type ledgerView struct {
 	// recomputed hand, muck included, which is what a completed audit has
 	// already made computable by everyone at the table.
 	Challenges []challengeView `json:"challenges,omitempty"`
+
+	// Disputes is every refused shuffle and its verdict. Judged the moment
+	// the complaint is read, so unlike a challenge there is no open state
+	// worth showing - only who disputed what, and who was named for it.
+	Disputes []disputeView `json:"disputes,omitempty"`
+}
+
+// disputeView is one shuffle dispute as the panel sees it.
+type disputeView struct {
+	Hand     uint64 `json:"hand"`
+	Round    uint32 `json:"round"`
+	By       uint32 `json:"by"`
+	Shuffler uint32 `json:"shuffler"`
+	// Verdict names the outcome, and Named the seat it went against.
+	Verdict string `json:"verdict"`
+	Named   uint32 `json:"named"`
 }
 
 // challengeView is one challenge as the panel sees it.
@@ -158,6 +174,7 @@ func (tbl *table) ledger(height int64, names map[string]string) *ledgerView {
 		Events:  append([]chainEvent(nil), tbl.events...),
 	}
 	v.Challenges = tbl.challengeViews()
+	v.Disputes = tbl.disputeViews()
 	if id, ok := tbl.form.MatchID(); ok {
 		v.Match = id
 	}

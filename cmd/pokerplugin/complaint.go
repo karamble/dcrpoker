@@ -394,6 +394,32 @@ func (tbl *table) repeatComplaints() []outgoing {
 	return out
 }
 
+// disputeViews is every dispute this table has judged, for the panel.
+// Requires the registry lock.
+func (tbl *table) disputeViews() []disputeView {
+	if len(tbl.compl) == 0 {
+		return nil
+	}
+	var out []disputeView
+	for hand, c := range tbl.compl {
+		dv := disputeView{
+			Hand:     hand,
+			Round:    c.view.Round,
+			By:       c.view.By,
+			Shuffler: c.view.Complaint.Shuffler,
+			Verdict:  c.view.Verdict,
+		}
+		switch c.view.Verdict {
+		case complaintFalse:
+			dv.Named = c.view.By
+		case complaintCheat:
+			dv.Named = c.view.Complaint.Shuffler
+		}
+		out = append(out, dv)
+	}
+	return out
+}
+
 // Small helpers over the schema encodings, kept here so the view stays the
 // single at-rest form.
 

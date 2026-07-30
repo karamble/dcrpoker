@@ -214,6 +214,19 @@ export type LedgerView = {
   settlement?: SettleView
   events?: ChainEvent[]
   challenges?: ChallengeView[]
+  disputes?: DisputeView[]
+}
+
+/** One refused shuffle and its verdict. Judged the moment the complaint is
+ *  read, so there is no open state - only who disputed what, and who was
+ *  named for it. */
+export type DisputeView = {
+  hand: number
+  round: number
+  by: number
+  shuffler: number
+  verdict: string
+  named: number
 }
 
 /** The token the host handed this page over its message port, and the only

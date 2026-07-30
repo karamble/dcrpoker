@@ -34,6 +34,7 @@ export function TableOver({
   const net = final !== undefined ? final - table.buyinAtoms : undefined
 
   const settlement = ledger?.settlement
+  const disputes = ledger?.disputes ?? []
   const events = ledger?.events ?? []
   const paidOut = events.find((e) => e.kind === 'settled' && !e.text.includes('bond'))
   const bondsBack = events.filter((e) => e.kind === 'settled' && e.text.includes('bond'))
@@ -89,6 +90,18 @@ export function TableOver({
                 ? `You lost ${dcr(-net)} DCR`
                 : 'You broke even'}
         </p>
+
+        {disputes.map((d) => (
+          <p className="end-result lost" key={`d${d.hand}`}>
+            {d.named === mySeat
+              ? `Hand ${d.hand} ended in a dispute that named you`
+              : `Hand ${d.hand}'s shuffle was disputed — seat ${d.named} ${
+                  d.named === d.shuffler ? 'signed a shuffle that does not verify' : 'made a false complaint'
+                }`}
+            . The hand is void: the table pays the last result every seat signed, and
+            seat {d.named}&apos;s bond stays held.
+          </p>
+        ))}
 
         {settlement?.pays && settlement.pays.length > 0 && (
           <div className="end-rows">
