@@ -67,6 +67,27 @@ const FundingBlocks uint32 = 16
 // here, so no peer can hold a different one.
 func FundingDeadline(t Terms) uint32 { return BeaconHeight(t) + FundingBlocks }
 
+// BondingBlocks is how much longer a fully funded table waits for every seat to
+// post its bond.
+//
+// Its own window rather than a share of the funding one, because a bond can only
+// be paid after the stake it accompanies has confirmed: a seat paying at the
+// last moment of funding has not been slow, and a deadline the two shared would
+// give up on it for being in the right order.
+//
+// Eight blocks is roughly forty minutes, against a payment and two
+// confirmations - room to do it twice over.
+const BondingBlocks uint32 = 8
+
+// BondingDeadline is the height after which a table nobody can deal is given up
+// on.
+//
+// Funding had a deadline and bonding had none, which left one state with no way
+// out at all: fully funded so the funding deadline never fires, not fully bonded
+// so the table never deals. It sits alive forever while the stakes it holds can
+// only be recovered by each member waiting out their own refund timelock.
+func BondingDeadline(t Terms) uint32 { return FundingDeadline(t) + BondingBlocks }
+
 // SeatOrder draws the seating for a membership.
 //
 // The permutation is an explicit Fisher-Yates from a counter-based digest

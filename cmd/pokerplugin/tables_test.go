@@ -59,6 +59,12 @@ type hub struct {
 	// to test a timelocked branch on both sides of its lock is to move the
 	// chain rather than the transaction. Zero means the default.
 	confs int64
+	// shallow is how deep one named outpoint is, overriding confs. One seat's
+	// payment being younger than another's is the ordinary case at a real
+	// table - they are paid minutes apart - and a hub-wide depth cannot
+	// express it, so a test about one seat waiting would end up making every
+	// seat wait and passing for the wrong reason.
+	shallow map[string]int64
 
 	// swallow is how many more frames of a kind to lose on the way through,
 	// and lost records what actually went missing.
@@ -212,6 +218,7 @@ func newHub(t *testing.T) *hub {
 		lost:    make(map[schema.Kind]int),
 		spent:   make(map[string]bool),
 		pending: make(map[string]bool),
+		shallow: make(map[string]int64),
 	}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/gaming/chain/outpoint" {
@@ -223,9 +230,13 @@ func newHub(t *testing.T) *hub {
 				gone = true
 			}
 			confs := h.confs
+			deep, named := h.shallow[key]
 			h.mu.Unlock()
 			if confs == 0 {
 				confs = int64(escrow.BondConfirmations)
+			}
+			if named {
+				confs = deep
 			}
 			_ = json.NewEncoder(w).Encode(transport.Outpoint{
 				// Spent is indistinguishable from never-existed here, and

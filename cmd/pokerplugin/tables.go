@@ -126,6 +126,23 @@ type table struct {
 	// player can lose at cards, a bond is what they lose for not playing.
 	bonded map[uint32]string
 
+	// ourStakeSeen and ourBondSeen are whether the chain has confirmed our
+	// own two payments.
+	//
+	// Every other seat's entry above is confirmed before it goes in, so only
+	// our own can be ahead of the chain: ours is written the moment the
+	// payment is broadcast, because that is what lets it be announced and
+	// what stops a second payment being made for the same thing. These close
+	// that gap, and dealing waits for them exactly as it waits for everybody
+	// else. Without them a box deals on a transaction that has not confirmed
+	// and might never.
+	//
+	// Not persisted on purpose. A restart re-reads the chain rather than
+	// trusting what it wrote down, which is the safe direction, and the poll
+	// sets them again within one tick.
+	ourStakeSeen bool
+	ourBondSeen  bool
+
 	// uids is which Bison Relay identity spoke for each seat, learned from
 	// the seat's own funding and bond announcements - the two messages only
 	// ever sent by their owner. It exists so the interface can put a name on
@@ -147,6 +164,14 @@ type table struct {
 	// bondedAnnouncedAt is the same for the bond. Kept apart because the two
 	// are paid minutes apart and each has to be repeated on its own account.
 	bondedAnnouncedAt int64
+
+	// atHeight is where the chain was at the last tick.
+	//
+	// A driver is told the height on every tick, but it is created between
+	// them, and one that has not been told stamps its entries with zero.
+	// Zero is behind every real height, so a peer that had been told refuses
+	// them - two seats starting to deal either side of a tick is enough.
+	atHeight int64
 
 	// payoutAnnouncedAt is the same for where this seat wants to be paid.
 	// Kept apart from the other two for a different reason: they are repeated
@@ -909,6 +934,11 @@ func (t *tables) tick(height int64) []outgoing {
 
 	var out []outgoing
 	for _, tbl := range t.m {
+		if height > 0 {
+			// Kept per table so a table that starts dealing between two
+			// ticks can stamp its first entry. See startPlaying.
+			tbl.atHeight = height
+		}
 		if tbl.play != nil && height > 0 {
 			// The entries this peer signs are stamped with where the chain
 			// is, and the host is the only thing here that knows.
@@ -935,7 +965,7 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, t.announcePayoutAgain(tbl, height)...)
 		out = append(out, t.exchangeHeads(tbl)...)
 		out = append(out, t.republishStalled(tbl, height)...)
-		if tbl.fundingLapsed(height) {
+		if tbl.fundingLapsed(height) || tbl.bondingLapsed(height) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)
 		}
@@ -1107,6 +1137,32 @@ func (tbl *table) fundingLapsed(height int64) bool {
 	}
 	tbl.form.Abandon(fmt.Sprintf("only %d of %d seats were funded before the deadline",
 		len(tbl.funded), tbl.terms.Seats))
+	return true
+}
+
+// bondingLapsed gives up on a table every seat paid for and not every seat
+// bonded.
+//
+// The state this closes had no way out of it. Fully funded, so fundingLapsed
+// never fires; not fully bonded, so the table never deals. Seen live on a table
+// that stayed there for hundreds of blocks, retrying an accusation it could not
+// build against a seat with no bond to build it from, while both stakes sat in a
+// script needing every member to move them.
+//
+// Called after fundingLapsed and reached only if that did not fire, since the
+// funding deadline is the earlier of the two and abandoning leaves this state.
+func (tbl *table) bondingLapsed(height int64) bool {
+	if height <= 0 || tbl.form.State() != membership.Settled {
+		return false
+	}
+	if height < int64(membership.BondingDeadline(tbl.terms)) {
+		return false
+	}
+	if len(tbl.bonded) >= int(tbl.terms.Seats) {
+		return false
+	}
+	tbl.form.Abandon(fmt.Sprintf("only %d of %d seats were bonded before the deadline",
+		len(tbl.bonded), tbl.terms.Seats))
 	return true
 }
 

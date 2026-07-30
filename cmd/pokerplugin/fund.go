@@ -174,6 +174,12 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 		return nil
 	}
 	tbl.funded[fn.Seat] = fn.Outpoint
+	if seat, ok := tbl.form.OurSeat(); ok && seat == fn.Seat {
+		// checkStake has just agreed, so ours is no longer ahead of the
+		// chain. Only reachable if our own announcement comes back to us,
+		// but the rule is that the flag is set wherever the chain was asked.
+		tbl.ourStakeSeen = true
+	}
 	// The sender of a verified funding announcement is the identity that
 	// owns the seat: only owners ever send these, and the repeats resend
 	// only their own. Kept purely to put a name on the chair.

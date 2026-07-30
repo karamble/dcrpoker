@@ -156,6 +156,10 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 		return nil
 	}
 	tbl.bonded[bn.Seat] = bn.Outpoint
+	if seat, ok := tbl.form.OurSeat(); ok && seat == bn.Seat {
+		// As with a stake: checkTableBond has just agreed about ours.
+		tbl.ourBondSeen = true
+	}
 	tbl.bondValue[bn.Seat] = value
 	tbl.uids[bn.Seat] = d.Sender
 	delete(tbl.bondWaiting, bn.Seat)

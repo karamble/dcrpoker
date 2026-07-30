@@ -325,7 +325,10 @@ func TestAnUnfundedTableIsGivenUpOn(t *testing.T) {
 	}
 }
 
-// A table everyone paid for is not given up on, however long it sits.
+// A table everyone paid for is not given up on for not being paid for.
+//
+// It can still be given up on for not being bonded, at a later height. See
+// TestAFundedTableNobodyCanDealIsGivenUpOn.
 func TestAFullyFundedTableSurvivesTheDeadline(t *testing.T) {
 	h := newHub(t)
 	inv := testInvite(2)
@@ -357,6 +360,76 @@ func TestAFullyFundedTableSurvivesTheDeadline(t *testing.T) {
 	p.tables.tick(int64(membership.FundingDeadline(terms)) + 5)
 	if got := p.tables.snapshots()[0].State; got != membership.Settled.String() {
 		t.Fatalf("a table with every seat funded was given up on (state %s)", got)
+	}
+}
+
+// A table nobody can ever deal has to end as well.
+//
+// Fully funded and not fully bonded was the one state with no way out of it.
+// The funding deadline cannot fire, because funding is complete. Dealing cannot
+// start, because a bond is missing. So the table stayed alive at settled while
+// both stakes sat in a script needing every member to move them, and the only
+// recovery was each of them waiting out their own refund timelock. Seen live on
+// a table that sat there for hundreds of blocks.
+func TestAFundedTableNobodyCanDealIsGivenUpOn(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	other := h.lend(t, "dd")
+	p, terms := seatedTable(t, h, inv, other)
+
+	tbl := p.tables.m[terms.SID]
+	ours, _ := tbl.form.OurSeat()
+	theirs := theirSeat(t, tbl)
+
+	// Their stake, checked against the chain the way any peer's is, so the
+	// funding deadline has nothing left to fire on.
+	dep, err := tbl.deposit(theirs, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	outpoint := strings.Repeat("9b", 32) + ":0"
+	h.mu.Lock()
+	h.bonds[outpoint] = dep.PkScriptHex
+	h.mu.Unlock()
+	fn, err := membership.SignFunding(terms, theirs, outpoint, other.Session)
+	if err != nil {
+		t.Fatalf("sign funding: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindFunded, schema.FundedFrom(fn))
+
+	p.tables.mu.Lock()
+	tbl.funded[ours] = strings.Repeat("7b", 32) + ":1"
+	// Our own bond and not theirs, which is the whole of the state.
+	tbl.bonded[ours] = strings.Repeat("7c", 32) + ":1"
+	p.tables.mu.Unlock()
+
+	deadline := int64(membership.BondingDeadline(terms))
+	if funding := int64(membership.FundingDeadline(terms)); deadline <= funding {
+		t.Fatalf("the bonding deadline %d is not after the funding one %d, so a seat "+
+			"paying at the last moment would be given up on for being in order",
+			deadline, funding)
+	}
+
+	// Still waiting a block early. A bond is paid after a stake confirms, so
+	// this window is somebody being ordinary, not somebody being absent.
+	p.tables.tick(deadline - 1)
+	if got := p.tables.snapshots()[0].State; got != membership.Settled.String() {
+		t.Fatalf("gave up at %d when the deadline is %d (state %s)", deadline-1, deadline, got)
+	}
+
+	p.tables.tick(deadline)
+	s := p.tables.snapshots()[0]
+	if s.State != membership.Aborted.String() {
+		t.Fatalf("state is %s at the bonding deadline, want aborted", s.State)
+	}
+	if !strings.Contains(s.Reason, "bonded") {
+		t.Fatalf("gave up for a reason that does not mention the bonds: %q", s.Reason)
+	}
+
+	// The membership survives it, because whoever did pay needs it to derive
+	// the script their refund spends.
+	if _, ok := p.tables.m[terms.SID].form.MatchID(); !ok {
+		t.Fatal("abandoning the table forgot where the money is")
 	}
 }
 

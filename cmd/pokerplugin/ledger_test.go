@@ -51,6 +51,10 @@ func dealingTable(t *testing.T, h *hub) (*plugin, *plugin, membership.Terms) {
 		payBond(t, h, p, terms, fmt.Sprintf("%02x", 0x60+i))
 	}
 
+	// A peer's own stake and bond are recorded when they are paid, not when
+	// they confirm, so the poll that asks the chain about them has to run
+	// before anybody deals. See confirmOurPayments.
+	advance(t, h, 1, a, b)
 	waitDealing(t, terms.SID, a, b)
 	return a, b, terms
 }

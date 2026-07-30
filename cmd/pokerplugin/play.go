@@ -78,6 +78,13 @@ func (tbl *table) startPlaying() []outgoing {
 		// stops, which is the whole thing the bond is for.
 		return nil
 	}
+	if !tbl.ourMoneyConfirmed() {
+		// Our own two payments are in the maps above from the moment they
+		// were broadcast, so the counts can be complete while the chain has
+		// yet to agree. Every other seat is held to two confirmations and
+		// this seat is not exempt from its own rule.
+		return nil
+	}
 	seats, ok := tbl.form.LogSeats()
 	if !ok {
 		return nil
@@ -136,6 +143,11 @@ func (tbl *table) startPlaying() []outgoing {
 		return nil
 	}
 	tbl.play = p
+	if tbl.atHeight > 0 {
+		// Before Start, because Start is what makes this table's first
+		// entries and a driver nobody has told stamps them with zero.
+		p.AtHeight(uint32(tbl.atHeight))
+	}
 
 	out, err := p.Start()
 	if err != nil {

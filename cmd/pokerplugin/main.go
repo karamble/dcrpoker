@@ -261,6 +261,10 @@ func (p *plugin) watchChain(ctx context.Context) {
 			// Before the tick, because the tick is what proposes a bond
 			// release and it cannot build one without the amount.
 			p.learnBondValues(ctx)
+			// Our own stake and bond are written down when they are paid
+			// rather than when they confirm, so this is what lets a table
+			// this box paid for start dealing.
+			p.confirmOurPayments(ctx)
 			// Before the tick as well: a claim in the mempool is a
 			// thing to answer now, not next poll.
 			p.watchOwnBond(ctx)
