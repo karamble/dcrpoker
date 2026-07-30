@@ -373,13 +373,20 @@ func (tbl *table) saveComplaint(hand uint64, c *complaintCase) {
 }
 
 // repeatComplaints says this seat's own disputes again, byte-identical, until
-// the table itself is gone.
+// the settlement they exist to enable has co-signed.
 //
 // The verdict is local and instant, but the frame is what lets the other side
 // reach it too - and the settlement the void enables needs both sides to have
 // voided. Repeated like a challenge is, because this channel loses messages
-// and what is being repeated is an accusation with money behind it.
+// and what is being repeated is an accusation with money behind it. It stops
+// the moment the table settles: a boundary settlement is n-of-n, so its
+// co-signing is the evidence that every seat has voided and the complaint has
+// done its whole job. The case stays on the table for the panel; only the
+// frame stops.
 func (tbl *table) repeatComplaints() []outgoing {
+	if tbl.settled {
+		return nil
+	}
 	mine, ok := tbl.form.OurSeat()
 	if !ok {
 		return nil

@@ -146,6 +146,15 @@ type table struct {
 	// table short of a commit asks once a block rather than once a poll.
 	askedAt int64
 
+	// disputeSaidAt is the height the challenge and complaint retransmits
+	// last went out at, so they repeat once a block rather than once a poll.
+	// Dispute traffic is the one class exempt from the finished-tables-
+	// fall-silent rule - a challenge or a wedge outlives the table the bond
+	// does - so without this it is the one place the unbounded per-poll
+	// repeat that buried a join can still happen. The first telling of each
+	// is immediate from its open path; this bounds only the repeat.
+	disputeSaidAt int64
+
 	// funded is the output each seat's stake sits in, once that seat said
 	// so and the chain agreed. A seat missing from here has not been paid
 	// for as far as this peer can tell, whoever says otherwise.
@@ -1097,9 +1106,17 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, tbl.askAgain(height)...)
 		out = append(out, tbl.proposeClaim(t.params)...)
 		out = append(out, tbl.presignAccusations()...)
-		out = append(out, tbl.repeatChallenges()...)
-		out = append(out, tbl.answerChallenges()...)
-		out = append(out, tbl.repeatComplaints()...)
+		// Once a block, not once a poll. A newly raised challenge or
+		// dispute, and a reveal owed to one, all go out immediately from
+		// their own paths; this is the lossy-channel retransmit, and it
+		// wants the same cadence as askAgain rather than the ten-a-block
+		// the poll would give it.
+		if height > 0 && height > tbl.disputeSaidAt {
+			tbl.disputeSaidAt = height
+			out = append(out, tbl.repeatChallenges()...)
+			out = append(out, tbl.answerChallenges()...)
+			out = append(out, tbl.repeatComplaints()...)
+		}
 		out = append(out, tbl.proposeSettlement()...)
 		out = append(out, tbl.proposeReleases()...)
 		out = append(out, t.announceAgain(tbl, height)...)

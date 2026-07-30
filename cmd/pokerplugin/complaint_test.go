@@ -375,3 +375,56 @@ func TestAnOverTableBecomesAReceiptOnTheNextTick(t *testing.T) {
 		t.Fatal("a table whose game ended did not become a receipt on the next tick")
 	}
 }
+
+func complaintsIn(out []outgoing) int {
+	n := 0
+	for _, o := range out {
+		if o.kind == schema.KindShuffleComplaint {
+			n++
+		}
+	}
+	return n
+}
+
+// A dispute is retransmitted once a block, not once a poll, and stops the
+// moment the table settles. Dispute traffic is the one class exempt from the
+// finished-tables-fall-silent rule, so without a bound it is the last place
+// the unbounded per-poll repeat that buried a join can still happen.
+func TestADisputeRepeatsOncePerBlockAndStopsAtSettlement(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	seat0, seat1, _ := wedgeHandTwo(t, h, a, b, terms.SID)
+	_ = seat0
+
+	// seat1 raised the complaint, so it is the one that repeats it.
+	seat1.tables.mu.Lock()
+	judged := seat1.tables.m[terms.SID].complJudged[2] != ""
+	seat1.tables.mu.Unlock()
+	if !judged {
+		t.Fatal("the complaint was not judged")
+	}
+
+	at := int64(terms.Until) + 500
+	if got := complaintsIn(seat1.tables.tick(at)); got != 1 {
+		t.Fatalf("a fresh block produced %d complaint frames, want one", got)
+	}
+	if got := complaintsIn(seat1.tables.tick(at)); got != 0 {
+		t.Fatalf("the same block produced %d more, want none", got)
+	}
+	if got := complaintsIn(seat1.tables.tick(at)); got != 0 {
+		t.Fatalf("a third poll at one height produced %d, want none", got)
+	}
+	if got := complaintsIn(seat1.tables.tick(at + 1)); got != 1 {
+		t.Fatalf("the next block produced %d complaint frames, want one", got)
+	}
+
+	// Once the boundary settlement co-signs, the complaint has done its job
+	// and stops entirely.
+	seat1.tables.mu.Lock()
+	seat1.tables.m[terms.SID].settled = true
+	seat1.tables.mu.Unlock()
+	if got := complaintsIn(seat1.tables.tick(at + 2)); got != 0 {
+		t.Fatalf("a settled table still repeated its complaint %d times", got)
+	}
+}
