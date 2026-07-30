@@ -23,12 +23,23 @@ const MinBondBlocks uint32 = 2016
 // number refuses a bond a peer running the new one accepts, and neither is
 // wrong.
 //
-// A development value. It is charged twice - once to hold an identity at all,
-// and again for every table joined - so the real cost of a day's testing is
-// this times the number of tables, each locked for a week. At 0.1 DCR that came
-// to more locked coin than the testing was worth. It has to go back up before
-// this deters anybody.
-const MinBondAtoms uint64 = 100_000 // 0.001 DCR
+// Charged twice - once to hold an identity at all, and again for every table
+// joined - so a day's testing costs this times the number of tables, each
+// locked for a week.
+//
+// The floor is set by what a bond has to fund rather than by taste. A dispute
+// costs the accused bond two fees a round, and what has to survive the last
+// round is a share for every seat that could collect on it, so the smallest
+// workable bond at a table of n seats is (n-1) * MinShareAtoms + 2 * claimFee -
+// at the six seats escrow.MaxMembers allows, 120,001 atoms for a single
+// accusation and 260,001 for the full AccuseDepth. Below that a table deals with
+// a bond nothing can be claimed against, and nothing stops it dealing.
+//
+// This sits about four times over the six seat figure, which puts every table
+// size in the regime where AccuseDepth bounds the ladder rather than the
+// arithmetic does - so how many rounds a dispute can run stops depending on the
+// bond at all. See escrow.AffordableDepth.
+const MinBondAtoms uint64 = 1_000_000 // 0.01 DCR
 
 // BondConfirmations is what a bond must have before it counts. A deposit that
 // is not yet buried can still be replaced, and a bond that can be undone after

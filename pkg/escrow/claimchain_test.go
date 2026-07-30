@@ -331,9 +331,24 @@ func TestTheLastAffordableRungIsAnswerableAndThenUnaccusable(t *testing.T) {
 		t.Fatalf("taking the last rung pays %d, under the %d minimum", got, MinShareAtoms)
 	}
 
-	// One rung further on, where that answer leaves the bond, nothing more is
-	// affordable - so the grinding stops rather than running the bond to dust.
+	// And the grinding stops one rung further on, for one of two reasons
+	// depending on which bound the bond is under. Saying which matters: the
+	// two look the same from the bond's side and are not the same fact.
 	next := answer.TxOut[0].Value
+	if depth == AccuseDepth {
+		// Bounded by policy. There is value left and it is not spent, because
+		// the ladder is only ever derived from where the bond was posted and
+		// is this long - the rung past it carries no accusation at all, which
+		// is what stops it. A bond big enough to reach here has stopped
+		// depending on its own size for how long a dispute can run.
+		if got := AffordableDepth(next, fee, len(terms.Others)); got == 0 {
+			t.Fatal("the cap was reached and the arithmetic had run out anyway, " +
+				"so this is not testing the capped regime")
+		}
+		return
+	}
+	// Bounded by arithmetic: nothing further is affordable, so the ladder ends
+	// exactly where the bond does.
 	if got := AffordableDepth(next, fee, len(terms.Others)); got != 0 {
 		t.Fatalf("a bond of %d past the last rung still funds %d accusations", next, got)
 	}
