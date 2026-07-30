@@ -156,6 +156,10 @@ func (tbl *table) accuseChain(seat uint32) ([]*wire.MsgTx, []byte, error) {
 // Nothing about who gets paid, because an accusation pays nobody - which also
 // means it can be built at a table where somebody has not yet said where to pay
 // them, unlike the claim it replaces.
+//
+// The value is read off the ladder, not assumed: every answer costs the bond a
+// fee, so a bond that has moved holds less than it was posted with, and an
+// accusation naming the posted amount would spend more than is there.
 func (tbl *table) accuseDraft(seat uint32) (escrow.AccuseDraft, []byte, error) {
 	outpoint := tbl.bondedAt[seat]
 	if outpoint == "" {
@@ -164,25 +168,85 @@ func (tbl *table) accuseDraft(seat uint32) (escrow.AccuseDraft, []byte, error) {
 	if outpoint == "" {
 		return escrow.AccuseDraft{}, nil, fmt.Errorf("seat %d has no bond on the chain", seat)
 	}
-	b, err := tbl.bond(seat, tbl.netParams)
-	if err != nil {
-		return escrow.AccuseDraft{}, nil, err
-	}
-	script, err := hex.DecodeString(b.ScriptHex)
-	if err != nil {
-		return escrow.AccuseDraft{}, nil, err
-	}
 	prevout, err := outpointOf(outpoint)
 	if err != nil {
 		return escrow.AccuseDraft{}, nil, err
 	}
-	return escrow.AccuseDraft{
+	ladder, script, err := tbl.bondLadder(seat)
+	if err != nil {
+		return escrow.AccuseDraft{}, nil, err
+	}
+	for _, a := range ladder {
+		if a.TxIn[0].PreviousOutPoint != prevout {
+			continue
+		}
+		return escrow.AccuseDraft{
+			Bond:       script,
+			Prevout:    prevout,
+			ValueAtoms: a.TxIn[0].ValueIn,
+			FeeAtoms:   claimFee,
+			Params:     tbl.netParams,
+		}, script, nil
+	}
+	return escrow.AccuseDraft{}, nil, fmt.Errorf(
+		"seat %d's bond sits at %s, which no agreed accusation reaches", seat, outpoint)
+}
+
+// bondLadder is every position a seat's bond can occupy, from where it was
+// first posted.
+//
+// Derivable by every peer alone: an accusation's identity is fixed before it is
+// signed and so is the answer's, so the whole ladder of outpoints follows from
+// the first. Entry i spends position i and creates the claimed bond whose answer
+// is position i+1. Walking it against the chain is how a peer finds a bond that
+// moved while nobody said so - its own after a restart, or anybody's.
+func (tbl *table) bondLadder(seat uint32) ([]*wire.MsgTx, []byte, error) {
+	origin := tbl.bonded[seat]
+	if origin == "" {
+		return nil, nil, fmt.Errorf("seat %d has no bond on the chain", seat)
+	}
+	b, err := tbl.bond(seat, tbl.netParams)
+	if err != nil {
+		return nil, nil, err
+	}
+	script, err := hex.DecodeString(b.ScriptHex)
+	if err != nil {
+		return nil, nil, err
+	}
+	key := fmt.Sprintf("ladder/%d/%s", seat, origin)
+	if held, ok := tbl.chains[key]; ok {
+		return held, script, nil
+	}
+	prevout, err := outpointOf(origin)
+	if err != nil {
+		return nil, nil, err
+	}
+	d := escrow.AccuseDraft{
 		Bond:       script,
 		Prevout:    prevout,
 		ValueAtoms: int64(escrow.MinBondAtoms),
 		FeeAtoms:   claimFee,
 		Params:     tbl.netParams,
-	}, script, nil
+	}
+	terms, err := escrow.ParseTableBond(script)
+	if err != nil {
+		return nil, nil, err
+	}
+	depth := escrow.AffordableDepth(d.ValueAtoms, d.FeeAtoms, len(terms.Others))
+	if depth < 1 {
+		return nil, nil, fmt.Errorf(
+			"a bond of %d cannot fund one accusation at a fee of %d paying %d seats",
+			d.ValueAtoms, d.FeeAtoms, len(terms.Others))
+	}
+	ladder, err := escrow.BuildAccuseChain(d, depth)
+	if err != nil {
+		return nil, nil, err
+	}
+	if tbl.chains == nil {
+		tbl.chains = map[string][]*wire.MsgTx{}
+	}
+	tbl.chains[key] = ladder
+	return ladder, script, nil
 }
 
 // holdAccusation keeps a signature on one accusation, filed by the output it spends.

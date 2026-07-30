@@ -156,7 +156,7 @@ func tickAll(peers ...*plugin) {
 		// to build anything that needs an amount from the chain.
 		p.learnBondValues(context.Background())
 		p.confirmOurPayments(context.Background())
-		p.watchOwnBond(context.Background())
+		p.watchBonds(context.Background())
 		p.takeClaimed(context.Background())
 		p.publish(context.Background(), p.tables.tick(h))
 	}

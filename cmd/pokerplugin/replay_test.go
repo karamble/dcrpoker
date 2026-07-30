@@ -155,7 +155,7 @@ func TestAClaimInTheMempoolIsAnswered(t *testing.T) {
 	h.pending[outpoint] = true
 	h.mu.Unlock()
 
-	a.watchOwnBond(context.Background())
+	a.watchBonds(context.Background())
 
 	h.mu.Lock()
 	now := len(h.sent)
