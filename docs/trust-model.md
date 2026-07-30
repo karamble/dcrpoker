@@ -367,13 +367,27 @@ rather than an escape. What it *can* do is documented in section 8.
 The audit has four outcomes and they must not be run together. A clean
 recomputation settles the doubt. A **named seat** - its own secrets do not
 produce the deck or the share it published - is an attribution, and its bond is
-withheld. A hand that **did not reproduce with nobody to name**, every seat's
-secrets checking out and the result still wrong, is the case the unsound
-dependency would actually produce: there is no bond to take, so the only answer
-left is that the hand is not paid out, and each stake goes back through its own
-refund. And an audit that **could not run at all** - a transcript this peer
-cannot complete - says nothing about the hand and holds nothing up. Collapsing
-the last two would let a hand the audit just disproved settle anyway.
+withheld. A **replay that is not a deck**, every seat's secrets checking out and
+the result still not opening to fifty-two distinct cards, is the case an unsound
+proof would actually produce: nobody can be named, so the only answer left is
+that the hand is not paid out and each stake goes back through its own refund.
+And this peer being **unable to complete the question** says nothing about the
+hand and holds nothing up.
+
+What separates the third from the fourth is not severity but **who can check
+it**. The first three are reached identically by every peer holding the same
+published keys, decks, shuffle secrets and shares, so acting on one is legible to
+the whole table. The fourth is not, and that is why it acts on nothing: a peer
+that could hold everyone's settlement on a finding nobody else can reproduce
+would be indistinguishable from a loser stalling for the refund timelock.
+
+That boundary decides one case that looks like it belongs on the other side. A
+slot only reaches the transcript once its opening had every share, and every one
+of those shares is checked against its publisher's revealed key before the
+comparison - so the sum a peer subtracted to read a card is the sum the replay
+subtracts, over the same inputs. If they differ, that peer's own record of what
+it read is corrupt, which is a fact about one machine and unverifiable by any
+other. It is reported as loudly as anything here and it stops nothing.
 
 ### Faults: attributable and subjective
 

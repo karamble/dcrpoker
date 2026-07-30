@@ -52,16 +52,20 @@ import (
 const (
 	verdictClean = "clean"
 	verdictCheat = "cheat"
-	// verdictWrong is a hand that did not reproduce with nobody to name for
-	// it. Nothing is paid out on one: there is no bond to take, so refusing
-	// to settle is the whole of the answer.
+	// verdictWrong is a replay that produced something that is not a deck,
+	// with nobody to name for it. Nothing is paid out on one: there is no bond
+	// to take, so refusing to settle is the whole of the answer - and every
+	// peer holding the published material reaches it alike, which is what
+	// makes refusing legible rather than suspicious.
 	verdictWrong = "wrong"
 	// verdictUnanswered is a hand nobody can recompute any more, because every
 	// seat still owing it has had its bond taken instead.
 	verdictUnanswered = "unanswered"
-	// verdictInconclusive is an audit that could not run at all - a transcript
-	// this peer cannot complete, which says nothing about the hand. The log
-	// says why; reopening would not, and it holds nothing up.
+	// verdictInconclusive is this peer being unable to complete the question:
+	// a transcript with a piece missing, or a local record that contradicts
+	// arithmetic it cannot fault. It says nothing about the hand and holds
+	// nothing up, because a finding no other peer can reach must not be able
+	// to hold everybody's money.
 	verdictInconclusive = "inconclusive"
 )
 

@@ -108,19 +108,19 @@ func (c *Cheat) Error() string {
 	return "player " + k[:16] + " " + c.Reason
 }
 
-// Wrong is a hand that did not reproduce.
+// Wrong is a recomputed deck that is not a deck.
 //
-// The audit ran to the end and what it recomputed is not what the table played,
-// and no seat can be named for it: every published deck matched its author's own
-// secrets and every published share matched its author's own key, and the result
-// is still not the one the hand acted on. That is a break of the kind this whole
-// file exists to catch, and it is separate from a *Cheat because there is nobody
-// to take a bond from - and separate from a plain error because a plain error is
-// a transcript this peer cannot complete, which is a different thing entirely
-// from one it completed and disagreed with.
+// Every published deck matched its author's own secrets, every published share
+// matched its author's own key, and what the replay produced still does not open
+// to fifty-two distinct cards. Nobody can be named for that - the inputs all
+// check - so there is no bond to take and the only answer left is that nothing
+// is paid out on the hand.
 //
-// Nobody should be paid out on a hand that did not reproduce, whether or not it
-// can be attributed.
+// It says nothing about what anybody read, and that boundary is load-bearing.
+// Every peer holding the published material reaches this verdict independently,
+// so a refusal on these grounds is one the whole table can confirm. A finding
+// that only one peer can reach is not this: see the note on the mismatch below,
+// which is a plain error precisely because it is a claim about one machine.
 type Wrong struct{ Reason string }
 
 func (w *Wrong) Error() string { return w.Reason }
@@ -128,10 +128,15 @@ func (w *Wrong) Error() string { return w.Reason }
 // Audit replays a hand's deck from the transcript and the published secrets.
 //
 // Four outcomes, and they must not be run together. nil is an honest hand. A
-// *Cheat names the player who broke it. A *Wrong is a hand that did not
-// reproduce with nobody to name for it. A plain error is a transcript this peer
-// cannot complete, which says nothing about the hand at all - only a *Cheat is
-// an accusation, and only a plain error is safe to shrug at.
+// *Cheat names the player who broke it. A *Wrong is a replay that produced
+// something that is not a deck, which nobody can be named for and nobody should
+// be paid out on. A plain error is this peer being unable to complete the
+// question - a transcript with a piece missing, or a local record that
+// contradicts arithmetic it cannot fault - and says nothing about the hand.
+//
+// The first three are reached by every peer holding the same published material,
+// which is what makes acting on them legible to the whole table. The last is not,
+// which is why it acts on nothing.
 //
 // Note what is *not* consulted: Step.Proof. The audit recomputes each shuffle
 // from its author's own secrets and compares against what they published. If
@@ -250,9 +255,26 @@ func audit(h *Hand, secrets []*Secrets) ([]Card, error) {
 			return nil, err
 		}
 		if s.Card != cards[s.Slot] {
-			return nil, &Wrong{Reason: fmt.Sprintf(
-				"the table played slot %d as card %d when it was card %d",
-				s.Slot, s.Card, cards[s.Slot])}
+			// Not a verdict about the hand, and a plain error on purpose.
+			//
+			// A slot only reaches Shown once its opening had every share, and
+			// every one of those shares has just been checked against its
+			// publisher's revealed key by auditShares above - so the sum this
+			// peer subtracted to read the card is the same sum the replay
+			// subtracts here, over the same inputs. The two cannot disagree
+			// unless this process's own record of what it read is corrupt.
+			//
+			// Which makes it a fact about one machine, reachable by nobody
+			// else: the shares and the deck are published and common, and what
+			// this peer wrote down that it read is neither. Treating it as a
+			// hand that did not reproduce would let one client's corruption
+			// veto a whole table's settlement on a claim the table cannot
+			// check. So it is reported as loudly as any other unreadable
+			// transcript, and it holds nothing up.
+			return nil, fmt.Errorf("slot %d recomputes to card %d and this peer recorded reading "+
+				"card %d, with every share and every shuffle checking out - the record this "+
+				"machine kept of the hand is not to be trusted",
+				s.Slot, cards[s.Slot], s.Card)
 		}
 	}
 	return cards, nil

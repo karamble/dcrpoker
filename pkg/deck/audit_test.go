@@ -387,27 +387,42 @@ func TestABadShareForAnActedOnCardNamesItsSeat(t *testing.T) {
 	}
 }
 
-// A hand that does not reproduce with every share and every shuffle checking
-// out is a *Wrong, not a plain error: the audit ran and disagreed, which is a
-// different thing from a transcript it could not complete.
-func TestAHandThatDoesNotReproduceIsWrongRatherThanUnreadable(t *testing.T) {
+// A card this peer recorded reading that the replay disagrees with is a fault in
+// this machine, not a verdict about the hand.
+//
+// A slot only reaches Shown once its opening had every share, and auditShares has
+// just checked every one of those shares against its publisher's revealed key -
+// so the sum this peer subtracted to read the card is the sum the replay
+// subtracts, over the same inputs. They cannot differ unless the local record is
+// corrupt, and nobody else can check a claim about that. It must not be a *Wrong:
+// a *Wrong stops the table being paid out, and one client's corruption may not
+// veto everybody's money.
+func TestAMisreadCardIsThisMachinesFaultAndNotTheHands(t *testing.T) {
 	h, secrets := play(t, 2)
 
 	cards, err := AuditedDeck(h, secrets)
 	if err != nil {
 		t.Fatalf("an honest hand did not audit: %v", err)
 	}
-	// The table claims a card that is not the one at that slot, and publishes
-	// no shares to blame it on.
-	h.Shown = []Shown{{Slot: 4, Card: (cards[4] + 1) % Size}}
+	// Slot 4 read wrongly, with every share honest - which is the only way
+	// this is reachable at all.
+	final := h.Steps[len(h.Steps)-1].Deck
+	shares := make([]kyber.Point, 2)
+	for i := range shares {
+		shares[i] = suite.Point().Mul(secrets[i].Key, final[4].C1)
+	}
+	h.Shown = []Shown{{Slot: 4, Card: (cards[4] + 1) % Size, Shares: shares}}
 
 	err = Audit(h, secrets)
+	if err == nil {
+		t.Fatal("a card recorded wrongly audited clean")
+	}
 	var wrong *Wrong
-	if !errors.As(err, &wrong) {
-		t.Fatalf("a hand that did not reproduce came back as %v (%T), want a *Wrong", err, err)
+	if errors.As(err, &wrong) {
+		t.Fatal("one machine's own record vetoed the table: it came back as a *Wrong")
 	}
 	var cheat *Cheat
 	if errors.As(err, &cheat) {
-		t.Fatal("a hand nobody can be named for named somebody")
+		t.Fatal("a card this peer misread named somebody else")
 	}
 }
