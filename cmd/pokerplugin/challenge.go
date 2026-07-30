@@ -523,8 +523,14 @@ func (tbl *table) maybeAudit(hand uint64) {
 			"hand %d did not reproduce and no seat can be named for it: %s; nothing settles on it",
 			hand, wrong.Reason), "", nil)
 	default:
-		log.Printf("pokerplugin: table %s: hand %d's audit could not run: %v", tbl.terms.SID, hand, err)
-		tbl.note(eventBlocked, fmt.Sprintf("hand %d's audit could not run: %v", hand, err), "", nil)
+		// Not "the audit could not run" - it may well have run and found this
+		// peer's own record of the hand at fault, which is a different thing
+		// to say to whoever is reading it.
+		log.Printf("pokerplugin: table %s: hand %d could not be answered for: %v",
+			tbl.terms.SID, hand, err)
+		tbl.note(eventBlocked, fmt.Sprintf(
+			"hand %d could not be answered for, and nothing is held up by it: %v", hand, err),
+			"", nil)
 	}
 	tbl.closeChallenge(hand, verdict)
 }
