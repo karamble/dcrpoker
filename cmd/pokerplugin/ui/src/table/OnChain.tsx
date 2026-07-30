@@ -25,6 +25,9 @@ const wording: Record<ChainEvent['kind'], string> = {
   unanswerable: 'No answer held',
   settled: 'Table paid out',
   blocked: 'Could not complete',
+  challenged: 'Hand challenged',
+  audited: 'Hand recomputed clean',
+  cheat: 'Cheating proven',
 }
 
 export function OnChain({
@@ -39,10 +42,52 @@ export function OnChain({
   const events = [...(ledger?.events ?? [])].reverse()
   const claims = ledger?.claims ?? []
   const settlement = ledger?.settlement
+  const challenges = ledger?.challenges ?? []
 
   return (
     <section className="card">
       <h2>On the chain</h2>
+
+      {challenges.map((ch) => (
+        <div key={`ch${ch.hand}`} className={ch.verdict === 'cheat' ? 'banner' : 'banner calm'}>
+          {ch.open ? (
+            <>
+              <div>
+                <strong>Hand {ch.hand} is challenged.</strong> Every seat owes its deck
+                secrets, and nothing gets paid out until the hand is recomputed.
+              </div>
+              <div className="event-meta">
+                {ch.revealed?.length ?? 0} of {ch.needs} seats have revealed
+              </div>
+            </>
+          ) : ch.verdict === 'cheat' ? (
+            <div>
+              <strong className="alarm">
+                Hand {ch.hand} did not recompute{ch.cheatSeat !== undefined ? ` — seat ${ch.cheatSeat} broke it` : ''}.
+              </strong>{' '}
+              The revealed secrets do not produce the deck that was played.
+            </div>
+          ) : (
+            <>
+              <div>
+                <strong>Hand {ch.hand} recomputed clean.</strong> Every card, from every
+                seat's own secrets, with no proof consulted — folds included, which is
+                the price of being the hand somebody doubted.
+              </div>
+              {ch.cards && ch.cards.length > 0 && (
+                <div className="event-meta">
+                  {ch.cards
+                    .filter((c) => c.board || c.seat !== undefined)
+                    .map((c) =>
+                      c.board ? `board ${c.card}` : `seat ${c.seat} ${c.card}`,
+                    )
+                    .join(' · ')}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      ))}
 
       {claims.length > 0 && (
         <>
@@ -119,7 +164,7 @@ export function OnChain({
             <li className="event" key={i}>
               <span className={`pip ${e.kind}`} />
               <span className="event-text">
-                <span className={e.kind === 'unanswerable' ? 'alarm' : undefined}>
+                <span className={e.kind === 'unanswerable' || e.kind === 'cheat' ? 'alarm' : undefined}>
                   {wording[e.kind] ?? e.kind}
                 </span>
                 {' — '}

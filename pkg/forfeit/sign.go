@@ -93,6 +93,15 @@ const (
 	DomainShuffle Domain = "shuffle"
 	// DomainLeaving is a seat saying it is getting up: one per hand.
 	DomainLeaving Domain = "leaving"
+
+	// DomainChallenge is a seat demanding a hand be recomputed from
+	// everything everybody knew: one per hand, and its content is fixed by
+	// the position alone - there is nothing else a challenge says.
+	DomainChallenge Domain = "challenge"
+	// DomainSecrets is a seat giving a challenged hand's secrets away. The
+	// secrets were drawn fresh, so the position does not fix the bytes and
+	// the nonce must commit to them.
+	DomainSecrets Domain = "secrets"
 )
 
 // Which nonce a domain takes, as a property of the domain and not a choice at the
@@ -103,6 +112,7 @@ const (
 var committedDomains = map[Domain]bool{
 	DomainCardKey: true,
 	DomainShuffle: true,
+	DomainSecrets: true,
 }
 
 var knownDomains = map[Domain]bool{
@@ -112,6 +122,8 @@ var knownDomains = map[Domain]bool{
 	DomainCardKey:    true,
 	DomainShuffle:    true,
 	DomainLeaving:    true,
+	DomainChallenge:  true,
+	DomainSecrets:    true,
 }
 
 // Committed reports whether this domain commits to the message in its nonce.

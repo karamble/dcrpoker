@@ -340,6 +340,7 @@ func (p *plugin) routes() http.Handler {
 	// host's interface, so the host is what drives this.
 	mux.HandleFunc("/table/join", p.guard(p.handleJoin))
 	mux.HandleFunc("/table/leave", p.guard(p.handleLeave))
+	mux.HandleFunc("/table/challenge", p.guard(p.handleTableChallenge))
 	mux.HandleFunc("/tables", p.guard(p.handleTables))
 
 	// Paying into a settled table, and the way back when a payment was made

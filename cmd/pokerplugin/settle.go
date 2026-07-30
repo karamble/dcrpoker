@@ -614,6 +614,11 @@ func (tbl *table) proposeSettlement() []outgoing {
 	if tbl.play == nil || !tbl.play.Over() || tbl.settled {
 		return nil
 	}
+	if tbl.challengeOpen() {
+		// A challenged hand is a result being checked. Settling before the
+		// audit answers would pay out the thing in doubt.
+		return nil
+	}
 	d, err := tbl.settleDraft()
 	if err != nil {
 		log.Printf("pokerplugin: table %s: cannot settle yet: %v", tbl.terms.SID, err)
@@ -680,6 +685,10 @@ type settlement struct {
 // table's balance.
 func (tbl *table) adoptSettlement(ctx context.Context, body schema.Settle) []outgoing {
 	if tbl.play == nil {
+		return nil
+	}
+	if tbl.challengeOpen() {
+		tbl.note(eventRefused, "a settlement arrived while a hand is challenged, and was not signed", "", nil)
 		return nil
 	}
 	d, err := tbl.settleDraft()

@@ -41,7 +41,11 @@ import (
 // bond, where its owner has a window to answer with its own key. The bond script
 // loses its claim branch, so its address changes, and a bond posted under an
 // earlier version is a bond under earlier rules.
-const Version = 3
+//
+// 4 adds audit on challenge: any seat may demand a settled hand be recomputed
+// from every seat's deck secrets, and refusing to reveal is answered by the
+// claim. A peer on 3 cannot be asked to reveal, so the two do not play together.
+const Version = 4
 
 // Game is the routing key for poker traffic.
 const Game = "poker"
@@ -164,6 +168,14 @@ const (
 	// time: the accusation was pre-signed and the answer needs one key, but
 	// this needs the seats it pays and they are willing when it happens.
 	KindTake Kind = "take"
+
+	// KindChallenge is a seat demanding a settled hand be recomputed from
+	// everything everybody knew. It obliges every seat to reveal that hand's
+	// secrets, and refusing is what the claim answers.
+	KindChallenge Kind = "challenge"
+	// KindSecrets is one seat giving a challenged hand's secrets away -
+	// worthless to anybody but an auditor, which is the point.
+	KindSecrets Kind = "secrets"
 )
 
 // Message is the envelope every payload travels in.

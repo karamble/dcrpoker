@@ -15,12 +15,12 @@ import (
 // designing around: a soundness bug is silent. The money leaves, the proofs all
 // verified, and nobody has any reason to look.
 //
-// So a hand does not end when the pot is pushed. It ends when every player
-// publishes everything they knew - their permutation, their blinding factors,
-// their card key - and every client recomputes the entire hand from the logged
-// transcript and checks it lands where the hand said it did. The secrets are
-// worthless by then: the key is per-hand and already spent, and the deck it
-// protected has already been played.
+// So any player may demand that a hand end the loud way: every player publishes
+// everything they knew - their permutation, their blinding factors, their card
+// key - and every client recomputes the entire hand from the logged transcript
+// and checks it lands where the hand said it did. The secrets are worthless by
+// then: the key is per-hand and already spent, and the deck it protected has
+// already been played.
 //
 // This does not make the cryptography stronger. It changes what a break costs.
 // A forged shuffle stops being theft nobody notices and becomes a disagreement
@@ -29,36 +29,21 @@ import (
 // are wrong* - the audit recomputes rather than verifies, so it shares no code
 // path and no assumption with the thing it is checking.
 //
-// # Read the paragraphs above as a design, not as a description
-//
-// They are written in the present tense and nothing calls any of this. Audit has
-// no caller outside this package, the ShuffleSecret is discarded at the only
-// deck.Shuffle call site, and there is no message kind to publish secrets in - so
-// a hand does *not* currently end this way. This is a tested library with no
-// producer and no transport, which is a more flattering position than it sounds:
-// the hard part is decided below, not here.
-//
-// Two things have to be settled before it is wired, and the first is the reason
-// it should not simply be switched on:
-//
-// Publishing shuffle secrets publishes the muck, permanently. Fresh masks with
+// It runs on challenge, never by default, and the muck is why. Fresh masks with
 // zero randomness so that every peer agrees the starting deck, which makes the
 // card at each initial slot public - so composing the published permutations maps
 // public starting cards to final slots whether or not the card keys are given
-// away too. Revealing every hand therefore makes every folded hand public
-// forever, and folding ranges exact for anybody who keeps their log. Real poker
-// never shows the muck, and that is not a detail of etiquette: it is most of what
-// makes the game the game.
+// away too. Revealing every hand would make every folded hand public forever,
+// and folding ranges exact for anybody who keeps their log. Real poker never
+// shows the muck, and that is not a detail of etiquette: it is most of what
+// makes the game the game. Challenge-scoped, honest play reveals nothing, and a
+// challenged hand gives up its muck to the table that doubted it - which is the
+// price of being the hand somebody doubted.
 //
-// So the shape to build is audit *on challenge*. Honest play reveals nothing; any
-// player may challenge a hand inside the dispute window; refusing to reveal then
-// is a forfeit. Detection becomes deterrence, which the bonds already make sound,
-// and it fixes the second problem at the same time - a player who has already
-// been paid has no reason to publish secrets unless declining costs them.
-//
-// What this file does not do is decide anything. Detection is here; the
-// punishment that makes detection matter is the forfeitable bond,
-// escrow.TableBondScript.
+// What this file does not decide is what a refusal costs. Detection is here;
+// the challenge that obliges the reveal, and the claim that answers refusing,
+// live with the rest of the dispute machinery, and the punishment that makes
+// detection matter is the forfeitable bond, escrow.TableBondScript.
 
 // Step is one shuffle as the log recorded it.
 type Step struct {
@@ -135,21 +120,36 @@ func (c *Cheat) Error() string {
 // the proof system were entirely broken this would still catch it, which is the
 // only reason the audit is worth running.
 func Audit(h *Hand, secrets []*Secrets) error {
+	_, err := audit(h, secrets)
+	return err
+}
+
+// AuditedDeck is the audit, keeping what it opened.
+//
+// The final deck's card at every slot, in slot order - the whole hand including
+// the muck, which is exactly what a completed audit has already made computable
+// by everyone holding the secrets. Same contract as Audit: cards come back only
+// with a nil error.
+func AuditedDeck(h *Hand, secrets []*Secrets) ([]Card, error) {
+	return audit(h, secrets)
+}
+
+func audit(h *Hand, secrets []*Secrets) ([]Card, error) {
 	n := len(h.Pubs)
 	switch {
 	case n == 0:
-		return fmt.Errorf("a hand with no players")
+		return nil, fmt.Errorf("a hand with no players")
 	case len(h.Steps) != n:
-		return fmt.Errorf("a hand with %d players recorded %d shuffles", n, len(h.Steps))
+		return nil, fmt.Errorf("a hand with %d players recorded %d shuffles", n, len(h.Steps))
 	case len(secrets) != n:
-		return fmt.Errorf("a hand with %d players published %d sets of secrets", n, len(secrets))
+		return nil, fmt.Errorf("a hand with %d players published %d sets of secrets", n, len(secrets))
 	}
 
 	// The joint key, recomputed rather than taken from the transcript. This
 	// also rejects a table where two seats shared a key.
 	joint, err := JointKey(h.Pubs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Every published key must be the one that player committed to. A
@@ -159,10 +159,10 @@ func Audit(h *Hand, secrets []*Secrets) error {
 	total := suite.Scalar().Zero()
 	for i, s := range h.Pubs {
 		if secrets[i] == nil || secrets[i].Key == nil {
-			return fmt.Errorf("player %d published no card key", i)
+			return nil, fmt.Errorf("player %d published no card key", i)
 		}
 		if !suite.Point().Mul(secrets[i].Key, nil).Equal(s) {
-			return &Cheat{By: s, Reason: "published a card key that is not the one they committed to"}
+			return nil, &Cheat{By: s, Reason: "published a card key that is not the one they committed to"}
 		}
 		total = total.Add(total, secrets[i].Key)
 	}
@@ -172,25 +172,25 @@ func Audit(h *Hand, secrets []*Secrets) error {
 	for i, step := range h.Steps {
 		who := h.Pubs[i]
 		if step.By != nil && !step.By.Equal(who) {
-			return fmt.Errorf("shuffle %d was recorded against the wrong player", i)
+			return nil, fmt.Errorf("shuffle %d was recorded against the wrong player", i)
 		}
 		sec := secrets[i].Shuffle
 		if sec == nil {
-			return fmt.Errorf("player %d published no shuffle secret", i)
+			return nil, fmt.Errorf("player %d published no shuffle secret", i)
 		}
 		if err := checkPerm(sec.Pi, len(deck)); err != nil {
-			return &Cheat{By: who, Reason: err.Error()}
+			return nil, &Cheat{By: who, Reason: err.Error()}
 		}
 		if len(sec.Beta) != len(deck) {
-			return &Cheat{By: who, Reason: fmt.Sprintf(
+			return nil, &Cheat{By: who, Reason: fmt.Sprintf(
 				"published %d blinding factors for a deck of %d", len(sec.Beta), len(deck))}
 		}
 		if len(step.Deck) != len(deck) {
-			return &Cheat{By: who, Reason: fmt.Sprintf(
+			return nil, &Cheat{By: who, Reason: fmt.Sprintf(
 				"shuffled %d cards into %d", len(deck), len(step.Deck))}
 		}
 		if !sameDeck(remask(deck, joint, sec.Pi, sec.Beta), step.Deck) {
-			return &Cheat{By: who, Reason: "published a deck their own secrets do not produce"}
+			return nil, &Cheat{By: who, Reason: "published a deck their own secrets do not produce"}
 		}
 		deck = step.Deck
 	}
@@ -205,11 +205,11 @@ func Audit(h *Hand, secrets []*Secrets) error {
 			// Unreachable if every shuffle above checked out, because a
 			// re-masked permutation of a valid deck is a valid deck. If it
 			// ever fires, this package is wrong rather than a player.
-			return fmt.Errorf("slot %d of the final deck is not a card, "+
+			return nil, fmt.Errorf("slot %d of the final deck is not a card, "+
 				"which every shuffle checking out should have made impossible: %w", i, err)
 		}
 		if seen[card] {
-			return fmt.Errorf("the final deck holds card %d twice despite every shuffle checking out", card)
+			return nil, fmt.Errorf("the final deck holds card %d twice despite every shuffle checking out", card)
 		}
 		seen[card] = true
 		cards[i] = card
@@ -218,16 +218,71 @@ func Audit(h *Hand, secrets []*Secrets) error {
 	// And every card the table acted on must be the card that was there.
 	for _, s := range h.Shown {
 		if s.Slot < 0 || s.Slot >= len(cards) {
-			return fmt.Errorf("the hand acted on slot %d of a %d card deck", s.Slot, len(cards))
+			return nil, fmt.Errorf("the hand acted on slot %d of a %d card deck", s.Slot, len(cards))
 		}
 		if s.Card != cards[s.Slot] {
-			return fmt.Errorf("the table played slot %d as card %d when it was card %d",
+			return nil, fmt.Errorf("the table played slot %d as card %d when it was card %d",
 				s.Slot, s.Card, cards[s.Slot])
 		}
 		// Attribute it, if a published share is what made it wrong.
 		if err := auditShares(h, deck[s.Slot], s, secrets); err != nil {
-			return err
+			return nil, err
 		}
+	}
+	return cards, nil
+}
+
+// VerifySecrets checks one player's revealed secrets against their own part of
+// the transcript, without waiting for anybody else's.
+//
+// Run on each reveal as it arrives: the key must be the one committed at the
+// start of the hand, and the shuffle secrets must reproduce the deck this
+// player published when their turn came. The full Audit still runs once every
+// seat has revealed - this is what lets a bad reveal be refused on receipt
+// instead of poisoning the audit later. Same contract as Audit: nil, a *Cheat
+// naming this player, or a plain error for a transcript too malformed to ask.
+func VerifySecrets(h *Hand, seat int, s *Secrets) error {
+	n := len(h.Pubs)
+	switch {
+	case n == 0:
+		return fmt.Errorf("a hand with no players")
+	case seat < 0 || seat >= n:
+		return fmt.Errorf("a hand with %d players has no seat %d", n, seat)
+	case len(h.Steps) != n:
+		return fmt.Errorf("a hand with %d players recorded %d shuffles", n, len(h.Steps))
+	case s == nil || s.Key == nil:
+		return fmt.Errorf("player %d published no card key", seat)
+	case s.Shuffle == nil:
+		return fmt.Errorf("player %d published no shuffle secret", seat)
+	}
+	who := h.Pubs[seat]
+	if !suite.Point().Mul(s.Key, nil).Equal(who) {
+		return &Cheat{By: who, Reason: "published a card key that is not the one they committed to"}
+	}
+
+	joint, err := JointKey(h.Pubs)
+	if err != nil {
+		return err
+	}
+	// The deck this player shuffled: the public starting deck for the first
+	// seat, the previous seat's published deck for everyone after.
+	prev := Fresh(joint)
+	if seat > 0 {
+		prev = h.Steps[seat-1].Deck
+	}
+	if err := checkPerm(s.Shuffle.Pi, len(prev)); err != nil {
+		return &Cheat{By: who, Reason: err.Error()}
+	}
+	if len(s.Shuffle.Beta) != len(prev) {
+		return &Cheat{By: who, Reason: fmt.Sprintf(
+			"published %d blinding factors for a deck of %d", len(s.Shuffle.Beta), len(prev))}
+	}
+	if len(h.Steps[seat].Deck) != len(prev) {
+		return fmt.Errorf("the transcript records seat %d shuffling %d cards into %d",
+			seat, len(prev), len(h.Steps[seat].Deck))
+	}
+	if !sameDeck(remask(prev, joint, s.Shuffle.Pi, s.Shuffle.Beta), h.Steps[seat].Deck) {
+		return &Cheat{By: who, Reason: "published secrets that do not produce the deck they published"}
 	}
 	return nil
 }

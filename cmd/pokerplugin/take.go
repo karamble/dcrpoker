@@ -309,4 +309,8 @@ func (tbl *table) finishTake(ctx context.Context, chain broadcaster, outpoint st
 		tbl.terms.SID, t.seat, txid)
 	tbl.note(eventClaimed, fmt.Sprintf("seat %d never answered, and its bond was taken", t.seat),
 		txid, seatp(int(t.seat)))
+	// A reveal this seat was refusing has now been answered by its coin, and
+	// the audit it blocked can never complete - so the settlement it was
+	// holding up may proceed on the standing checkpoint.
+	tbl.closeChallengesAfterTake(t.seat)
 }

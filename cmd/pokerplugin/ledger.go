@@ -49,6 +49,37 @@ type ledgerView struct {
 	Claims     []claimView  `json:"claims,omitempty"`
 	Settlement *settleView  `json:"settlement,omitempty"`
 	Events     []chainEvent `json:"events,omitempty"`
+
+	// Challenges is every challenged hand: who doubted it, who has revealed,
+	// and - once the audit ran - what it found. Cards carry the whole
+	// recomputed hand, muck included, which is what a completed audit has
+	// already made computable by everyone at the table.
+	Challenges []challengeView `json:"challenges,omitempty"`
+}
+
+// challengeView is one challenge as the panel sees it.
+type challengeView struct {
+	Hand     uint64   `json:"hand"`
+	By       uint32   `json:"by"`
+	Open     bool     `json:"open"`
+	Revealed []uint32 `json:"revealed,omitempty"`
+	Needs    int      `json:"needs"`
+	// Verdict is empty while open, then "clean" or "cheat".
+	Verdict string `json:"verdict,omitempty"`
+	// CheatSeat is who the audit named, when it named anybody.
+	CheatSeat *uint32   `json:"cheatSeat,omitempty"`
+	Cards     []audCard `json:"cards,omitempty"`
+}
+
+// audCard is one recomputed card of an audited hand, rendered the way every
+// other card in the interface is.
+type audCard struct {
+	Slot int    `json:"slot"`
+	Card string `json:"card"`
+	// Seat is whose hole card this slot was; absent for the board and the
+	// muck that never belonged to anybody.
+	Seat  *uint32 `json:"seat,omitempty"`
+	Board bool    `json:"board,omitempty"`
 }
 
 // claimView is one proposal to take a bond, and how far it has got.
@@ -126,6 +157,7 @@ func (tbl *table) ledger(height int64, names map[string]string) *ledgerView {
 		Accused: tbl.accused,
 		Events:  append([]chainEvent(nil), tbl.events...),
 	}
+	v.Challenges = tbl.challengeViews()
 	if id, ok := tbl.form.MatchID(); ok {
 		v.Match = id
 	}

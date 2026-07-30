@@ -256,8 +256,8 @@ would make the *next* hand readable to anyone who kept it.
 
 The starting deck is masked with **zero randomness**, deliberately, so every peer
 recomputes the same one - the first shuffler's blinding is what provides secrecy.
-This has a consequence that matters in section 8: the card at each initial slot is
-public.
+This has a consequence that matters for the audit below: the card at each initial
+slot is public, which is why a hand is recomputed only when somebody asks.
 
 ### The dependency is not trusted
 
@@ -322,6 +322,47 @@ A repeat is free and must be. The repair discipline in section 6 re-sends
 anything that has to arrive, and because the nonce comes from the position rather
 than the message, re-sending an identical frame produces a **byte-identical**
 signature. Honest retransmission can never look like equivocation.
+
+### Audit on challenge
+
+Every proof in the dealing is checked on arrival, and all of them come from a
+library that has shipped an unsound proof before. So there is a second answer
+that owes the proofs nothing: **any seat may demand a settled hand be recomputed
+from every seat's own secrets**, and `deck.Audit` replays it without consulting a
+single proof. A forged shuffle stops being theft nobody notices and becomes a
+disagreement everybody computes, naming the seat it does not land for.
+
+It runs on challenge and never by default, because publishing shuffle secrets
+publishes the muck permanently - the starting deck is masked with zero randomness
+(section 4), so composing published permutations maps public starting cards to
+final slots whether the card keys are given away or not. Honest play reveals
+nothing; a challenged hand gives up its cards to the table that doubted it,
+including the challenger's own folds.
+
+```mermaid
+sequenceDiagram
+    participant P as Any seat
+    participant T as The table
+    participant Chain as The chain
+    P->>T: challenge hand N
+    Note over T: every seat now owes hand N's secrets
+    T->>T: each seat publishes its key, permutation and blinding
+    Note over T: each reveal checked against that seat's own signed deck
+    T->>T: every seat in - recompute the whole hand
+    Note over P,T: clean, or a named seat whose secrets do not produce its deck
+```
+
+Two things enforce the reveal, and both matter. It is a **duty** in the sense
+section 5 already uses, so silence on it becomes the same pre-signed accusation
+as any other abandonment - and it is the one duty that outlives the table, since
+a hand is usually doubted after the game ends. And while a challenge is open no
+peer signs a settlement or a bond release, so there is nothing to be paid until
+the table has answered for itself. Without the second, a seat whose bond was
+already back could refuse for free.
+
+What a seat cannot do is reveal dishonestly and be believed: the secrets must
+reproduce the deck that seat itself signed, so a false reveal is the proof
+rather than an escape. What it *can* do is documented in section 8.
 
 ### Faults: attributable and subjective
 
@@ -401,7 +442,7 @@ looked exactly like a peer misbehaving.
 Traffic rides Bison Relay as an envelope over ordinary messages:
 
 ```
---gaming[v=1,game=poker,gv=3,sid=<hex>,mid=<hex>,seq=<n>/<total>,exp=<unix>]--<base64>
+--gaming[v=1,game=poker,gv=4,sid=<hex>,mid=<hex>,seq=<n>/<total>,exp=<unix>]--<base64>
 ```
 
 `v` versions the framing and `gv` the game, separately, so a breaking change to
@@ -485,26 +526,20 @@ point where the code stops consulting it.**
 
 Ordered by what would bite first.
 
-- **The reveal-and-recompute audit is not wired to anything.** `pkg/deck/audit.go`
-  exists and is tested; `deck.Audit` has no caller outside the package, the
-  shuffle secret is discarded at the only `deck.Shuffle` call site, and there is
-  no message kind to publish secrets in. It is the intended answer to an unsound
-  dependency - a hand ends with every player publishing their secrets and every
-  peer recomputing without consulting a single proof, so it holds *even if the
-  proofs are wrong* - and it is currently a promise rather than a mechanism.
+- **A revealed-and-caught cheat is named, not confiscated from.** The audit runs
+  on challenge and it works (section 5), but revealing dishonestly still
+  discharges the reveal: the punishment is the proof itself, plus every honest
+  peer refusing to co-sign that seat's bond release. A release needs every
+  member, so one withholder pins the bond until the week-long backstop - which is
+  delay and evidence rather than forfeiture. Taking it automatically would need a
+  bond branch conditioned on something no script can judge.
 
-  It cannot simply be switched on either. **Publishing shuffle secrets publishes
-  the muck, permanently.** The starting deck is masked with zero randomness (section
-  4), so the card at each initial slot is public, so composing the published
-  permutations maps public starting cards to final slots - with or without the
-  card keys. Revealing every hand makes every folded hand public forever and
-  folding ranges exact for anyone who greps their log. That is a different game
-  and nobody chose it. The shape that keeps poker being poker is **audit on
-  challenge**: honest play reveals nothing, any player may challenge a hand inside
-  the dispute window, and refusing to reveal then is a forfeit. Detection becomes
-  deterrence, which the bonds already make sound, and it fixes the incentive at
-  the same time - a player already paid has no reason to publish unless declining
-  costs them.
+  Two smaller edges of the same mechanism. A challenge that arrives after the
+  settlement is already co-signed is answered voluntarily and enforced by
+  nothing, because there is no longer anything to withhold. And one open
+  challenge per challenger bounds the *rate* of muck exposure, not the total: a
+  player willing to publish their own folds every hand can eventually publish
+  everybody's.
 
 - **Stale checkpoints are not punishable.** A peer holds every checkpoint it ever
   signed and nothing stops it settling on an old one. Decrementing timelocks or

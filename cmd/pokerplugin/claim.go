@@ -61,7 +61,10 @@ func (t *tables) proposeClaims() []outgoing {
 }
 
 func (tbl *table) proposeClaim(params stdaddr.AddressParams) []outgoing {
-	if tbl.play == nil || tbl.play.Over() {
+	// A finished table proposes nothing on its own - Claimable returns
+	// nothing there unless a challenge is open, and a reveal refused after
+	// the last hand is the common refusal.
+	if tbl.play == nil {
 		return nil
 	}
 	duty, ok := tbl.play.Claimable(claimAfter)

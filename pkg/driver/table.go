@@ -104,6 +104,16 @@ type Table struct {
 	// height it started owing it.
 	dutySince map[int]dutyStamp
 
+	// finished is the record of every settled hand, waiting to be taken and
+	// written down. See record.go.
+	finished []*HandRecord
+
+	// challenges is which seats have discharged the reveal each challenged
+	// hand obliges, and challengedBy is which hand each challenger has open.
+	// See OpenChallenge.
+	challenges   map[uint64]map[int]bool
+	challengedBy map[int]uint64
+
 	over bool
 }
 
@@ -633,6 +643,9 @@ func (t *Table) maybeFinish() ([]Out, error) {
 		return nil, err
 	}
 	t.record(cp)
+	// Harvested before the checkpoint leaves, never after: the signature is
+	// what makes this hand challengeable, and the record is what answers.
+	t.finished = append(t.finished, t.hands.takeRecord())
 
 	// Ours may be the one that completes the set, and then this is the
 	// boundary. Nothing else will notice: the only other place that advances

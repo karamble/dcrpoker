@@ -141,6 +141,11 @@ type Driver struct {
 	// person. Without it a peer could only say "you are gone", which is the
 	// accusation nobody can check.
 	seen map[int]map[int]bool
+
+	// rec and recShares accumulate the hand's transcript and this peer's own
+	// secrets as it plays, because nothing else keeps them. See record.go.
+	rec       *HandRecord
+	recShares map[int][]kyber.Point
 }
 
 type heldShare struct {
@@ -209,6 +214,16 @@ func New(cfg Config) (*Driver, error) {
 		shared:   map[int]bool{},
 		held:     map[int][]heldShare{},
 		seen:     map[int]map[int]bool{},
+		// The card key is captured now because the table rotates it the
+		// moment the next hand opens, and this hand answers for itself.
+		rec: &HandRecord{
+			Hand: &deck.Hand{
+				Match: cfg.Match,
+				Hand:  cfg.Hand,
+				Pubs:  append([]kyber.Point(nil), cfg.CardKeys...),
+			},
+			Secrets: &deck.Secrets{Key: cfg.Card.Secret},
+		},
 	}, nil
 }
 
@@ -301,7 +316,7 @@ func (d *Driver) shuffle() ([]Out, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, prf, _, err := deck.Shuffle(ctx, d.joint, d.deck)
+	out, prf, sec, err := deck.Shuffle(ctx, d.joint, d.deck)
 	if err != nil {
 		return nil, fmt.Errorf("shuffle: %w", err)
 	}
@@ -313,6 +328,8 @@ func (d *Driver) shuffle() ([]Out, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign shuffle: %w", err)
 	}
+	d.rec.Secrets.Shuffle = sec
+	d.noteStep(d.cfg.Card.Public, out, prf)
 	d.deck = out
 	d.round++
 
@@ -384,6 +401,7 @@ func (d *Driver) share(slot int) ([]Out, error) {
 		return nil, fmt.Errorf("reveal slot %d: %w", slot, err)
 	}
 	d.shared[slot] = true
+	d.noteShareValue(slot, d.cfg.Seat, s.D)
 	return []Out{OutShare{Seat: d.cfg.Seat, Slot: slot, Share: s}}, nil
 }
 
@@ -409,12 +427,14 @@ func (d *Driver) expect(slot int) error {
 		return err
 	}
 	d.openings[slot] = o
+	d.noteShareValue(slot, d.cfg.Seat, own.D)
 
 	// Anything that arrived early for this slot goes in now.
 	for _, h := range d.held[slot] {
 		if err := o.Add(d.cfg.CardKeys[h.seat], h.share); err != nil {
 			return fmt.Errorf("seat %d's share for slot %d: %w", h.seat, slot, err)
 		}
+		d.noteShareValue(slot, h.seat, h.share.D)
 	}
 	delete(d.held, slot)
 	return d.tryOpen(slot)
@@ -492,6 +512,7 @@ func (d *Driver) onShuffle(m InShuffle) ([]Out, error) {
 	if err := deck.VerifyShuffle(ctx, d.joint, d.deck, m.Deck, m.Proof); err != nil {
 		return nil, fmt.Errorf("seat %d's shuffle: %w", m.Seat, err)
 	}
+	d.noteStep(d.cfg.CardKeys[m.Seat], m.Deck, m.Proof)
 	d.deck = m.Deck
 	d.round++
 
@@ -548,6 +569,7 @@ func (d *Driver) onShare(m InShare) ([]Out, error) {
 	// against this hand's deck, which fail exactly this way. Both halves are
 	// fixed; either alone would have been enough to strand a table.
 	d.note(m.Slot, m.Seat)
+	d.noteShareValue(m.Slot, m.Seat, m.Share.D)
 	return nil, d.tryOpen(m.Slot)
 }
 

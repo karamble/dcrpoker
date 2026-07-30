@@ -336,3 +336,152 @@ func TestAFinishedTableProposesNoClaims(t *testing.T) {
 		}
 	}
 }
+
+// endTable shoves and calls until one seat holds everything.
+func (n *tnet) endTable() {
+	n.t.Helper()
+	for range 40 {
+		if n.peers[0].Over() {
+			return
+		}
+		h := n.peers[0].Hand()
+		if h == nil {
+			n.t.Fatal("no hand in progress and the table is not over")
+		}
+		hand := h.State().Hand
+		turn := h.State().ToAct
+		shove := h.State().Seats[turn].Stack + h.State().Seats[turn].Committed
+		n.act(gamelog.ActionAllIn, shove)
+		cur := n.peers[0].Hand()
+		if cur != nil && cur.State().Hand == hand && cur.State().ToAct >= 0 {
+			n.act(gamelog.ActionCall, 0)
+		}
+	}
+	n.t.Fatal("the table never ended")
+}
+
+// A reveal outranks the hand in progress, and the stamp survives the refuser's
+// turn coming round. Ranked lower, every turn would reset the single dutySince
+// stamp and playing on would be a way to never answer.
+func TestARevealDutyOutranksTheHandInProgress(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+	n.checkDown() // hand 1 settles; hand 2 opens
+
+	const start uint32 = 1_100_000
+	p := n.peers[0]
+	if err := p.OpenChallenge(1, 0); err != nil {
+		t.Fatalf("challenging the settled hand: %v", err)
+	}
+	p.NoteRevealed(1, 0)
+
+	d, ok := p.Owes(1)
+	if !ok || d.Kind != DutyReveal || d.Hand != 1 {
+		t.Fatalf("seat 1 owes %v, want the reveal for hand 1", d)
+	}
+	p.AtHeight(start)
+	p.AtHeight(start + 3)
+	got, ok := p.Claimable(3)
+	if !ok || got.Kind != DutyReveal || got.Seat != 1 {
+		t.Fatalf("a reveal that stood the window is not claimable (got %v, %v)", got, ok)
+	}
+}
+
+// The reveal survives the table ending, which is when most challenges happen.
+func TestARevealDutySurvivesTheTableEnding(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+	n.endTable()
+
+	p := n.peers[0]
+	if !p.Over() {
+		t.Fatal("this table was meant to end in one hand")
+	}
+	last, _ := p.Settled()
+	if err := p.OpenChallenge(last, 0); err != nil {
+		t.Fatalf("challenging after the table ended: %v", err)
+	}
+	p.NoteRevealed(last, 0)
+	if _, ok := p.Owes(1); !ok {
+		t.Fatal("the table being over erased the reveal duty")
+	}
+	const start uint32 = 1_100_000
+	p.AtHeight(start)
+	p.AtHeight(start + 3)
+	if _, ok := p.Claimable(3); !ok {
+		t.Fatal("a reveal at an ended table is not claimable, so refusing it is free")
+	}
+}
+
+// Only a settled hand can be challenged, and one challenge per challenger.
+func TestChallengesAreBoundedAndSettledOnly(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+	p := n.peers[0]
+
+	if err := p.OpenChallenge(1, 0); err == nil {
+		t.Fatal("challenged the hand still in progress")
+	}
+	if err := p.OpenChallenge(0, 0); err == nil {
+		t.Fatal("challenged hand 0, which never exists")
+	}
+	n.checkDown()
+	n.checkDown()
+	if err := p.OpenChallenge(1, 0); err != nil {
+		t.Fatalf("challenging settled hand 1: %v", err)
+	}
+	if err := p.OpenChallenge(1, 0); err != nil {
+		t.Fatalf("a repeat of the same challenge must be free: %v", err)
+	}
+	if err := p.OpenChallenge(2, 0); err == nil {
+		t.Fatal("one seat opened a second challenge")
+	}
+	if err := p.OpenChallenge(2, 1); err != nil {
+		t.Fatalf("a different seat may challenge: %v", err)
+	}
+}
+
+// Revealing discharges the duty seat by seat, and the last one closes it.
+func TestRevealingDischargesTheDutyAndClosesTheChallenge(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+	n.checkDown()
+
+	p := n.peers[0]
+	if err := p.OpenChallenge(1, 0); err != nil {
+		t.Fatalf("challenge: %v", err)
+	}
+	p.NoteRevealed(1, 0)
+	if _, ok := p.Owes(0); ok {
+		t.Fatal("a seat that revealed still owes")
+	}
+	if _, ok := p.Owes(1); !ok {
+		t.Fatal("a seat that has not revealed owes nothing")
+	}
+	p.NoteRevealed(1, 1)
+	if got := p.OpenChallenges(); len(got) != 0 {
+		t.Fatalf("every seat revealed and %d challenges are still open", len(got))
+	}
+	if err := p.OpenChallenge(1, 0); err != nil {
+		t.Fatalf("the challenger is not freed to challenge again: %v", err)
+	}
+}
+
+// A finished table with no challenge proposes no claims, however long it sits -
+// the guard on the relaxed t.over gate.
+func TestAFinishedUnchallengedTableStillProposesNoClaims(t *testing.T) {
+	n := seatTable(t, 2, 1000)
+	n.start()
+	n.endTable()
+
+	p := n.peers[0]
+	if !p.Over() {
+		t.Fatal("this table was meant to end in one hand")
+	}
+	const start uint32 = 1_100_000
+	p.AtHeight(start)
+	p.AtHeight(start + 100)
+	if d, ok := p.Claimable(3); ok {
+		t.Fatalf("a cleanly finished table would claim %s", d)
+	}
+}

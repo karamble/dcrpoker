@@ -363,6 +363,13 @@ func (h *hub) join(t *testing.T, name string) *plugin {
 	return p
 }
 
+// testInvite is a table whose admission window opens where the chain is now.
+//
+// Derived from the shared height rather than fixed, because every deadline this
+// protocol has is measured from the terms: a table invited at a fixed height
+// while the chain has moved on is a table already past its funding deadline
+// before anybody pays, and every test after the one that spent those blocks
+// would fail for a reason belonging to the tests before it.
 func testInvite(seats uint32) schema.Invite {
 	return schema.Invite{
 		Game:       schema.Game,
@@ -371,7 +378,7 @@ func testInvite(seats uint32) schema.Invite {
 		Seats:      seats,
 		SID:        "0123456789abcdef",
 		CSVBlocks:  64,
-		Until:      900000,
+		Until:      uint32(testHeight.Load()) + 2,
 	}
 }
 

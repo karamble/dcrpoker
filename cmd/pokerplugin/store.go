@@ -77,6 +77,16 @@ type record struct {
 	// accused's. Losing them costs the ability to accuse and no defence, since
 	// answering needs only the accused seat's own key.
 	Accusations []recordedAccusation `json:"accusations,omitempty"`
+	// Challenges is every challenge still open, so the reveal it obliges and
+	// the settlement it blocks both survive a restart. The secrets
+	// themselves live in the hands area.
+	Challenges []recordedChallenge `json:"challenges,omitempty"`
+}
+
+// recordedChallenge is one open challenge.
+type recordedChallenge struct {
+	Hand uint64 `json:"hand"`
+	By   uint32 `json:"by"`
 }
 
 // recordedAccusation is one answer and the signatures gathered for it.
@@ -108,6 +118,80 @@ func (s *store) path(sid string) (string, error) {
 		return "", fmt.Errorf("session id %q is not a name this can store", sid)
 	}
 	return filepath.Join(s.dir, sid+".json"), nil
+}
+
+// The hands area: one file per settled hand, holding the transcript and this
+// peer's secrets for it. It is the only thing that can answer a challenge
+// after a restart, so it is written with both syncs - and it is the one part
+// of the store that gets deleted, because once this player's coin has left the
+// table the secrets protect nothing, and keeping them is keeping the muck of
+// every audited hand on disk forever.
+
+func (s *store) handsDir(sid string) (string, error) {
+	if !sidRe.MatchString(sid) {
+		return "", fmt.Errorf("session id %q is not a name this can store", sid)
+	}
+	return filepath.Join(s.dir, "..", "hands", sid), nil
+}
+
+func (s *store) saveHand(sid string, hand uint64, blob []byte) error {
+	dir, err := s.handsDir(sid)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return writeDurable(filepath.Join(dir, fmt.Sprintf("%d.json", hand)), blob)
+}
+
+func (s *store) loadHand(sid string, hand uint64) ([]byte, error) {
+	dir, err := s.handsDir(sid)
+	if err != nil {
+		return nil, err
+	}
+	blob, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("%d.json", hand)))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return blob, err
+}
+
+// loadHands is every stored hand of one table, for resuming.
+func (s *store) loadHands(sid string) (map[uint64][]byte, error) {
+	dir, err := s.handsDir(sid)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[uint64][]byte{}
+	for _, e := range entries {
+		var hand uint64
+		if _, err := fmt.Sscanf(e.Name(), "%d.json", &hand); err != nil || hand == 0 {
+			continue
+		}
+		blob, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out[hand] = blob
+	}
+	return out, nil
+}
+
+// deleteHands forgets a table's hand secrets, whole.
+func (s *store) deleteHands(sid string) error {
+	dir, err := s.handsDir(sid)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
 }
 
 // used reports whether this player has ever sat at a table.

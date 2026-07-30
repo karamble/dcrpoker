@@ -298,3 +298,58 @@ func TestTheAuditReproducesTheShuffleItIsChecking(t *testing.T) {
 		t.Fatal("replaying a shuffle from its own secrets did not reproduce it")
 	}
 }
+
+// One seat's reveal checks against its own step alone, so a bad one is refused
+// on receipt instead of poisoning the audit later.
+func TestOneSeatsSecretsVerifyAgainstItsOwnStep(t *testing.T) {
+	h, secrets := play(t, 3)
+	for seat := range secrets {
+		if err := VerifySecrets(h, seat, secrets[seat]); err != nil {
+			t.Fatalf("seat %d's honest secrets refused: %v", seat, err)
+		}
+	}
+}
+
+func TestVerifySecretsCatchesAForeignKeyAndAForeignShuffle(t *testing.T) {
+	h, secrets := play(t, 3)
+
+	wrongKey := *secrets[1]
+	wrongKey.Key = suite.Scalar().SetInt64(7)
+	var cheat *Cheat
+	if err := VerifySecrets(h, 1, &wrongKey); !errors.As(err, &cheat) {
+		t.Fatalf("a foreign card key came back as %v, want a cheat naming seat 1", err)
+	} else if !cheat.By.Equal(h.Pubs[1]) {
+		t.Fatal("the cheat names the wrong player")
+	}
+
+	wrongShuffle := *secrets[2]
+	beta := append([]kyber.Scalar(nil), secrets[2].Shuffle.Beta...)
+	beta[3] = suite.Scalar().SetInt64(9)
+	wrongShuffle.Shuffle = &ShuffleSecret{Pi: secrets[2].Shuffle.Pi, Beta: beta}
+	cheat = nil
+	if err := VerifySecrets(h, 2, &wrongShuffle); !errors.As(err, &cheat) {
+		t.Fatalf("a tampered blinding factor came back as %v, want a cheat naming seat 2", err)
+	} else if !cheat.By.Equal(h.Pubs[2]) {
+		t.Fatal("the cheat names the wrong player")
+	}
+}
+
+// The audited deck is the audit with the cards kept: every slot opened, no
+// duplicates, and only ever with a nil error.
+func TestAuditedDeckOpensEveryCard(t *testing.T) {
+	h, secrets := play(t, 2)
+	cards, err := AuditedDeck(h, secrets)
+	if err != nil {
+		t.Fatalf("an honest hand did not audit: %v", err)
+	}
+	if len(cards) != Size {
+		t.Fatalf("opened %d cards of %d", len(cards), Size)
+	}
+	seen := map[Card]bool{}
+	for _, c := range cards {
+		if seen[c] {
+			t.Fatalf("card %d twice", c)
+		}
+		seen[c] = true
+	}
+}

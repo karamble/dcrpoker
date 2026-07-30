@@ -148,6 +148,9 @@ export type ChainEvent = {
     | 'unanswerable'
     | 'settled'
     | 'blocked'
+    | 'challenged'
+    | 'audited'
+    | 'cheat'
   text: string
   txid?: string
   seat?: number
@@ -175,6 +178,24 @@ export type SettleView = {
   blocked?: string
 }
 
+export type AuditedCard = {
+  slot: number
+  card: string
+  seat?: number
+  board?: boolean
+}
+
+export type ChallengeView = {
+  hand: number
+  by: number
+  open: boolean
+  revealed?: number[]
+  needs: number
+  verdict?: string
+  cheatSeat?: number
+  cards?: AuditedCard[]
+}
+
 export type LedgerView = {
   sid: string
   match?: string
@@ -187,6 +208,7 @@ export type LedgerView = {
   claims?: ClaimView[]
   settlement?: SettleView
   events?: ChainEvent[]
+  challenges?: ChallengeView[]
 }
 
 /** The token the host handed this page over its message port, and the only
@@ -277,6 +299,11 @@ export const api = {
     call<{ left: boolean }>('table/leave', {
       method: 'POST',
       body: JSON.stringify({ sid }),
+    }),
+  challenge: (sid: string, hand: number) =>
+    call<{ challenged: boolean }>('table/challenge', {
+      method: 'POST',
+      body: JSON.stringify({ sid, hand }),
     }),
   // The three below are detached deliberately. Each asks the host for a
   // payment that a person then approves in the dashboard, which takes as long

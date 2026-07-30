@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { api } from '../api'
 import type { HandView, LedgerView, Snapshot } from '../api'
 import { dcr, short } from '../format'
 
@@ -45,12 +46,14 @@ export function Verify({
     })
   }
 
+  const [challengePending, setChallengePending] = useState(false)
   const roster = ledger?.roster ?? table.roster ?? []
   const who = (seat: number) => names.get(seat) || `seat ${seat}`
   const settled = ledger?.settled ?? table.settled
   const live = ledger?.live ?? table.live
   const shuffles = hand?.shuffles ?? []
   const deckDone = shuffles.length > 0 && shuffles.every((s) => s.state !== 'awaited')
+  const haveOpenChallenge = (ledger?.challenges ?? []).some((c) => c.open)
 
   if (!open) {
     return (
@@ -117,6 +120,28 @@ export function Verify({
           {settled ? ` at hand ${settled.hand}` : ''}; the second is a promise until they
           sign again.
         </span>
+        {settled && settled.hand > 0 && (
+          <>
+            <button
+              className="ghost"
+              disabled={challengePending || haveOpenChallenge}
+              onClick={() => {
+                setChallengePending(true)
+                api
+                  .challenge(table.sid, settled.hand)
+                  .catch(() => {})
+                  .finally(() => setChallengePending(false))
+              }}
+            >
+              {haveOpenChallenge ? 'a hand is challenged' : `challenge hand ${settled.hand}`}
+            </button>
+            <span className="vr-note">
+              Any seat may demand a settled hand be recomputed from everyone's secrets.
+              Refusing costs the bond — and the challenged hand shows its cards to this
+              table, folds included, yours too.
+            </span>
+          </>
+        )}
       </section>
 
       <section>

@@ -1,0 +1,353 @@
+package main
+
+import (
+	"net/http"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/vctt94/pokerbisonrelay/pkg/driver"
+	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
+)
+
+// challengeOf is one table's view of a challenge, or nil.
+func challengeOf(t *testing.T, p *plugin, sid string, hand uint64) *challengeView {
+	t.Helper()
+	v := ledgerOf(t, p, sid)
+	for i := range v.Challenges {
+		if v.Challenges[i].Hand == hand {
+			return &v.Challenges[i]
+		}
+	}
+	return nil
+}
+
+// audited reports whether every peer has recomputed the hand clean.
+func audited(t *testing.T, sid string, hand uint64, peers ...*plugin) bool {
+	t.Helper()
+	for _, p := range peers {
+		ch := challengeOf(t, p, sid, hand)
+		if ch == nil || ch.Verdict != "clean" {
+			return false
+		}
+	}
+	return true
+}
+
+// waitAudited waits until every peer has recomputed the hand clean, on the
+// frames alone.
+//
+// Deliberately without ticking the chain. A challenge and the reveals it
+// obliges are answered on delivery, so needing a block here would mean the
+// exchange only works on the clock - and the shared height this harness counts
+// in is one every other test reads, so a helper that spent blocks freely would
+// push somebody else's table past its funding deadline.
+func waitAudited(t *testing.T, h *hub, sid string, hand uint64, peers ...*plugin) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		h.inflight.Wait()
+		if audited(t, sid, hand, peers...) {
+			return
+		}
+		if time.Now().After(deadline) {
+			for i, p := range peers {
+				v := ledgerOf(t, p, sid)
+				t.Logf("peer %d challenges %+v events %+v", i, v.Challenges, v.Events)
+			}
+			t.Fatal("the challenged hand was never recomputed clean everywhere")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A challenged hand is revealed by every seat and recomputed clean, with the
+// audited cards reported - the whole path, no proof consulted anywhere.
+func TestAChallengedHandIsRevealedAndAuditsClean(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	if code, body := post(t, a, "/table/challenge", map[string]any{"sid": terms.SID, "hand": 1}); code != http.StatusOK {
+		t.Fatalf("/table/challenge returned %d: %s", code, body)
+	}
+	waitAudited(t, h, terms.SID, 1, a, b)
+
+	ch := challengeOf(t, a, terms.SID, 1)
+	if len(ch.Cards) == 0 {
+		t.Fatal("a clean audit reported no cards, and the audited hand is the point of asking")
+	}
+	for _, p := range []*plugin{a, b} {
+		if !hasEvent(ledgerOf(t, p, terms.SID).Events, eventAudited) {
+			t.Fatal("a peer recomputed the hand and never said so")
+		}
+		if hasEvent(ledgerOf(t, p, terms.SID).Events, eventCheat) {
+			t.Fatal("an honest hand was called a cheat")
+		}
+	}
+}
+
+// A lost challenge and a lost reveal are both said again, and the audit still
+// completes: repeated on a clock, stopped by the challenge closing.
+func TestAChallengeSurvivesALostFrame(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	h.drop(schema.KindChallenge, 1)
+	h.drop(schema.KindSecrets, 1)
+	if code, body := post(t, a, "/table/challenge", map[string]any{"sid": terms.SID, "hand": 1}); code != http.StatusOK {
+		t.Fatalf("/table/challenge returned %d: %s", code, body)
+	}
+
+	// The first telling of each is gone, so only the repeats can finish this.
+	// Bounded, because the blocks spent here are counted by every other test.
+	for i := 0; i < 6 && !audited(t, terms.SID, 1, a, b); i++ {
+		advance(t, h, 1, a, b)
+	}
+	if !audited(t, terms.SID, 1, a, b) {
+		for i, p := range []*plugin{a, b} {
+			t.Logf("peer %d challenges %+v", i, ledgerOf(t, p, terms.SID).Challenges)
+		}
+		t.Fatal("a lost challenge and a lost reveal were never said again")
+	}
+	if got := h.dropped(schema.KindChallenge) + h.dropped(schema.KindSecrets); got == 0 {
+		t.Fatal("nothing was lost, so nothing was proven about the repeats")
+	}
+}
+
+// A reveal refused past the window becomes the claim, with the table over -
+// which is when most challenges happen and when nothing else is owed.
+func TestARefusedRevealCostsTheBond(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+
+	for _, p := range []*plugin{a, b} {
+		addr := payoutAddress(t, p)
+		if code, body := post(t, p, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
+			t.Fatalf("/payout/set returned %d: %s", code, body)
+		}
+	}
+	waitPayouts(t, terms.SID, a, b)
+	waitAccusable(t, h, terms.SID, a, b)
+
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	// The table ends first, which is when a hand is usually doubted and when
+	// a reveal is the only thing anybody still owes. Everything else about
+	// this scenario depends on that: a finished table proposes no claims at
+	// all unless a challenge is open.
+	getUp(t, h, terms.SID, a)
+	waitOver(t, h, terms.SID, a, b)
+
+	// Then the refuser goes quiet, and then the hand is challenged.
+	h.silence(t, "tok-b")
+	_ = b
+	if code, body := post(t, a, "/table/challenge", map[string]any{"sid": terms.SID, "hand": 1}); code != http.StatusOK {
+		t.Fatalf("/table/challenge returned %d: %s", code, body)
+	}
+	a.tables.mu.Lock()
+	if !a.tables.m[terms.SID].play.Over() {
+		a.tables.mu.Unlock()
+		t.Fatal("the table is not over, so this is not testing a challenge after the game")
+	}
+	a.tables.mu.Unlock()
+
+	deadline := time.Now().Add(30 * time.Second)
+	height := int64(terms.Until) + 2
+	for {
+		height += int64(claimAfter) + 1
+		playOn(t, a, terms.SID)
+		a.publish(t.Context(), a.tables.tick(height))
+
+		v := ledgerOf(t, a, terms.SID)
+		for _, c := range v.Claims {
+			if c.Duty.Kind == driver.DutyReveal {
+				if !hasEvent(v.Events, eventProposed) {
+					t.Fatal("a reveal claim exists and was never reported")
+				}
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusing a reveal never became a claim; claims %+v events %+v",
+				v.Claims, v.Events)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A reveal somebody tampered with in flight discharges nothing: the signature
+// is checked against the roster, and the duty stands.
+func TestATamperedRevealDischargesNothing(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	// The real reveals never arrive; only the forgery does.
+	h.drop(schema.KindSecrets, 50)
+	if code, body := post(t, a, "/table/challenge", map[string]any{"sid": terms.SID, "hand": 1}); code != http.StatusOK {
+		t.Fatalf("/table/challenge returned %d: %s", code, body)
+	}
+	advance(t, h, 2, a, b)
+
+	atbl := a.tables.m[terms.SID]
+	theirs := theirSeat(t, atbl)
+	own := atbl.bundles[1].view.Own
+	forged := *own
+	forged.Seat = theirs
+	forged.Sig = "00"
+	deliverKind(t, a, terms, schema.KindSecrets, forged)
+
+	advance(t, h, 1, a)
+	ch := challengeOf(t, a, terms.SID, 1)
+	if ch == nil || !ch.Open {
+		t.Fatal("a forged reveal closed the challenge")
+	}
+	v := ledgerOf(t, a, terms.SID)
+	if hasEvent(v.Events, eventAudited) || hasEvent(v.Events, eventCheat) {
+		t.Fatal("a forged reveal reached a verdict")
+	}
+}
+
+// An open challenge blocks the payout and the releases, and closing it lets
+// them go: nothing gets paid until the table has answered for itself.
+//
+// Checked directly rather than by holding reveals back on the wire, because a
+// reveal held back long enough is a reveal being refused, and the machinery
+// correctly answers that with an accusation - a different test, and one that
+// would race this one for the same table.
+func TestAnOpenChallengeBlocksSettlementAndRelease(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+
+	sayWhereToPay(t, h, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+	getUp(t, h, terms.SID, a)
+	waitOver(t, h, terms.SID, a, b)
+
+	a.tables.mu.Lock()
+	defer a.tables.mu.Unlock()
+	atbl := a.tables.m[terms.SID]
+	mine, _ := atbl.form.OurSeat()
+	if err := atbl.recordChallenge(1, mine); err != nil {
+		t.Fatalf("opening a challenge on the settled hand: %v", err)
+	}
+	if !atbl.challengeOpen() {
+		t.Fatal("the challenge did not open, so the gate is not being tested")
+	}
+	if out := atbl.proposeSettlement(); len(out) != 0 {
+		t.Fatal("a settlement was proposed while a hand is challenged")
+	}
+	if out := atbl.proposeReleases(); len(out) != 0 {
+		t.Fatal("a bond release was proposed while a hand is challenged")
+	}
+
+	// And with the challenge closed, both go out. Same table, same moment:
+	// the only thing that changed is the challenge.
+	atbl.closeChallenge(1)
+	if out := atbl.proposeSettlement(); len(out) == 0 {
+		t.Fatal("no settlement was proposed once the challenge closed")
+	}
+	if out := atbl.proposeReleases(); len(out) == 0 {
+		t.Fatal("no bond release was proposed once the challenge closed")
+	}
+}
+
+// A restarted peer answers a challenge from its stored bundle, with no driver,
+// and the challenger's audit completes on it.
+func TestSecretsAnswerFromDiskAfterARestart(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	dir := filepath.Dir(a.tables.store.dir)
+	back := h.restart(t, dir, "tok-a")
+	btbl := back.tables.m[terms.SID]
+	if btbl == nil {
+		t.Fatal("the table did not come back")
+	}
+	if btbl.play != nil {
+		t.Fatal("a restarted table has a driver, so this is not testing the disk path")
+	}
+
+	// The challenge, issued by the live peer, delivered by hand: a restarted
+	// plugin is not on this harness's wire.
+	b.tables.mu.Lock()
+	chalOut, err := b.tables.m[terms.SID].challengeHand(1)
+	b.tables.mu.Unlock()
+	if err != nil {
+		t.Fatalf("the live peer could not challenge: %v", err)
+	}
+	var chal *schema.Challenge
+	var bSecrets *schema.Secrets
+	for _, o := range chalOut {
+		switch body := o.body.(type) {
+		case schema.Challenge:
+			chal = &body
+		case schema.Secrets:
+			bSecrets = &body
+		}
+	}
+	if chal == nil || bSecrets == nil {
+		t.Fatalf("challenging produced %d frames and not the challenge plus the reveal", len(chalOut))
+	}
+
+	out := deliverKind(t, back, terms, schema.KindChallenge, *chal)
+	var backSecrets *schema.Secrets
+	for _, o := range out {
+		if body, ok := o.body.(schema.Secrets); ok {
+			backSecrets = &body
+		}
+	}
+	if backSecrets == nil {
+		t.Fatal("the restarted peer did not reveal from its stored bundle")
+	}
+
+	// Both sides audit: the live peer from the restarted one's reveal, and
+	// the restarted one from the live peer's.
+	deliverKind(t, b, terms, schema.KindSecrets, *backSecrets)
+	deliverKind(t, back, terms, schema.KindSecrets, *bSecrets)
+	for name, p := range map[string]*plugin{"live": b, "restarted": back} {
+		ch := challengeOf(t, p, terms.SID, 1)
+		if ch == nil || ch.Verdict != "clean" {
+			t.Fatalf("the %s peer never recomputed the hand clean: %+v", name, ch)
+		}
+	}
+}
+
+// A table whose coin is out deletes its hand secrets; one still holding coin
+// keeps them.
+func TestAFinishedTableDeletesItsHandSecrets(t *testing.T) {
+	st := newStore(t.TempDir())
+	if err := st.saveHand("ab12", 1, []byte(`{}`)); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if blob, err := st.loadHand("ab12", 1); err != nil || blob == nil {
+		t.Fatalf("load: %v %v", blob, err)
+	}
+	if err := st.deleteHands("ab12"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if blob, _ := st.loadHand("ab12", 1); blob != nil {
+		t.Fatal("deleted hand secrets are still on disk")
+	}
+	if err := st.saveHand("../evil", 1, []byte(`{}`)); err == nil {
+		t.Fatal("a hostile session id built a path")
+	}
+	if err := st.deleteHands("../evil"); err == nil {
+		t.Fatal("a hostile session id deleted a path")
+	}
+}

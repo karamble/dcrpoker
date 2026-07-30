@@ -187,3 +187,24 @@ func TestAPositionTheBookCannotRecordIsNotSigned(t *testing.T) {
 		t.Fatal("a failed record weakened the one-position-one-message rule")
 	}
 }
+
+// A challenge says nothing its position does not, so it signs by position; the
+// secrets it obliges were drawn fresh, so they sign committed. Each refused the
+// other way round.
+func TestChallengeAndSecretsSignOnlyTheirOwnWay(t *testing.T) {
+	k := testKey(t)
+	digest := digestOf("x")
+
+	if _, err := k.Sign(DomainChallenge, 2, digest[:]); err != nil {
+		t.Fatalf("a challenge is positional and was refused: %v", err)
+	}
+	if _, err := k.SignCommitted(DomainChallenge, 2, digest[:]); err == nil {
+		t.Fatal("a challenge signed with a committed nonce")
+	}
+	if _, err := k.SignCommitted(DomainSecrets, 2, digest[:]); err != nil {
+		t.Fatalf("secrets are committed and were refused: %v", err)
+	}
+	if _, err := k.Sign(DomainSecrets, 2, digest[:]); err == nil {
+		t.Fatal("secrets signed on the position nonce, which a second reveal would leak the key through")
+	}
+}

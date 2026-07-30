@@ -215,6 +215,10 @@ func (tbl *table) drainHeld() []outgoing {
 // claim is a better outcome than a peer falling out of a table it is still
 // seated at.
 func (tbl *table) publish(msgs []driver.Out) []outgoing {
+	// A finished hand is written down before the checkpoint that settles it
+	// leaves: the signature is what makes the hand challengeable, and the
+	// record is what answers.
+	tbl.harvestHands()
 	if len(msgs) == 0 {
 		return nil
 	}

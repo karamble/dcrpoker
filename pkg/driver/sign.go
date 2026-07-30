@@ -39,9 +39,11 @@ import (
 // sent the first time, which is what the repair discipline needs.
 
 var (
-	cardKeyTag = []byte("dcrpoker/deal/cardkey/v1")
-	shuffleTag = []byte("dcrpoker/deal/shuffle/v1")
-	leavingTag = []byte("dcrpoker/deal/leaving/v1")
+	cardKeyTag   = []byte("dcrpoker/deal/cardkey/v1")
+	shuffleTag   = []byte("dcrpoker/deal/shuffle/v1")
+	leavingTag   = []byte("dcrpoker/deal/leaving/v1")
+	challengeTag = []byte("dcrpoker/deal/challenge/v1")
+	secretsTag   = []byte("dcrpoker/deal/secrets/v1")
 )
 
 // field writes a length-prefixed field, so no two different frames can hash the
@@ -125,6 +127,63 @@ func leavingDigest(match string, hand uint64, seat int) [32]byte {
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out
+}
+
+// ChallengeDigest is what a seat signs to demand a hand be recomputed.
+//
+// Exported, with SecretsDigest and VerifySeatSig below, because challenges are
+// made and answered by the plugin - most often for a table whose driver no
+// longer exists.
+func ChallengeDigest(match string, hand uint64, seat int) [32]byte {
+	h := sha256.New()
+	field(h, challengeTag)
+	field(h, []byte(match))
+	num(h, hand)
+	num(h, uint64(seat))
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
+// SecretsDigest is what a seat signs to give a challenged hand's secrets away.
+// From the decoded values, never the encoding.
+func SecretsDigest(match string, hand uint64, seat int, s *deck.Secrets) ([32]byte, error) {
+	if s == nil || s.Key == nil || s.Shuffle == nil {
+		return [32]byte{}, fmt.Errorf("nothing to sign: the secrets are incomplete")
+	}
+	kb, err := s.Key.MarshalBinary()
+	if err != nil {
+		return [32]byte{}, err
+	}
+	h := sha256.New()
+	field(h, secretsTag)
+	field(h, []byte(match))
+	num(h, hand)
+	num(h, uint64(seat))
+	field(h, kb)
+	var pi bytes.Buffer
+	for _, j := range s.Shuffle.Pi {
+		_ = binary.Write(&pi, binary.BigEndian, uint32(j))
+	}
+	field(h, pi.Bytes())
+	var beta bytes.Buffer
+	for i, b := range s.Shuffle.Beta {
+		bb, err := b.MarshalBinary()
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("blinding factor %d: %w", i, err)
+		}
+		field(&beta, bb)
+	}
+	field(h, beta.Bytes())
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out, nil
+}
+
+// VerifySeatSig checks a signature against the roster key a seat committed,
+// which the caller looks up from the escrow roster and never from the message.
+func VerifySeatSig(rosterKey []byte, digest [32]byte, sig []byte, seat int) error {
+	return verifyDealt(rosterKey, digest, sig, seat)
 }
 
 // verifyDealt checks a dealing signature against the roster key for the seat

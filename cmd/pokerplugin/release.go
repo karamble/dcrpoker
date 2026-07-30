@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 
 	"github.com/decred/dcrd/wire"
@@ -72,12 +73,22 @@ func (tbl *table) proposeReleases() []outgoing {
 	if tbl.play == nil || !tbl.play.Over() || tbl.session == nil {
 		return nil
 	}
+	if tbl.challengeOpen() {
+		// Once a bond is back, refusing a challenge costs its owner
+		// nothing - so no bond goes back while one is open.
+		return nil
+	}
 	seats, ok := tbl.form.Seats()
 	if !ok {
 		return nil
 	}
 	var out []outgoing
 	for seat := range uint32(len(seats)) {
+		if tbl.caughtCheating(seat) {
+			// The audit named this seat. Its bond is not released by this
+			// peer; the backstop is its way out, a week from now.
+			continue
+		}
 		if tbl.releases[seat] != nil {
 			continue
 		}
@@ -199,6 +210,15 @@ func (tbl *table) signRelease(seat uint32, tx *wire.MsgTx, d escrow.AliveDraft) 
 // defence and it is the reason the draft is derived rather than carried.
 func (tbl *table) adoptRelease(ctx context.Context, body schema.Release) []outgoing {
 	if tbl.play == nil {
+		return nil
+	}
+	if tbl.challengeOpen() {
+		tbl.note(eventRefused, "a bond release arrived while a hand is challenged, and was not signed", "", nil)
+		return nil
+	}
+	if tbl.caughtCheating(body.Seat) {
+		tbl.note(eventRefused, fmt.Sprintf(
+			"seat %d's bond release was refused: the audit named it", body.Seat), "", seatp(int(body.Seat)))
 		return nil
 	}
 	seats, ok := tbl.form.Seats()

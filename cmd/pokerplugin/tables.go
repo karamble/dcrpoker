@@ -82,6 +82,15 @@ type table struct {
 	// dispatched is rebuilt by the next bond walk.
 	answerReady *readyAnswer
 
+	// bundles is every settled hand held ready to answer a challenge on,
+	// loaded lazily from the hands area. openChal is each challenged hand and
+	// who challenged it - persisted, because the reveal it obliges and the
+	// settlement it blocks must survive a restart. cheats is the seats an
+	// audit has named.
+	bundles  map[uint64]*handBundle
+	openChal map[uint64]uint32
+	cheats   map[uint32]bool
+
 	// replyWith is what adopting a message decided to say back, collected
 	// because the adopt path returns an error rather than frames.
 	replyWith []outgoing
@@ -247,6 +256,12 @@ const (
 	eventUnanswerable = "unanswerable"
 	eventSettled      = "settled"
 	eventBlocked      = "blocked"
+	// eventChallenged is a hand being doubted out loud; eventAudited is the
+	// recomputation agreeing with the hand; eventCheat is it not agreeing,
+	// naming the seat. The last is the second thing allowed to alarm.
+	eventChallenged = "challenged"
+	eventAudited    = "audited"
+	eventCheat      = "cheat"
 )
 
 // maxEvents is how much of a table's history is kept.
@@ -464,6 +479,9 @@ func (tbl *table) record() *record {
 		}
 		rec.Accusations = append(rec.Accusations, kept)
 	}
+	for hand, by := range tbl.openChal {
+		rec.Challenges = append(rec.Challenges, recordedChallenge{Hand: hand, By: by})
+	}
 	if len(tbl.bonded) > 0 {
 		rec.Bonded = make(map[uint32]string, len(tbl.bonded))
 		for seat, outpoint := range tbl.bonded {
@@ -650,6 +668,12 @@ func (tbl *table) resume(rec *record) error {
 			tbl.holdAccusation(kept.Seat, tx, bond, pub, b)
 		}
 	}
+	for _, c := range rec.Challenges {
+		if tbl.openChal == nil {
+			tbl.openChal = map[uint64]uint32{}
+		}
+		tbl.openChal[c.Hand] = c.By
+	}
 	for i, wj := range rec.Joins {
 		j, err := wj.Into()
 		if err != nil {
@@ -769,6 +793,13 @@ func (t *tables) drop(sid string, tbl *table) {
 		t.persist(tbl)
 		t.archive(tbl)
 		return
+	}
+	// The coin is out, so the hand secrets protect nothing and answer
+	// nothing. Deleting them is what keeps the muck off the disk.
+	if t.store != nil {
+		if err := t.store.deleteHands(sid); err != nil {
+			log.Printf("pokerplugin: table %s: could not delete its hand secrets: %v", sid, err)
+		}
 	}
 	delete(t.m, sid)
 }
@@ -963,6 +994,8 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, tbl.askAgain(height)...)
 		out = append(out, tbl.proposeClaim(t.params)...)
 		out = append(out, tbl.presignAccusations()...)
+		out = append(out, tbl.repeatChallenges()...)
+		out = append(out, tbl.answerChallenges()...)
 		out = append(out, tbl.proposeSettlement()...)
 		out = append(out, tbl.proposeReleases()...)
 		out = append(out, t.announceAgain(tbl, height)...)
@@ -1469,6 +1502,20 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 		// the dispute, so this only tells the accused sooner than the chain
 		// would.
 		return tbl.acceptClaim(body, tbl.netParams), nil
+
+	case schema.KindChallenge:
+		var body schema.Challenge
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		return tbl.acceptChallenge(body), nil
+
+	case schema.KindSecrets:
+		var body schema.Secrets
+		if err := msg.Into(&body); err != nil {
+			return nil, err
+		}
+		return tbl.acceptSecrets(body), nil
 
 	case schema.KindTake:
 		var body schema.Take

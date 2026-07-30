@@ -1,6 +1,9 @@
 package driver
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // What a seat owes, and why a claim has to name it.
 //
@@ -41,6 +44,9 @@ const (
 	DutyAction DutyKind = "action"
 	// DutyCheckpoint is a signature over the stacks at a hand boundary.
 	DutyCheckpoint DutyKind = "checkpoint"
+	// DutyReveal is a challenged hand's secrets. Owed by every seat the
+	// moment any seat challenges, discharged by revealing.
+	DutyReveal DutyKind = "reveal"
 )
 
 // Duty is one thing the log says a seat still has to do.
@@ -67,6 +73,8 @@ func (d Duty) String() string {
 		return fmt.Sprintf("seat %d owes the entry at sequence %d", d.Seat, d.At)
 	case DutyCheckpoint:
 		return fmt.Sprintf("seat %d owes a checkpoint for hand %d", d.Seat, d.Hand)
+	case DutyReveal:
+		return fmt.Sprintf("seat %d owes its deck secrets for challenged hand %d", d.Seat, d.Hand)
 	}
 	return fmt.Sprintf("seat %d owes %q", d.Seat, d.Kind)
 }
@@ -79,11 +87,23 @@ func (d Duty) String() string {
 // co-signer that cannot see the obligation refuses to sign, and the claimant
 // retries when it can.
 //
-// Reports nothing once the table is over, and nothing against a seat that has
-// said it is leaving: a seat on its way out owes the hand it is folding and
-// nothing after it.
+// Reports nothing once the table is over - except a reveal, which is the one
+// duty that outlives the game, because a hand is challenged after it settles
+// and most often after the table ends. It also outranks everything in play:
+// dutySince holds one stamp per seat and resets whenever the duty changes, so
+// a reveal that ranked below the hand in progress would have its count reset
+// every time the refuser's turn came round, and playing on would be a way to
+// never answer.
 func (t *Table) Owes(seat int) (Duty, bool) {
-	if t == nil || seat < 0 || seat >= t.seats || t.over {
+	if t == nil || seat < 0 || seat >= t.seats {
+		return Duty{}, false
+	}
+	for _, hand := range t.openChallenges() {
+		if !t.challenges[hand][seat] {
+			return Duty{Seat: seat, Kind: DutyReveal, Hand: hand}, true
+		}
+	}
+	if t.over {
 		return Duty{}, false
 	}
 
@@ -204,7 +224,13 @@ func (d *Driver) slotsOwedBy(seat int) []int {
 // for; this answers the different question of whether there is a claim to
 // propose, and there never is against oneself.
 func (t *Table) Claimable(after uint32) (Duty, bool) {
-	if t == nil || t.over {
+	if t == nil {
+		return Duty{}, false
+	}
+	if t.over && len(t.challenges) == 0 {
+		// Nothing is owed at a table that ended cleanly. An open challenge
+		// is the one exception: the reveal it obliges is owed precisely
+		// when the game no longer holds anybody here.
 		return Duty{}, false
 	}
 	for seat := range t.seats {
@@ -228,6 +254,90 @@ func (t *Table) Claimable(after uint32) (Duty, bool) {
 	}
 	return Duty{}, false
 }
+
+// A challenge, as the duty machinery sees it.
+//
+// The wire, the signatures and the secrets live with the plugin; what belongs
+// here is only who still owes a reveal, because that is what Owes and Claimable
+// answer from. Deliberately alive when t.over: the bond is what a challenge
+// leans on, and the bond outlives the game.
+
+// OpenChallenge records that a seat has challenged a settled hand.
+//
+// One open challenge per challenger at a time - the grief bound. A repeat of
+// the same challenge is not an error; this channel repeats everything.
+func (t *Table) OpenChallenge(hand uint64, by int) error {
+	if by < 0 || by >= t.seats {
+		return fmt.Errorf("seat %d is not at this table", by)
+	}
+	if hand == 0 || hand > t.last {
+		return fmt.Errorf("hand %d is not settled, and only a settled hand can be challenged", hand)
+	}
+	if open, ok := t.challengedBy[by]; ok {
+		if open == hand {
+			return nil
+		}
+		return fmt.Errorf("seat %d already has hand %d challenged; one at a time", by, open)
+	}
+	if t.challenges[hand] != nil {
+		// Somebody else already has this hand open. Joining costs nothing
+		// and takes no second slot.
+		return nil
+	}
+	if t.challenges == nil {
+		t.challenges = map[uint64]map[int]bool{}
+	}
+	if t.challengedBy == nil {
+		t.challengedBy = map[int]uint64{}
+	}
+	t.challenges[hand] = map[int]bool{}
+	t.challengedBy[by] = hand
+	return nil
+}
+
+// NoteRevealed marks one seat's reveal for a challenged hand as discharged.
+// The last seat closes the challenge.
+func (t *Table) NoteRevealed(hand uint64, seat int) {
+	seats, ok := t.challenges[hand]
+	if !ok || seat < 0 || seat >= t.seats {
+		return
+	}
+	seats[seat] = true
+	for s := range t.seats {
+		if !seats[s] {
+			return
+		}
+	}
+	t.CloseChallenge(hand)
+}
+
+// CloseChallenge ends a challenge whatever its state - every seat revealed, or
+// the refusal answered by the bond and there being nothing left to wait for.
+func (t *Table) CloseChallenge(hand uint64) {
+	delete(t.challenges, hand)
+	for by, open := range t.challengedBy {
+		if open == hand {
+			delete(t.challengedBy, by)
+		}
+	}
+}
+
+// OpenChallenges is every challenged hand still waiting on reveals, lowest
+// first, so two peers naming a duty name the same one.
+func (t *Table) openChallenges() []uint64 {
+	if len(t.challenges) == 0 {
+		return nil
+	}
+	out := make([]uint64, 0, len(t.challenges))
+	for hand := range t.challenges {
+		out = append(out, hand)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// OpenChallenges is the exported view of the same list.
+func (t *Table) OpenChallenges() []uint64 { return t.openChallenges() }
 
 // noteDuties records what each seat owes and since when.
 //
