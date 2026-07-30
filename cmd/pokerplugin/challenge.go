@@ -341,6 +341,12 @@ func (tbl *table) acceptChallenge(body schema.Challenge) []outgoing {
 // Repeated every tick until the challenge closes, byte-identical, and stopped
 // by that rather than by having said it once - this channel loses messages,
 // and what is being repeated is the answer to an accusation.
+//
+// Deliberately not gated on finished, unlike every other repeat in tick. A
+// challenge outlives the table the way the bond does: openChal is written down
+// and restored with the receipt, a restarted peer still owes its reveal, and a
+// seat that stops answering because it got up is exactly the refusal a
+// challenge makes claimable. Do not add the gate here.
 func (tbl *table) answerChallenges() []outgoing {
 	if len(tbl.openChal) == 0 {
 		return nil

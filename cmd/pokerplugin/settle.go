@@ -13,6 +13,7 @@ import (
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	gwire "github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
 
 // The two transactions that were designed and never assembled.
@@ -51,6 +52,15 @@ const settleFee int64 = 20_000
 // answer, including its own: the branch needs the whole table, so a seat that
 // signed only its neighbours' would leave its own unanswerable.
 func (tbl *table) presignAccusations() []outgoing {
+	// A table that can no longer deal has no future abandonment to answer,
+	// so there is nothing left to agree. Without this, a receipt whose seat
+	// never bonded says "no accusations agreed" every poll forever - and a
+	// fleet of receipts saying it together is enough traffic to hold a
+	// peer's fresh join behind a wall of already-stale frames.
+	if tbl.finished || tbl.form.State() == membership.Aborted ||
+		(tbl.play != nil && tbl.play.Over()) {
+		return nil
+	}
 	if tbl.accusationsReady() {
 		return nil
 	}

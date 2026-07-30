@@ -814,6 +814,12 @@ func (t *tables) drop(sid string, tbl *table) {
 		t.archive(tbl)
 		return
 	}
+	// The record on disk still names the outpoints this table used to hold,
+	// and heldByUs reads the record, not the table - so without writing the
+	// emptied maps down first, the next boot would resurrect a receipt this
+	// deliberately let go of. The emptied record stays as history, and as
+	// the refusal that stops this session being joined fresh.
+	t.persist(tbl)
 	// The coin is out, so the hand secrets protect nothing and answer
 	// nothing. Deleting them is what keeps the muck off the disk.
 	if t.store != nil {
@@ -1023,7 +1029,7 @@ func (t *tables) tick(height int64) []outgoing {
 		out = append(out, t.announcePayoutAgain(tbl, height)...)
 		out = append(out, t.exchangeHeads(tbl)...)
 		out = append(out, t.republishStalled(tbl, height)...)
-		if tbl.fundingLapsed(height) || tbl.bondingLapsed(height) {
+		if tbl.fundingLapsed(height) || tbl.bondingLapsed(height) || tbl.commitLapsed(height) {
 			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)
 		}
@@ -1045,6 +1051,12 @@ func (t *tables) tick(height int64) []outgoing {
 // one small message and the cost of not saying it is a table that never funds.
 func (t *tables) announceAgain(tbl *table, height int64) []outgoing {
 	if height <= 0 || height <= tbl.announcedAt || t.signFunding == nil {
+		return nil
+	}
+	// Stopped by this player getting up, like its two siblings below. A
+	// receipt resumed before its funding deadline would otherwise announce a
+	// stake for a table that can never deal again.
+	if tbl.finished {
 		return nil
 	}
 	if tbl.form.State() != membership.Settled {
@@ -1224,6 +1236,33 @@ func (tbl *table) bondingLapsed(height int64) bool {
 	return true
 }
 
+// commitLapsed gives up on a table that bound itself and heard nothing back.
+//
+// The state this closes had no way out. A peer that committed and lost the
+// other commitments waits - askAgain repeats the roster and the ask every
+// block, which is the cure while the other side still holds the table - but a
+// peer whose counterpart already aborted is asking a table that no longer
+// exists, forever. Nothing announces an abort, deliberately: an "I gave up"
+// frame would let anybody end anybody's table. The deadline is the
+// announcement. By the funding deadline a table that had settled would have
+// been funded or abandoned, so a table still short of its commitments by then
+// is not late, it is over.
+//
+// FundingDeadline rather than a constant of its own, because it is the first
+// deadline the terms already derive that falls after every chance to heal.
+func (tbl *table) commitLapsed(height int64) bool {
+	if height <= 0 || tbl.form.State() != membership.Committed {
+		return false
+	}
+	if !tbl.form.WindowClosed() || height < int64(membership.FundingDeadline(tbl.terms)) {
+		return false
+	}
+	tbl.form.Abandon(fmt.Sprintf(
+		"this peer bound itself and the other commitments never arrived before block %d",
+		membership.FundingDeadline(tbl.terms)))
+	return true
+}
+
 // askAgain re-asks for a commit this table is still short of.
 //
 // A resync is published on a gap or on resume, and if nobody happened to be
@@ -1231,12 +1270,13 @@ func (tbl *table) bondingLapsed(height int64) bool {
 // was written to cure, one layer up. It cost two peers an hour apiece: each
 // asked while the other was still starting, and neither asked twice.
 //
-// A table that has closed its window and bound itself is waiting on somebody
-// else's commit and nothing else, so that is the state worth repeating in. Once
-// a block rather than once a poll, because the poll is much faster than the
-// chain and a peer already in step answers with silence anyway.
+// A table that is formed or committed is waiting on somebody else - a join it
+// holds and they do not, a commit they never sent - and nothing else, so those
+// are the states worth repeating in. Once a block rather than once a poll,
+// because the poll is much faster than the chain and a peer already in step
+// answers with silence anyway.
 func (tbl *table) askAgain(height int64) []outgoing {
-	if height <= 0 || height <= tbl.askedAt {
+	if height <= 0 || height <= tbl.askedAt || tbl.finished {
 		return nil
 	}
 	switch {
@@ -1251,9 +1291,27 @@ func (tbl *table) askAgain(height int64) []outgoing {
 		tbl.askedAt = height
 		return append(tbl.publishJoin(), tbl.publishResync()...)
 
-	case tbl.form.State() == membership.Committed && tbl.form.WindowClosed():
+	case tbl.form.State() == membership.Formed,
+		tbl.form.State() == membership.Committed:
+		// Complete here and incomplete over there. The roster this peer
+		// formed was published exactly once, when it learned its last
+		// join - and a peer that never received it holds a table one
+		// join short with no way to ask for what it does not know
+		// exists. Resync cannot heal that direction: an answer carries
+		// only what the answerer holds and the asker names, so the
+		// missing join has to be volunteered. The roster carries every
+		// join with its signature, adopting it is idempotent, and a
+		// peer taught nothing publishes nothing back - so the repeat
+		// cannot echo. Seen live at table 47b96e1c, where the one
+		// roster died in a relay backlog and the two peers held a
+		// formed and an aborted table for the same session.
+		//
+		// Commits heal through the resync half: a commit is asked for
+		// by name, so the ask is enough. Committed with every commit
+		// present is already settled, which is why neither state needs
+		// a "still missing somebody" condition spelled out.
 		tbl.askedAt = height
-		return tbl.publishResync()
+		return append(tbl.publishRoster(), tbl.publishResync()...)
 	}
 	return nil
 }
@@ -1281,14 +1339,17 @@ func (t *tables) forgetStake(sid string, seat uint32) {
 // This is what a gap in the stream costs: the host drops frames rather than
 // blocking, so one game that stops draining cannot stall the others, and the
 // loss clusters at reconnection. A table that ended is skipped - it has nothing
-// to catch up on, and asking would only invite answers it must refuse.
+// to catch up on, and asking would only invite answers it must refuse. A
+// receipt is skipped for the same reason: it is kept for the coin it holds,
+// not for anything the table might still say, and a fleet of receipts asking
+// together at every reconnect is a burst big enough to bury live traffic.
 func (t *tables) resync() []outgoing {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	var out []outgoing
 	for _, tbl := range t.m {
-		if tbl.form.State() == membership.Aborted {
+		if tbl.form.State() == membership.Aborted || tbl.finished {
 			continue
 		}
 		out = append(out, tbl.publishResync()...)
@@ -1584,7 +1645,7 @@ func (tbl *table) answerResync(ask schema.Resync) []outgoing {
 	if len(reply.Joins) == 0 && len(reply.Commits) == 0 {
 		return nil
 	}
-	return []outgoing{tbl.frame(schema.KindResyncReply, reply, wire.ClassState)}
+	return []outgoing{tbl.frame(schema.KindResyncReply, reply, wire.ClassForm)}
 }
 
 // adoptResync folds in what somebody sent to catch this peer up.
@@ -1627,7 +1688,7 @@ func (tbl *table) publishResync() []outgoing {
 	for _, c := range tbl.form.Commits() {
 		ask.Commits = append(ask.Commits, hex.EncodeToString(c.Signer))
 	}
-	return []outgoing{tbl.frame(schema.KindResync, ask, wire.ClassState)}
+	return []outgoing{tbl.frame(schema.KindResync, ask, wire.ClassForm)}
 }
 
 // adoptRoster takes the joins out of somebody's assertion.
@@ -1724,7 +1785,7 @@ func (tbl *table) advance(beforeState membership.State, beforeJoins int) []outgo
 				break
 			}
 			tbl.bound = true
-			out = append(out, tbl.frame(schema.KindCommit, schema.CommitFrom(c), wire.ClassState))
+			out = append(out, tbl.frame(schema.KindCommit, schema.CommitFrom(c), wire.ClassForm))
 			// Binding may have completed the table on its own, if
 			// everyone else's commit arrived first.
 			out = append(out, tbl.advance(membership.Formed, len(tbl.form.Joins()))...)
@@ -1783,7 +1844,7 @@ func (tbl *table) startWatching() {
 }
 
 func (tbl *table) publishJoin() []outgoing {
-	return []outgoing{tbl.frame(schema.KindJoin, schema.JoinFrom(tbl.form.Ours()), wire.ClassState)}
+	return []outgoing{tbl.frame(schema.KindJoin, schema.JoinFrom(tbl.form.Ours()), wire.ClassForm)}
 }
 
 func (tbl *table) publishRoster() []outgoing {
@@ -1803,7 +1864,7 @@ func (tbl *table) publishRoster() []outgoing {
 		seats = s
 	}
 	body := schema.RosterFrom(tbl.terms, seats, tbl.form.Joins(), assertion)
-	return []outgoing{tbl.frame(schema.KindRoster, body, wire.ClassState)}
+	return []outgoing{tbl.frame(schema.KindRoster, body, wire.ClassForm)}
 }
 
 // frame addresses a message. Formation traffic is matched by the session,
@@ -1833,8 +1894,13 @@ type snapshot struct {
 	BuyInAtoms uint64 `json:"buyinAtoms"`
 	CSVBlocks  uint32 `json:"csvBlocks"`
 	Joined     int    `json:"joined"`
-	MatchID    string `json:"matchId,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	// Commits is how many members have bound themselves to the roster. Every
+	// seat joined with commits still short of seats is the one asymmetry a
+	// player cannot otherwise see: their table looks full while some peer
+	// has not confirmed - or never heard - the roster.
+	Commits int    `json:"commits"`
+	MatchID string `json:"matchId,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 
 	// Until is the height admission closed at. Reported because it is what
 	// these are ordered by, and an order a caller cannot see is one it cannot
@@ -1978,6 +2044,7 @@ func (t *tables) snapshots() []snapshot {
 			BuyInAtoms: tbl.terms.BuyInAtoms,
 			CSVBlocks:  tbl.terms.CSVBlocks,
 			Joined:     len(tbl.form.Joins()),
+			Commits:    len(tbl.form.Commits()),
 			Reason:     tbl.form.Reason(),
 			Until:      tbl.terms.Until,
 			SeatsAt:    membership.BeaconHeight(tbl.terms),

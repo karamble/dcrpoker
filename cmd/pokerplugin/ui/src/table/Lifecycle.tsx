@@ -32,9 +32,24 @@ export function Lifecycle({ table }: { table: Snapshot }) {
       </p>
       <p className="lede">{explain[table.state] ?? explain.unknown}</p>
       {table.reason && <p className="lede warn">{table.reason}</p>}
+      {(table.state === 'formed' || table.state === 'committed') &&
+        table.joined >= table.seats &&
+        table.commits < table.seats && (
+          <p className="lede warn">
+            Every seat has joined; the roster is not yet confirmed by all of
+            them. If this does not resolve within a block or two, the other
+            side may never have received a join.
+          </p>
+        )}
 
       <div className="rows">
         <Row label="Seats" value={`${table.joined} of ${table.seats} joined`} />
+        {(table.state === 'formed' || table.state === 'committed') && (
+          <Row
+            label="Commitments"
+            value={`${table.commits} of ${table.seats} confirmed`}
+          />
+        )}
         <Row label="Buy-in" value={`${dcr(table.buyinAtoms)} DCR`} />
         <Row label="Stakes on chain" value={`${table.funded} of ${table.seats}`} />
         <Row label="Bonds on chain" value={`${table.bonded} of ${table.seats}`} />

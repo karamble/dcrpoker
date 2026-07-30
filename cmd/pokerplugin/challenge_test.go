@@ -125,6 +125,53 @@ func TestAChallengeSurvivesALostFrame(t *testing.T) {
 	}
 }
 
+// A finished receipt says nothing - except its challenges. The silence gates
+// on every other repeat must not reach these two: an open challenge is
+// restored from disk with the receipt, a restarted peer still owes its reveal,
+// and a seat that stops answering because it got up is exactly the refusal a
+// challenge makes claimable.
+func TestAFinishedReceiptStillAnswersItsChallenges(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	if code, body := post(t, a, "/table/challenge", map[string]any{"sid": terms.SID, "hand": 1}); code != http.StatusOK {
+		t.Fatalf("/table/challenge returned %d: %s", code, body)
+	}
+
+	dir := filepath.Dir(a.tables.store.dir)
+	back := h.restart(t, dir, "tok-a")
+	tbl := back.tables.m[terms.SID]
+	if tbl == nil {
+		t.Fatal("the table did not come back")
+	}
+	if !tbl.finished || len(tbl.openChal) == 0 {
+		t.Fatalf("finished=%v with %d open challenges; this is not testing a challenged receipt",
+			tbl.finished, len(tbl.openChal))
+	}
+
+	out := back.tables.tick(int64(terms.Until) + 50)
+	var chals, secrets int
+	for _, o := range out {
+		switch o.kind {
+		case schema.KindChallenge:
+			chals++
+		case schema.KindSecrets:
+			secrets++
+		default:
+			t.Fatalf("a challenged receipt said a %s; only challenge traffic may outlive finished", o.kind)
+		}
+	}
+	if chals == 0 {
+		t.Fatal("the restarted challenger stopped repeating its own challenge")
+	}
+	if secrets == 0 {
+		t.Fatal("the restarted peer stopped revealing for an open challenge")
+	}
+}
+
 // A reveal refused past the window becomes the claim, with the table over -
 // which is when most challenges happen and when nothing else is owed.
 func TestARefusedRevealCostsTheBond(t *testing.T) {

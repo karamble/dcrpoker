@@ -44,7 +44,10 @@ import (
 // behind - that is what being behind means - so waiting to be asked would leave
 // the one seat that needs the repair as the one seat that cannot start it.
 func (t *tables) exchangeHeads(tbl *table) []outgoing {
-	if tbl.play == nil || tbl.finished {
+	// Over means the log has stopped growing on every seat, so there is no
+	// gap left for a head to reveal. A table nobody pressed leave on would
+	// otherwise say where its log ended every poll until the process died.
+	if tbl.play == nil || tbl.finished || tbl.play.Over() {
 		return nil
 	}
 	seat, ok := tbl.form.OurSeat()

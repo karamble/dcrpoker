@@ -328,3 +328,82 @@ func TestTheAccusationIsTheLadderEntryForWhereTheBondSits(t *testing.T) {
 		t.Fatal("the end of the ladder produced an accusation, so the grinding never stops")
 	}
 }
+
+// The walk is what finally forgets a bond. Both peers broadcast the release,
+// one is refused as a duplicate, and neither tells the maps - so the receipt
+// held the outpoint forever and was resurrected at every boot. The chain is
+// the one witness both peers share: a bond at no rung with no claimed output
+// live has been released, forfeited or swept, and each of those is the end.
+//
+// The security property is the one refusal: a bond that is merely unmined is
+// also at no rung of the confirmed set, and the mempool-aware view is what
+// tells that apart from coin that is gone. Forgetting an unmined bond would
+// forget real money.
+func TestABondGoneFromTheChainClearsTheReceipt(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	dir := filepath.Dir(a.tables.store.dir)
+	back := h.restart(t, dir, "tok-a")
+	tbl := back.tables.m[terms.SID]
+	if tbl == nil {
+		t.Fatal("the table did not come back")
+	}
+	if !tbl.finished {
+		t.Fatal("a resumed dealt table is not finished, so this is not testing a receipt")
+	}
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		t.Fatal("no seat")
+	}
+	bond, stake := tbl.bonded[seat], tbl.funded[seat]
+	if bond == "" || stake == "" {
+		t.Fatalf("the receipt holds bond %q and stake %q; both are what keeps it", bond, stake)
+	}
+
+	// Gone from the confirmed set, still visible to the mempool-aware view:
+	// an unconfirmed bond, not a spent one. Nothing may be forgotten.
+	h.mu.Lock()
+	script := h.bonds[bond]
+	h.spent[bond] = true
+	h.unmined[bond] = script
+	h.mu.Unlock()
+
+	back.watchBonds(context.Background())
+	if tbl.bonded[seat] == "" {
+		t.Fatal("an unmined bond was forgotten; that is real money")
+	}
+
+	// Now truly gone: spent by something mined, visible nowhere.
+	h.mu.Lock()
+	delete(h.unmined, bond)
+	h.mu.Unlock()
+
+	back.watchBonds(context.Background())
+	if got := tbl.bonded[seat]; got != "" {
+		t.Fatalf("the bond is at no rung of the chain and still recorded at %s", got)
+	}
+	if back.tables.m[terms.SID] == nil {
+		t.Fatal("the receipt was dropped while the stake still points at coin")
+	}
+
+	// The stake pays out too, and the receipt has nothing left to say or hold.
+	h.mu.Lock()
+	h.spent[stake] = true
+	h.mu.Unlock()
+
+	back.forgetSpentStakes(context.Background())
+	if back.tables.m[terms.SID] != nil {
+		t.Fatal("a receipt holding nothing is still being kept")
+	}
+
+	// The record on disk was emptied before the receipt was let go, so the
+	// next boot has nothing to resurrect.
+	again := h.restart(t, dir, "tok-a")
+	if again.tables.m[terms.SID] != nil {
+		t.Fatal("an emptied receipt came back from disk")
+	}
+}

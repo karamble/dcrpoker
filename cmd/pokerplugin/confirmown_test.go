@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -129,4 +130,37 @@ func TestASeatWillNotDealOnItsOwnUnconfirmedStake(t *testing.T) {
 
 	advance(t, h, 3, a, b)
 	waitDealing(t, terms.SID, a, b)
+}
+
+// "Absent from both views" only means "paid out" on a table that is over,
+// because dealing waited for the stake to confirm. On a table still playing,
+// the same absence is a reorg or a node behind the tip, and forgetting the
+// stake there would un-fund a live table.
+func TestAStakeIsOnlyForgottenOnceTheTableIsOver(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+
+	tbl := a.tables.m[terms.SID]
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		t.Fatal("no seat")
+	}
+	stake := tbl.funded[seat]
+	if stake == "" {
+		t.Fatal("no stake to test with")
+	}
+	if tbl.finished || (tbl.play != nil && tbl.play.Over()) {
+		t.Fatal("the table is already over, so this proves nothing about the guard")
+	}
+
+	h.mu.Lock()
+	h.spent[stake] = true
+	h.mu.Unlock()
+
+	a.forgetSpentStakes(context.Background())
+	if got := tbl.funded[seat]; got != stake {
+		t.Fatalf("a live table's stake became %q because the chain view blinked", got)
+	}
+	_ = b
 }

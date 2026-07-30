@@ -43,6 +43,19 @@ const (
 	ClassState
 	// ClassDispute is evidence, and must outlive the dispute window.
 	ClassDispute
+	// ClassForm is formation traffic: joins, rosters, commits and the
+	// resyncs that carry them. Its real staleness gate is not a clock at
+	// all - a join is admitted or refused by where the chain stands against
+	// the table's Until height, and a formation that closed no-ops every
+	// late arrival - so the wire deadline only has to outlive a relay
+	// backlog. Ten minutes did not: a join queued behind a peer's stale
+	// backlog expired in transit, one table formed while the other aborted,
+	// and no repeat could help because every repeat carried the same short
+	// deadline. The residue of a long deadline is one ~30s race - a join
+	// delivered after Until but before the tick that closes the window is
+	// admitted - and the advance invariant already resolves that to no
+	// game, never two tables.
+	ClassForm
 )
 
 // TTL is how long a message of this class stays valid.
@@ -55,6 +68,11 @@ func (c Class) TTL() time.Duration {
 	case ClassDispute:
 		// Comfortably beyond a dispute window sized to how long it takes
 		// somebody to boot a computer and start Bison Relay.
+		return 24 * time.Hour
+	case ClassForm:
+		// Longer than any backlog a live table has produced, and bounded
+		// because an expiry is still the backstop against a relay
+		// replaying ancient traffic at a fresh session id.
 		return 24 * time.Hour
 	}
 	return 90 * time.Second

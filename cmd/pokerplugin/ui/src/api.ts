@@ -51,6 +51,10 @@ export type Snapshot = {
   buyinAtoms: number
   csvBlocks: number
   joined: number
+  /** How many members have bound themselves to the roster. Every seat joined
+   *  with commits still short is a full-looking table some peer has not
+   *  confirmed. */
+  commits: number
   matchId?: string
   reason?: string
   /** The height admission closed at, which is what tables are ordered by. */

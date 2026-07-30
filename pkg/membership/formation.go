@@ -603,7 +603,7 @@ func (f *Formation) recompute() {
 	f.state = Settled
 }
 
-// Abandon gives up on a table that settled but was never fully funded.
+// Abandon gives up on a table that bound itself and got nothing back.
 //
 // It keeps the membership, which is what makes it different from every other
 // abort here. Aborting during formation clears the canonical set because there
@@ -612,10 +612,15 @@ func (f *Formation) recompute() {
 // script is derived from the membership. Forgetting it would be forgetting
 // where their money is.
 //
-// Only a settled table can be abandoned. Anything earlier has its own way of
-// ending, and anything later has money moving under rules this does not know.
+// Committed is kept for the same reason one step earlier: the commit is this
+// key's irrevocable word on a roster, and a table stuck there - bound, with
+// somebody else's commitment never arriving - must end without unsaying it.
+// No money can have moved at Committed: funding needs a seating, and seating
+// needs the table settled. Anything before Committed has its own way of
+// ending, and anything after Settled has money moving under rules this does
+// not know.
 func (f *Formation) Abandon(reason string) {
-	if f.state != Settled {
+	if f.state != Settled && f.state != Committed {
 		return
 	}
 	f.state = Aborted

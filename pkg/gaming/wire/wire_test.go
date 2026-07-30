@@ -228,6 +228,32 @@ func TestDisputeOutlivesTurnTraffic(t *testing.T) {
 	}
 }
 
+// Formation traffic is gated by a block height, not a clock, so its wire
+// deadline only has to outlive a relay backlog - and ten minutes did not: a
+// join expired in a peer's queue, and the table formed on one box and aborted
+// on the other.
+func TestFormationOutlivesABacklog(t *testing.T) {
+	if ClassForm.TTL() < time.Hour {
+		t.Fatal("a formation frame must survive a relay backlog measured in minutes, with room")
+	}
+
+	// A join eleven minutes old - dead as state sync - is still a join.
+	sent := time.Unix(1000, 0)
+	frames, err := Encode("poker", 1, "0011223344556677", []byte("join"),
+		ClassForm.Deadline(sent), 0)
+	if err != nil || len(frames) != 1 {
+		t.Fatalf("encode: %v (%d frames)", err, len(frames))
+	}
+	p, ok := Parse(frames[0])
+	if !ok {
+		t.Fatal("did not parse")
+	}
+	a := NewAssembler(AssemblerConfig{})
+	if _, err := a.Add("gc/alice", p, sent.Add(11*time.Minute)); err != nil {
+		t.Fatalf("an 11 minute old formation frame was refused: %v", err)
+	}
+}
+
 func TestSampleEnvelopeIsAFrame(t *testing.T) {
 	if !IsEnvelope(SampleEnvelope) {
 		t.Fatal("SampleEnvelope must parse, or filter guards built on it are inert")

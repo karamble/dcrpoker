@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -53,6 +54,12 @@ type hub struct {
 	// mempool-aware one, which is the only way a claim can be seen before it
 	// is mined.
 	pending map[string]bool
+	// unmined is outpoints a transaction in the mempool CREATES: visible to
+	// the mempool-aware view and to nothing else. This is what an unconfirmed
+	// bond looks like, and the difference between "spent by a mined
+	// transaction" and "not mined yet" is the difference between coin that is
+	// gone and coin that must not be forgotten.
+	unmined map[string]string
 
 	// confs is how deep this chain says every output is. Settable because
 	// maturity is the one thing a script engine cannot check, so the only way
@@ -218,6 +225,7 @@ func newHub(t *testing.T) *hub {
 		lost:    make(map[schema.Kind]int),
 		spent:   make(map[string]bool),
 		pending: make(map[string]bool),
+		unmined: make(map[string]string),
 		shallow: make(map[string]int64),
 	}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +236,9 @@ func newHub(t *testing.T) *hub {
 			pkScript, gone := h.bonds[key], h.spent[key]
 			if q.Get("mempool") == "1" && h.pending[key] {
 				gone = true
+			}
+			if q.Get("mempool") == "1" && h.unmined[key] != "" {
+				pkScript, gone = h.unmined[key], false
 			}
 			confs := h.confs
 			deep, named := h.shallow[key]
@@ -1004,6 +1015,16 @@ func joinsIn(out []outgoing) []outgoing {
 	return j
 }
 
+func rostersIn(out []outgoing) []outgoing {
+	var r []outgoing
+	for _, o := range out {
+		if o.kind == schema.KindRoster {
+			r = append(r, o)
+		}
+	}
+	return r
+}
+
 func asksIn(out []outgoing) []outgoing {
 	var asks []outgoing
 	for _, o := range out {
@@ -1012,6 +1033,133 @@ func asksIn(out []outgoing) []outgoing {
 		}
 	}
 	return asks
+}
+
+// A receipt is kept for the coin it holds, not for anything it still has to
+// say. Nine of them saying things together is what buried a live join under a
+// wall of stale frames: a resumed table one bond short re-agreed its
+// accusations every poll, re-announced its stake every block, said where its
+// log ended, and asked every reconnect to be caught up - each repeat written
+// for a table that could still deal, none of them gated on the table being
+// over.
+func TestAFinishedReceiptSaysNothing(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	dir := filepath.Dir(a.tables.store.dir)
+	back := h.restart(t, dir, "tok-a")
+	tbl := back.tables.m[terms.SID]
+	if tbl == nil {
+		t.Fatal("the table did not come back")
+	}
+	if !tbl.finished {
+		t.Fatal("a resumed dealt table is not finished, so this is not testing a receipt")
+	}
+
+	// The live shape: the other seat's bond never made it onto this peer's
+	// chain view, so no accusation against it can be agreed - and the
+	// gathered signatures are gone too, so a table that could still deal
+	// would have real repeating to do for every seat.
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		t.Fatal("no seat")
+	}
+	delete(tbl.bonded, 1-seat)
+	tbl.accused = false
+	tbl.accuse = map[string]*accusation{}
+
+	// Below the funding deadline, so the stake repeat would still be live for
+	// a table that could deal.
+	at := int64(membership.FundingDeadline(terms)) - 1
+	if out := back.tables.tick(at); len(out) != 0 {
+		t.Fatalf("a finished receipt said %d things, the first a %s", len(out), out[0].kind)
+	}
+	if out := back.tables.tick(at + 1); len(out) != 0 {
+		t.Fatalf("a finished receipt spoke on the next block: %s", out[0].kind)
+	}
+	if out := back.tables.resync(); len(out) != 0 {
+		t.Fatalf("a finished receipt asked to be caught up with %d messages", len(out))
+	}
+}
+
+// The roster a formed table published once is the only thing that can teach a
+// peer the join it never received - resync answers name what the asker already
+// knows to ask for - so a roster said once into a lossy channel is a formed
+// table here and an aborted one there, permanently. Seen live at table
+// 47b96e1c.
+func TestALostRosterIsSaidAgain(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+
+	other := h.lend(t, "dd")
+	p := h.restart(t, t.TempDir(), "tok")
+	acceptInvite(t, p, inv)
+	deliverJoin(t, p, terms, other)
+
+	if got := p.tables.snapshots()[0].State; got != membership.Formed.String() {
+		t.Fatalf("state is %s, want formed with the roster published exactly once", got)
+	}
+
+	at := int64(terms.Until) - 10
+	out := p.tables.tick(at)
+	if len(rostersIn(out)) != 1 {
+		t.Fatalf("a formed table said its roster %d times, want once", len(rostersIn(out)))
+	}
+	if len(asksIn(out)) != 1 {
+		t.Fatal("repeated the roster without asking for the commits it is missing")
+	}
+	if out := p.tables.tick(at); len(rostersIn(out)) != 0 {
+		t.Fatal("repeated twice at one height")
+	}
+	if out := p.tables.tick(at + 1); len(rostersIn(out)) != 1 {
+		t.Fatal("stopped repeating while still waiting on somebody")
+	}
+
+	// The deadline binds the table, with its own announcements; past that it
+	// waits on the other commit - still somebody else's move, so the roster
+	// keeps going out.
+	p.tables.tick(int64(terms.Until) + 1)
+	if out := p.tables.tick(int64(terms.Until) + 2); len(rostersIn(out)) != 1 {
+		t.Fatal("a committed table stopped saying its roster")
+	}
+
+	// Settled is nobody's move but the chain's, and the repeat stops.
+	c, err := membership.SignCommit(terms, rosterHashOf(t, p.tables.snapshots()[0].MatchID),
+		other.Session)
+	if err != nil {
+		t.Fatalf("sign commit: %v", err)
+	}
+	deliverKind(t, p, terms, schema.KindResyncReply, schema.ResyncReply{
+		Commits: []schema.Commit{schema.CommitFrom(c)},
+	})
+	if out := p.tables.tick(int64(terms.Until) + 3); len(rostersIn(out)) != 0 {
+		t.Fatal("a settled table is still saying its roster")
+	}
+}
+
+// A repeated roster must not be an echo chamber: a peer taught nothing by one
+// publishes nothing back, or two complete peers would answer each other's
+// repeats forever.
+func TestRosterRepeatsDoNotEcho(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+
+	p := h.restart(t, t.TempDir(), "tok")
+	acceptInvite(t, p, inv)
+	deliverJoin(t, p, terms, h.lend(t, "dd"))
+
+	own, ok := p.tables.m[terms.SID].publishRoster()[0].body.(schema.Roster)
+	if !ok {
+		t.Fatal("publishRoster did not build a roster")
+	}
+	if out := deliverKind(t, p, terms, schema.KindRoster, own); len(out) != 0 {
+		t.Fatalf("a roster teaching nothing was answered with %d messages", len(out))
+	}
 }
 
 // A resync answer is checked, not believed. It arrives from whoever felt like
@@ -1329,4 +1477,55 @@ func saysPayout(out []outgoing) bool {
 		}
 	}
 	return false
+}
+
+// A peer that bound itself and lost its counterpart used to wait forever: the
+// repeats are the cure while the other side still holds the table, but a
+// counterpart that already aborted refuses everything, and nothing announces
+// an abort - an "I gave up" frame would let anybody end anybody's table. The
+// funding deadline is the announcement.
+func TestACommittedTableAbortsAtTheFundingDeadline(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(2)
+	terms := inviteTerms(inv)
+	other := h.lend(t, "dd")
+
+	p := h.restart(t, t.TempDir(), "tok")
+	acceptInvite(t, p, inv)
+	deliverJoin(t, p, terms, other)
+	p.tables.tick(int64(terms.Until) + 1)
+
+	if got := p.tables.snapshots()[0].State; got != membership.Committed.String() {
+		t.Fatalf("state is %s, want committed and waiting", got)
+	}
+	if snap := p.tables.snapshots()[0]; snap.Joined != 2 || snap.Commits != 1 {
+		t.Fatalf("snapshot says %d of %d joined with %d commits; the interface cannot show "+
+			"a full table some peer has not confirmed", snap.Joined, snap.Seats, snap.Commits)
+	}
+
+	deadline := int64(membership.FundingDeadline(terms))
+	p.tables.tick(deadline - 1)
+	if got := p.tables.snapshots()[0].State; got != membership.Committed.String() {
+		t.Fatalf("state is %s before the deadline, so the table gave up early", got)
+	}
+
+	p.tables.tick(deadline)
+	if got := p.tables.snapshots()[0].State; got != membership.Aborted.String() {
+		t.Fatalf("state is %s at the funding deadline, want aborted", got)
+	}
+	if reason := p.tables.snapshots()[0].Reason; reason == "" {
+		t.Fatal("aborted with nothing to tell the person watching")
+	}
+
+	// Terminal on disk too. Accepting the same invitation again while the
+	// table is still in memory is a deliberate no-op; what must never
+	// happen is a restart resurrecting the wait, and rec.Aborted is what
+	// join refuses that with.
+	rec, err := p.tables.store.load(terms.SID)
+	if err != nil || rec == nil {
+		t.Fatalf("no record on disk: %v", err)
+	}
+	if !rec.Aborted {
+		t.Fatal("the abandonment was not written down, so a restart would resurrect the wait")
+	}
 }

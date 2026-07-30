@@ -125,3 +125,70 @@ func (p *plugin) confirmOurPayments(ctx context.Context) {
 		p.publish(ctx, out)
 	}
 }
+
+// forgetSpentStakes clears a stake the chain has already paid out.
+//
+// The other half of what keeps a receipt alive. The release path cannot clear
+// the bond and nothing at all clears the stake: a settlement is broadcast,
+// confirms, pays the winner - and funded[seat] still names the outpoint, so
+// holdsOurs stays true and the receipt is resurrected at every boot, saying
+// nothing and holding nothing. Asked only about tables that are finished or
+// whose game is over, because dealing waited for the stake to confirm - so for
+// these tables "absent from both views" can only mean a mined spend took it.
+//
+// The one residual: a table finished before it ever dealt, whose stake
+// transaction was evicted unmined. That is absent from both views too, and
+// clearing it forgets a payment that never happened - which loses nothing,
+// because an unmined payment's inputs never left this player's wallet.
+func (p *plugin) forgetSpentStakes(ctx context.Context) {
+	type ask struct {
+		sid   string
+		seat  uint32
+		stake string
+	}
+	var asks []ask
+
+	p.tables.mu.Lock()
+	for sid, tbl := range p.tables.m {
+		if !tbl.finished && (tbl.play == nil || !tbl.play.Over()) {
+			continue
+		}
+		seat, ok := tbl.form.OurSeat()
+		if !ok || tbl.funded[seat] == "" {
+			continue
+		}
+		asks = append(asks, ask{sid: sid, seat: seat, stake: tbl.funded[seat]})
+	}
+	p.tables.mu.Unlock()
+
+	for _, a := range asks {
+		confirmed, err := p.onChain(ctx, a.stake)
+		if err != nil || confirmed {
+			continue
+		}
+		seen, err := p.inMempoolView(ctx, a.stake)
+		if err != nil || seen {
+			continue
+		}
+
+		p.tables.mu.Lock()
+		tbl := p.tables.m[a.sid]
+		if tbl == nil || tbl.funded[a.seat] != a.stake {
+			p.tables.mu.Unlock()
+			continue
+		}
+		delete(tbl.funded, a.seat)
+		seat := a.seat
+		tbl.note(eventSettled, "the stake left the chain", "", &seat)
+		log.Printf("pokerplugin: table %s: our stake at %s left the chain; forgetting it",
+			a.sid, a.stake)
+		if tbl.finished && !tbl.holdsOurs() {
+			log.Printf("pokerplugin: table %s holds nothing of ours any more; letting it go",
+				a.sid)
+			p.tables.drop(a.sid, tbl)
+		} else {
+			p.tables.persist(tbl)
+		}
+		p.tables.mu.Unlock()
+	}
+}

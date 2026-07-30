@@ -1013,3 +1013,58 @@ func TestTheDrawingBlockIsPastTheDeadline(t *testing.T) {
 		t.Fatalf("seating is drawn at height %d, which is not past the deadline %d", got, terms.Until)
 	}
 }
+
+// Abandoning is for a table this key already bound itself to - Committed or
+// Settled - and for nothing earlier. At Committed the membership must survive
+// the abort exactly as it does at Settled: the commit was this key's
+// irrevocable word, and no money can have moved yet because funding needs a
+// seating, which needs the table settled.
+func TestAbandonEndsACommittedTableAndKeepsItsWord(t *testing.T) {
+	terms := testTerms(2)
+	privs := players(t, 2)
+	all := joinsFor(t, terms, privs)
+
+	f, err := NewFormation(terms, testCreds(t, privs[0]))
+	if err != nil {
+		t.Fatalf("new formation: %v", err)
+	}
+
+	// Joining: nothing to give up on yet.
+	f.Abandon("too early")
+	if f.State() != Joining {
+		t.Fatalf("abandoning a joining table left it %v", f.State())
+	}
+	for _, j := range all {
+		if err := f.AddJoin(j); err != nil {
+			t.Fatalf("add join: %v", err)
+		}
+	}
+
+	// Formed: still nothing bound, still not abandonable.
+	f.Abandon("still too early")
+	if f.State() != Formed {
+		t.Fatalf("abandoning a formed table left it %v", f.State())
+	}
+
+	if _, err := f.Bind(); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if f.State() != Committed {
+		t.Fatalf("state is %v after binding alone", f.State())
+	}
+	canonical := f.canonical
+	if canonical == nil {
+		t.Fatal("no canonical membership at committed")
+	}
+
+	f.Abandon("the other commitments never arrived")
+	if f.State() != Aborted {
+		t.Fatalf("a committed table would not abandon: %v", f.State())
+	}
+	if f.Reason() == "" {
+		t.Fatal("abandoned with no reason recorded")
+	}
+	if f.canonical == nil {
+		t.Fatal("abandoning forgot the membership, which is where the scripts come from")
+	}
+}

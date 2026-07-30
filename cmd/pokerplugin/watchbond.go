@@ -136,6 +136,27 @@ func (p *plugin) watchBonds(ctx context.Context) {
 		if at < 0 {
 			continue
 		}
+		// A walk that landed nowhere found the coin at no rung and no
+		// claimed output - and every position was asked of the confirmed
+		// set, so whatever spent it is mined. Only three spends leave the
+		// ladder at all: the cooperative release, the backstop sweep and
+		// the forfeiture, and each is the end of this bond's story. That is
+		// what finally lets the maps forget it, which nothing on the
+		// release path can do - both peers broadcast the release, one of
+		// them is refused as a duplicate, and only the chain knows the
+		// truth both can see.
+		//
+		// One thing looks the same and is not: a bond broadcast and never
+		// mined sits at rung 0 of the confirmed set's view of nothing. The
+		// mempool-aware view still sees it, so ask that view before calling
+		// coin gone - clearing an unmined bond would forget real money.
+		gone := !landed
+		if gone {
+			seen, err := p.inMempoolView(ctx, a.positions[a.start])
+			if err != nil || seen {
+				continue
+			}
+		}
 
 		p.tables.mu.Lock()
 		tbl := p.tables.m[a.sid]
@@ -153,6 +174,28 @@ func (p *plugin) watchBonds(ctx context.Context) {
 			believed = tbl.bonded[a.seat]
 		}
 		if believed != a.positions[a.start] {
+			p.tables.mu.Unlock()
+			continue
+		}
+		if gone {
+			delete(tbl.bonded, a.seat)
+			delete(tbl.bondedAt, a.seat)
+			delete(tbl.bondValue, a.seat)
+			seat := a.seat
+			tbl.note(eventSettled, "the bond left the chain", "", &seat)
+			log.Printf("pokerplugin: table %s: seat %d's bond left the chain; forgetting it",
+				a.sid, a.seat)
+			if tbl.finished && !tbl.holdsOurs() {
+				// The receipt was only ever kept for this. See drop:
+				// with nothing of ours left it deletes rather than
+				// marks, and the emptied record on disk is what stops
+				// the next boot resurrecting it.
+				log.Printf("pokerplugin: table %s holds nothing of ours any more; letting it go",
+					a.sid)
+				p.tables.drop(a.sid, tbl)
+			} else {
+				p.tables.persist(tbl)
+			}
 			p.tables.mu.Unlock()
 			continue
 		}
