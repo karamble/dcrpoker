@@ -126,12 +126,13 @@ func TestTheAnswersToAClaimSurviveARestart(t *testing.T) {
 	}
 }
 
-// A claim waiting in the mempool is answered, without anybody saying so.
+// An accusation waiting in the mempool is answered, without anybody saying so.
 //
 // answerClaim otherwise runs only on a claim frame, so an opponent who sends
 // nothing accuses in silence. A confirmed output being spent by a mempool
 // transaction is still in the confirmed set, so the confirmed-only view finds it
-// while the mempool-aware one does not, and that disagreement is the claim.
+// while the mempool-aware one does not - and the accusation is the spender that
+// also creates the claimed output there, which is what marks it as one.
 func TestAClaimInTheMempoolIsAnswered(t *testing.T) {
 	h := newHub(t)
 	a, b, terms := dealingTable(t, h)
@@ -139,20 +140,15 @@ func TestAClaimInTheMempoolIsAnswered(t *testing.T) {
 
 	tbl := a.tables.m[terms.SID]
 	seat, _ := tbl.form.OurSeat()
-	outpoint := tbl.bondedAt[seat]
-	if outpoint == "" {
-		outpoint = tbl.bonded[seat]
-	}
-	if outpoint == "" {
-		t.Fatal("this seat has no bond, so there is nothing to claim")
-	}
+	positions, claimed, claimedHex := ladderOf(t, a, terms.SID, seat)
 	if len(tbl.accuse) == 0 {
 		t.Fatal("no answer was agreed, so answering cannot be observed")
 	}
 
 	h.mu.Lock()
 	was := len(h.sent)
-	h.pending[outpoint] = true
+	h.pending[positions[0]] = true
+	h.bonds[claimed[0]] = claimedHex
 	h.mu.Unlock()
 
 	a.watchBonds(context.Background())
@@ -161,7 +157,41 @@ func TestAClaimInTheMempoolIsAnswered(t *testing.T) {
 	now := len(h.sent)
 	h.mu.Unlock()
 	if now == was {
-		t.Fatal("a claim spending our bond in the mempool went unanswered")
+		t.Fatal("an accusation spending our bond in the mempool went unanswered")
+	}
+}
+
+// A cooperative release in the mempool is not an accusation, and answering it
+// would be broadcasting a spend of an output that will never exist.
+//
+// The release spends the same branch of the same outpoint, so "something in the
+// mempool is spending our bond" cannot tell the two apart. The claimed output
+// can: only the accusation creates it.
+func TestAReleaseInTheMempoolIsNotAnswered(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	advance(t, h, 2, a, b)
+
+	tbl := a.tables.m[terms.SID]
+	seat, _ := tbl.form.OurSeat()
+	positions, _, _ := ladderOf(t, a, terms.SID, seat)
+
+	// The bond is being spent, and no claimed output appears: the release.
+	h.mu.Lock()
+	was := len(h.sent)
+	h.pending[positions[0]] = true
+	h.mu.Unlock()
+
+	a.watchBonds(context.Background())
+
+	h.mu.Lock()
+	now := len(h.sent)
+	h.mu.Unlock()
+	if now != was {
+		t.Fatal("answered the cooperative release of our own bond")
+	}
+	if at := tbl.bondedAt[seat]; at != "" {
+		t.Fatalf("a release moved the bond's believed position to %q", at)
 	}
 }
 

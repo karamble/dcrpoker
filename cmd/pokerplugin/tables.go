@@ -77,6 +77,11 @@ type table struct {
 	// chains caches derived accusation chains, keyed by seat and the outpoint
 	// they start from.
 	chains map[string][]*dcrwire.MsgTx
+	// answerReady is an answer built and waiting for dispatchAnswers, which
+	// broadcasts outside the registry lock. Not persisted: an answer never
+	// dispatched is rebuilt by the next bond walk.
+	answerReady *readyAnswer
+
 	// replyWith is what adopting a message decided to say back, collected
 	// because the adopt path returns an error rather than frames.
 	replyWith []outgoing

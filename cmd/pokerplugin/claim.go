@@ -181,7 +181,9 @@ func (tbl *table) acceptClaim(body schema.Claim, params stdaddr.AddressParams) [
 		return nil
 	}
 	log.Printf("pokerplugin: table %s: accused of leaving, and answering", tbl.terms.SID)
-	tbl.answerClaim(context.Background())
+	// Built here, under the lock this handler already holds; broadcast by
+	// dispatchAnswers once the delivery has released it.
+	tbl.answerClaim()
 	return nil
 }
 

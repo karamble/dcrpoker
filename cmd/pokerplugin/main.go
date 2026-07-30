@@ -228,9 +228,12 @@ func (p *plugin) enableTransportLog() {
 // whatever that produced.
 //
 // Publishing happens here rather than inside the registry because the registry
-// holds a lock, and a slow send under it would stall every other table.
+// holds a lock, and a slow send under it would stall every other table. An
+// answer a handler built goes out here for the same reason: broadcasting is an
+// RPC, and it does not belong under the lock either.
 func (p *plugin) deliver(d transport.Delivery) {
 	p.publish(p.ctx, p.tables.deliver(p.ctx, d))
+	p.dispatchAnswers(p.ctx)
 }
 
 // chainPoll is how often the host is asked where the chain is. Blocks are about

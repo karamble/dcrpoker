@@ -87,10 +87,17 @@ func (p *plugin) watchBonds(ctx context.Context) {
 			}
 			if found {
 				// The bond is here. For our own, a mempool transaction
-				// spending it is an accusation to answer before it confirms.
+				// spending it may be an accusation to answer before it
+				// confirms - or the cooperative release, which spends the
+				// same branch. Only the accusation creates the claimed
+				// output, so that appearing in the mempool view is what
+				// tells them apart, and answering a release would be
+				// broadcasting a spend of an output that will never exist.
 				if a.ours {
 					if gone, err := p.leavingMempool(ctx, a.positions[at]); err == nil && gone {
-						answer = true
+						if seen, err := p.inMempoolView(ctx, a.claimed[at]); err == nil && seen {
+							answer = true
+						}
 					}
 				}
 				break
@@ -125,6 +132,19 @@ func (p *plugin) watchBonds(ctx context.Context) {
 			p.tables.mu.Unlock()
 			continue
 		}
+		// The walk ran unlocked, and something else - an answer, a frame -
+		// may have moved the belief meanwhile. A walk that started from a
+		// belief nobody holds any more concluded nothing about the current
+		// one, so it writes nothing; the next poll walks from wherever the
+		// belief now is.
+		believed := tbl.bondedAt[a.seat]
+		if believed == "" {
+			believed = tbl.bonded[a.seat]
+		}
+		if believed != a.positions[a.start] {
+			p.tables.mu.Unlock()
+			continue
+		}
 		if at > a.start && at < len(a.positions) {
 			tbl.bondedAt[a.seat] = a.positions[at]
 			// The value shrank by two fees per answer, so what the chain
@@ -136,10 +156,11 @@ func (p *plugin) watchBonds(ctx context.Context) {
 		if answer {
 			log.Printf("pokerplugin: table %s: our bond at %s is claimed against; answering",
 				a.sid, a.positions[at])
-			tbl.answerClaim(ctx)
+			tbl.answerClaim()
 		}
 		p.tables.mu.Unlock()
 	}
+	p.dispatchAnswers(ctx)
 }
 
 // onChain reports whether an output is in the confirmed UTXO set. Absent says
@@ -168,4 +189,18 @@ func (p *plugin) leavingMempool(ctx context.Context, outpoint string) (bool, err
 		return false, err
 	}
 	return !out.Found, nil
+}
+
+// inMempoolView reports whether the mempool-aware view can see an output - which
+// an output created by a transaction still in the mempool is.
+func (p *plugin) inMempoolView(ctx context.Context, outpoint string) (bool, error) {
+	txid, vout, err := splitOutpoint(outpoint)
+	if err != nil {
+		return false, err
+	}
+	out, err := p.bridge.UnconfirmedOutpoint(ctx, txid, vout)
+	if err != nil {
+		return false, err
+	}
+	return out.Found, nil
 }

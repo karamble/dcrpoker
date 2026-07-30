@@ -391,7 +391,23 @@ func (tbl *table) ourAccusation(seat uint32, tx *wire.MsgTx, bond []byte) []outg
 	}, gwire.ClassState)}
 }
 
-// answerClaim spends the claimed bond back into a bond, with this seat's own key.
+// readyAnswer is an answer built and signed, waiting to leave.
+//
+// Built under the registry lock, where the table's state is, and broadcast
+// outside it by dispatchAnswers - the same split deliver makes for frames,
+// because a broadcast is an RPC and one that hangs under the lock stalls every
+// frame for every table.
+type readyAnswer struct {
+	sid   string
+	seat  uint32
+	raw   string
+	from  string // the position the answered accusation spends
+	next  string // where the answer puts the bond
+	chain broadcaster
+}
+
+// answerClaim builds the answer that spends the claimed bond back into a bond,
+// with this seat's own key.
 //
 // One signature, nobody asked. That is the shape the claimed bond exists to
 // provide: an accusation moves the bond somewhere its owner can take back
@@ -402,7 +418,7 @@ func (tbl *table) ourAccusation(seat uint32, tx *wire.MsgTx, bond []byte) []outg
 // Where to answer is derived rather than remembered. Every accusation against this
 // seat is deterministic, so the one that was broadcast is one of the chain this peer
 // can rebuild - and the claimed bond it created is its first output.
-func (tbl *table) answerClaim(ctx context.Context) {
+func (tbl *table) answerClaim() {
 	seat, ok := tbl.form.OurSeat()
 	if !ok || tbl.session == nil {
 		return
@@ -415,6 +431,9 @@ func (tbl *table) answerClaim(ctx context.Context) {
 	at := tbl.bondedAt[seat]
 	if at == "" {
 		at = tbl.bonded[seat]
+	}
+	if tbl.answerReady != nil && tbl.answerReady.from == at {
+		return // built already, waiting to leave
 	}
 	prevout, err := outpointOf(at)
 	if err != nil {
@@ -471,23 +490,62 @@ func (tbl *table) answerClaim(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	txid, err := tbl.chain.Broadcast(ctx, hex.EncodeToString(raw))
-	if err != nil {
-		log.Printf("pokerplugin: table %s: could not answer a claim: %v", tbl.terms.SID, err)
-		tbl.note(eventUnanswerable,
-			fmt.Sprintf("claimed against, and the answer could not be sent: %v", err),
-			"", seatp(int(seat)))
-		return
+	tbl.answerReady = &readyAnswer{
+		sid:   tbl.terms.SID,
+		seat:  seat,
+		raw:   hex.EncodeToString(raw),
+		from:  at,
+		next:  fmt.Sprintf("%s:0", answer.TxHash()),
+		chain: tbl.chain,
 	}
-	// The bond has moved, so every future accusation is against the new
-	// output. Recorded and announced, because a peer still naming the old one
-	// would hold an accusation nothing can spend.
-	tbl.bondedAt[seat] = fmt.Sprintf("%s:0", answer.TxHash())
-	log.Printf("pokerplugin: table %s: answered a claim in %s; the bond is posted again at %s",
-		tbl.terms.SID, txid, tbl.bondedAt[seat])
-	tbl.note(eventAnswered,
-		fmt.Sprintf("claimed against, and the answer was sent from this seat's own key; "+
-			"the bond is posted again at %s", tbl.bondedAt[seat]), txid, seatp(int(seat)))
+}
+
+// dispatchAnswers broadcasts every answer the tables have built.
+//
+// Run wherever answerClaim may have run - after a delivery, and after the bond
+// walk. An answer built and never dispatched is rebuilt by the next walk, so a
+// crash between the two loses nothing.
+func (p *plugin) dispatchAnswers(ctx context.Context) {
+	p.tables.mu.Lock()
+	var ready []*readyAnswer
+	for _, tbl := range p.tables.m {
+		if tbl.answerReady != nil {
+			ready = append(ready, tbl.answerReady)
+			tbl.answerReady = nil
+		}
+	}
+	p.tables.mu.Unlock()
+
+	for _, ra := range ready {
+		txid, err := ra.chain.Broadcast(ctx, ra.raw)
+
+		p.tables.mu.Lock()
+		tbl := p.tables.m[ra.sid]
+		if tbl == nil {
+			p.tables.mu.Unlock()
+			continue
+		}
+		if err != nil {
+			log.Printf("pokerplugin: table %s: could not answer a claim: %v", ra.sid, err)
+			tbl.note(eventUnanswerable,
+				fmt.Sprintf("claimed against, and the answer could not be sent: %v", err),
+				"", seatp(int(ra.seat)))
+			p.tables.mu.Unlock()
+			continue
+		}
+		// The bond has moved, so every future accusation is against the new
+		// output - unless something else already moved the belief further
+		// while the broadcast was in flight, in which case theirs stands.
+		if cur := tbl.bondedAt[ra.seat]; cur == "" || cur == ra.from {
+			tbl.bondedAt[ra.seat] = ra.next
+		}
+		log.Printf("pokerplugin: table %s: answered a claim in %s; the bond is posted again at %s",
+			ra.sid, txid, ra.next)
+		tbl.note(eventAnswered,
+			fmt.Sprintf("claimed against, and the answer was sent from this seat's own key; "+
+				"the bond is posted again at %s", ra.next), txid, seatp(int(ra.seat)))
+		p.tables.mu.Unlock()
+	}
 }
 
 // settleDraft is what this table would pay out, from the last boundary every
