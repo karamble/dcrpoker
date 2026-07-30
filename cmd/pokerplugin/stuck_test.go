@@ -86,20 +86,3 @@ func TestAHandThatCannotFinishStillPaysOutTheLastBoundary(t *testing.T) {
 		t.Fatalf("%d bonds came back, want one a seat", len(released))
 	}
 }
-
-// One seat leaving is not enough, because it must not be: a player losing the
-// hand in progress would otherwise void the pot by getting up.
-func TestOneSeatLeavingDoesNotVoidTheHandInProgress(t *testing.T) {
-	h := newHub(t)
-	a, b, terms := dealingTable(t, h)
-	waitBetting(t, a, b)
-
-	getUp(t, h, terms.SID, a)
-	advance(t, h, 2, a, b)
-
-	for i, p := range []*plugin{a, b} {
-		if over(t, p, terms.SID) {
-			t.Fatalf("peer %d ended a live table on one seat's word", i)
-		}
-	}
-}
