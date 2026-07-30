@@ -86,6 +86,7 @@ func Suite() proof.Suite { return suite }
 const (
 	shuffleBase = "dcrpoker/deck/shuffle/v1"
 	revealBase  = "dcrpoker/deck/reveal/v1"
+	popBase     = "dcrpoker/deck/pop/v1"
 )
 
 // Context is where in the game a proof belongs. Every field binds into the
