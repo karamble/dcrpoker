@@ -3,11 +3,16 @@ package main
 import (
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"go.dedis.ch/kyber/v4"
+
+	"github.com/vctt94/pokerbisonrelay/pkg/deck"
 	"github.com/vctt94/pokerbisonrelay/pkg/driver"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
+	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
 
 // challengeOf is one table's view of a challenge, or nil.
@@ -255,7 +260,7 @@ func TestAnOpenChallengeBlocksSettlementAndRelease(t *testing.T) {
 
 	// And with the challenge closed, both go out. Same table, same moment:
 	// the only thing that changed is the challenge.
-	atbl.closeChallenge(1)
+	atbl.closeChallenge(1, verdictClean)
 	if out := atbl.proposeSettlement(); len(out) == 0 {
 		t.Fatal("no settlement was proposed once the challenge closed")
 	}
@@ -349,5 +354,120 @@ func TestAFinishedTableDeletesItsHandSecrets(t *testing.T) {
 	}
 	if err := st.deleteHands("../evil"); err == nil {
 		t.Fatal("a hostile session id deleted a path")
+	}
+}
+
+// A hand that recomputed clean is not challenged again.
+//
+// Without this the loop is free: challenge, everybody reveals, clean, close,
+// challenge again - and each turn of it blocks the payout while the challenger
+// owes nothing at any point, because it discharges its own reveal every round.
+// The one-at-a-time rule bounds how many are open, not how many there can be.
+func TestAnAnsweredHandIsNotChallengedAgain(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+
+	if code, body := post(t, a, "/table/challenge", map[string]any{"sid": terms.SID, "hand": 1}); code != http.StatusOK {
+		t.Fatalf("/table/challenge returned %d: %s", code, body)
+	}
+	waitAudited(t, h, terms.SID, 1, a, b)
+
+	// The challenger's slot is free again, and the hand is still not reopenable.
+	code, body := post(t, a, "/table/challenge", map[string]any{"sid": terms.SID, "hand": 1})
+	if code == http.StatusOK {
+		t.Fatal("a hand that recomputed clean was challenged again, which blocks the payout for nothing")
+	}
+	if !strings.Contains(body, "already been answered for") {
+		t.Fatalf("the refusal does not say why: %s", body)
+	}
+
+	// And the other seat refuses a repeat of the challenge frame too, so the
+	// bound does not depend on who asks.
+	b.tables.mu.Lock()
+	btbl := b.tables.m[terms.SID]
+	err := btbl.recordChallenge(1, uint32(0))
+	b.tables.mu.Unlock()
+	if err == nil {
+		t.Fatal("the other seat would reopen a hand it had already recomputed")
+	}
+
+	// The verdict survives a restart, or the bound lasts only as long as the
+	// process does.
+	dir := filepath.Dir(a.tables.store.dir)
+	back := h.restart(t, dir, "tok-a")
+	back.tables.mu.Lock()
+	got := back.tables.m[terms.SID].judged[1]
+	back.tables.mu.Unlock()
+	if got != verdictClean {
+		t.Fatalf("after a restart hand 1's verdict is %q, want %q", got, verdictClean)
+	}
+}
+
+// Taking one refuser's bond does not close a hand another seat is still short
+// on: one refuser being paid for must not launder the rest of them.
+func TestTakingOneBondDoesNotLaunderTheOtherRefusers(t *testing.T) {
+	h := newHub(t)
+	inv := testInvite(3)
+	terms := inviteTerms(inv)
+	a := h.join(t, "tok-a")
+	b := h.join(t, "tok-b")
+	c := h.join(t, "tok-c")
+	peers := []*plugin{a, b, c}
+	for _, p := range peers {
+		acceptInvite(t, p, inv)
+	}
+	waitFor(t, membership.Settled, peers...)
+
+	beacon := make([]byte, 32)
+	for i := range beacon {
+		beacon[i] = byte(i + 11)
+	}
+	for _, p := range peers {
+		p.tables.seat(terms.SID, beacon)
+	}
+
+	// A hand this peer holds a record of, built directly: the point here is
+	// which challenges close, and playing three seats out to a showdown would
+	// be a different test.
+	a.tables.mu.Lock()
+	atbl := a.tables.m[terms.SID]
+	mine, _ := atbl.form.OurSeat()
+	seats, _ := atbl.form.Seats()
+	atbl.bundles = map[uint64]*handBundle{1: {
+		hand:     &deck.Hand{Match: "m", Hand: 1, Pubs: make([]kyber.Point, len(seats))},
+		revealed: map[uint32]*deck.Secrets{},
+		view:     &schema.HandRecordView{Own: &schema.Secrets{}},
+	}}
+	atbl.openChal = map[uint64]uint32{1: mine}
+
+	// Two other seats have not revealed. One of their bonds is taken.
+	others := []uint32{}
+	for seat := range uint32(len(seats)) {
+		if seat != mine {
+			others = append(others, seat)
+		}
+	}
+	atbl.closeChallengesAfterTake(others[0])
+	stillOpen := atbl.challengeOpen()
+	a.tables.mu.Unlock()
+
+	if !stillOpen {
+		t.Fatal("taking one refuser's bond closed a hand another seat is still short on")
+	}
+
+	// And once every outstanding seat has paid, it closes.
+	a.tables.mu.Lock()
+	atbl.closeChallengesAfterTake(others[1])
+	closed := !atbl.challengeOpen()
+	verdict := atbl.judged[1]
+	a.tables.mu.Unlock()
+	if !closed {
+		t.Fatal("every outstanding seat paid its bond and the hand is still challenged")
+	}
+	if verdict != verdictUnanswered {
+		t.Fatalf("the closed hand's verdict is %q, want %q", verdict, verdictUnanswered)
 	}
 }

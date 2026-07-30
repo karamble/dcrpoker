@@ -37,6 +37,28 @@ import (
 // A challenged hand gives up its muck to the table that doubted it. That is the
 // price of being the hand somebody doubted, and it is paid by the challenger's
 // own cards too.
+//
+// A hand is answered for once. Every way a challenge can end is recorded as a
+// verdict and the hand is not reopened, because the settlement gate is what
+// makes an unbounded challenge worth something: each round of challenge, reveal,
+// clean, close would hold the table's money for a round trip while the
+// challenger owed nothing anybody could claim against - it discharges its own
+// reveal every time. One challenge per hand played is finite, and a losing
+// player who would rather everybody recovered their deposit than settle has
+// nothing to repeat.
+
+// The verdicts a challenge can end on. Every one of them is final: a hand that
+// has been answered for is not challenged again.
+const (
+	verdictClean = "clean"
+	verdictCheat = "cheat"
+	// verdictUnanswered is a hand nobody can recompute any more, because every
+	// seat still owing it has had its bond taken instead.
+	verdictUnanswered = "unanswered"
+	// verdictInconclusive is an audit that could not run at all - a transcript
+	// this peer cannot complete. The log says why; reopening would not.
+	verdictInconclusive = "inconclusive"
+)
 
 // handBundle is one settled hand held ready to answer for: the transcript as
 // this peer verified it, its own secrets, and whatever others have revealed.
@@ -236,6 +258,9 @@ func (tbl *table) challengeHand(hand uint64) ([]outgoing, error) {
 // recordChallenge files an open challenge, in memory, in the driver when one is
 // alive, and in the record.
 func (tbl *table) recordChallenge(hand uint64, by uint32) error {
+	if v := tbl.judged[hand]; v != "" {
+		return fmt.Errorf("hand %d has already been answered for (%s), and is not challenged again", hand, v)
+	}
 	if tbl.play != nil {
 		if err := tbl.play.OpenChallenge(hand, int(by)); err != nil {
 			return err
@@ -405,7 +430,7 @@ func (tbl *table) acceptSecrets(body schema.Secrets) []outgoing {
 			tbl.cheats = map[uint32]bool{}
 		}
 		tbl.cheats[seat] = true
-		tbl.closeChallenge(hand)
+		tbl.closeChallenge(hand, verdictCheat)
 		return nil
 	}
 	if err != nil {
@@ -457,15 +482,18 @@ func (tbl *table) maybeAudit(hand uint64) {
 	}
 
 	cards, err := deck.AuditedDeck(b.hand, secrets)
+	verdict := verdictInconclusive
 	var cheat *deck.Cheat
 	switch {
 	case err == nil:
+		verdict = verdictClean
 		b.cards = cards
 		log.Printf("pokerplugin: table %s: hand %d recomputed clean", tbl.terms.SID, hand)
 		tbl.note(eventAudited, fmt.Sprintf(
 			"hand %d recomputed clean from every seat's secrets; every proof told the truth", hand),
 			"", nil)
 	case errors.As(err, &cheat):
+		verdict = verdictCheat
 		seat := seatOfPub(b.hand.Pubs, cheat.By)
 		log.Printf("pokerplugin: table %s: hand %d: %v", tbl.terms.SID, hand, err)
 		tbl.note(eventCheat, fmt.Sprintf("hand %d: %s", hand, cheat.Reason), "", seat)
@@ -479,7 +507,7 @@ func (tbl *table) maybeAudit(hand uint64) {
 		log.Printf("pokerplugin: table %s: hand %d's audit could not run: %v", tbl.terms.SID, hand, err)
 		tbl.note(eventBlocked, fmt.Sprintf("hand %d's audit could not run: %v", hand, err), "", nil)
 	}
-	tbl.closeChallenge(hand)
+	tbl.closeChallenge(hand, verdict)
 }
 
 // seatOfPub finds which seat committed a card key.
@@ -496,26 +524,86 @@ func seatOfPub(pubs []kyber.Point, who kyber.Point) *uint32 {
 	return nil
 }
 
-// closeChallenge ends one challenge everywhere it is recorded.
-func (tbl *table) closeChallenge(hand uint64) {
+// closeChallenge ends one challenge and records what answered it.
+//
+// The verdict is what stops a hand being challenged for ever. A hand that has
+// been recomputed, or proven crooked, or paid for out of somebody's bond, has
+// had its answer - and reopening it would cost the table another round of
+// blocked settlement for nothing, which is a grief with no duty attached to it
+// because the challenger discharges its own reveal every time.
+func (tbl *table) closeChallenge(hand uint64, verdict string) {
 	delete(tbl.openChal, hand)
+	if tbl.judged == nil {
+		tbl.judged = map[uint64]string{}
+	}
+	tbl.judged[hand] = verdict
 	if tbl.play != nil {
 		tbl.play.CloseChallenge(hand)
 	}
 	_ = tbl.save()
 }
 
-// closeChallengesAfterTake ends every open challenge once a refusing seat's
-// bond has been taken: the refusal has been answered by the coin, and the
-// audit it blocked can never complete.
-func (tbl *table) closeChallengesAfterTake(seat uint32) {
-	if len(tbl.openChal) == 0 {
-		return
+// outstanding is every seat a challenged hand is still waiting on.
+func (tbl *table) outstanding(hand uint64) []uint32 {
+	b := tbl.bundles[hand]
+	if b == nil {
+		return nil
 	}
+	mine, haveMine := tbl.form.OurSeat()
+	var out []uint32
+	for seat := range len(b.hand.Pubs) {
+		s := uint32(seat)
+		if haveMine && s == mine {
+			if b.view != nil && b.view.Own != nil {
+				continue
+			}
+			out = append(out, s)
+			continue
+		}
+		if _, held := b.revealed[s]; !held {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// closeChallengesAfterTake ends the challenges a forfeited bond has answered.
+//
+// Only the hands whose every remaining reveal belongs to a seat whose bond has
+// been taken: nothing more can arrive for those, so their audit can never
+// complete and holding the table's money against them would be holding it for
+// ever. A hand another seat is also short on stays open, and that seat stays
+// owing - one refuser being paid for must not launder the rest of them.
+func (tbl *table) closeChallengesAfterTake(seat uint32) {
+	if tbl.forfeited == nil {
+		tbl.forfeited = map[uint32]bool{}
+	}
+	tbl.forfeited[seat] = true
+
 	for hand := range tbl.openChal {
-		log.Printf("pokerplugin: table %s: hand %d's challenge closes; seat %d's bond answered it",
-			tbl.terms.SID, hand, seat)
-		tbl.closeChallenge(hand)
+		left := tbl.outstanding(hand)
+		if len(left) == 0 {
+			// Nothing is missing, so the audit is what closes this.
+			continue
+		}
+		paid := true
+		for _, s := range left {
+			if !tbl.forfeited[s] {
+				paid = false
+				break
+			}
+		}
+		if !paid {
+			log.Printf("pokerplugin: table %s: hand %d stays challenged; seat %d's bond answered for "+
+				"it but %v have still not revealed", tbl.terms.SID, hand, seat, left)
+			continue
+		}
+		log.Printf("pokerplugin: table %s: hand %d's challenge closes; every seat still owing it "+
+			"has had its bond taken", tbl.terms.SID, hand)
+		tbl.note(eventClaimed, fmt.Sprintf(
+			"hand %d was never recomputed, and every seat that refused has paid its bond for it",
+			hand), "", seatp(int(seat)))
+		tbl.closeChallenge(hand, verdictUnanswered)
 	}
 }
 
@@ -530,7 +618,7 @@ func (tbl *table) caughtCheating(seat uint32) bool { return tbl.cheats[seat] }
 // challengeViews is every challenge this table has seen, for the panel.
 // Requires the registry lock.
 func (tbl *table) challengeViews() []challengeView {
-	if len(tbl.openChal) == 0 && len(tbl.bundles) == 0 {
+	if len(tbl.openChal) == 0 && len(tbl.judged) == 0 {
 		return nil
 	}
 	mine, haveMine := tbl.form.OurSeat()
@@ -542,6 +630,7 @@ func (tbl *table) challengeViews() []challengeView {
 		}
 		seen[hand] = true
 		cv := challengeView{Hand: hand, By: by, Open: open}
+		cv.Verdict = tbl.judged[hand]
 		b := tbl.bundles[hand]
 		if b != nil {
 			cv.Needs = len(b.hand.Pubs)
@@ -553,14 +642,13 @@ func (tbl *table) challengeViews() []challengeView {
 			}
 			sort.Slice(cv.Revealed, func(i, j int) bool { return cv.Revealed[i] < cv.Revealed[j] })
 			if b.cards != nil {
-				cv.Verdict = "clean"
 				cv.Cards = auditedCards(b, len(b.hand.Pubs))
 			}
 		}
-		if cv.Verdict == "" && !open {
+		if cv.Verdict == verdictCheat {
 			for seat := range tbl.cheats {
 				s := seat
-				cv.Verdict, cv.CheatSeat = "cheat", &s
+				cv.CheatSeat = &s
 				break
 			}
 		}
@@ -569,11 +657,9 @@ func (tbl *table) challengeViews() []challengeView {
 	for hand, by := range tbl.openChal {
 		add(hand, by, true)
 	}
-	// Closed ones still worth showing: anything audited or judged.
-	for hand, b := range tbl.bundles {
-		if b.cards != nil {
-			add(hand, 0, false)
-		}
+	// Closed ones still worth showing: every hand already answered for.
+	for hand := range tbl.judged {
+		add(hand, 0, false)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Hand < out[j].Hand })
 	return out

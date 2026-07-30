@@ -534,12 +534,24 @@ Ordered by what would bite first.
   delay and evidence rather than forfeiture. Taking it automatically would need a
   bond branch conditioned on something no script can judge.
 
-  Two smaller edges of the same mechanism. A challenge that arrives after the
-  settlement is already co-signed is answered voluntarily and enforced by
-  nothing, because there is no longer anything to withhold. And one open
-  challenge per challenger bounds the *rate* of muck exposure, not the total: a
-  player willing to publish their own folds every hand can eventually publish
-  everybody's.
+  A challenge that arrives after the settlement is already co-signed is answered
+  voluntarily and enforced by nothing, because there is no longer anything to
+  withhold.
+
+  What bounds the mechanism is that **a hand is answered for once**. A verdict -
+  recomputed clean, proven crooked, or paid for out of the bonds of every seat
+  that refused it - is recorded and persisted, and the hand is never challenged
+  again. Without that the loop is free and profitable: each turn of challenge,
+  reveal, clean, close blocks the payout for a round trip while the challenger
+  discharges its own reveal every time and so never owes anything anybody could
+  claim against. A losing player would rather everyone recovered their own
+  deposit than settle, and the stake's refund branch is unilateral after
+  `csvBlocks` - so an unbounded settlement block is a strategy, not a nuisance.
+  One challenge per hand played is finite, and it still leaves the mechanism
+  wholly available.
+
+  It also bounds the muck: the exposure ceiling is the hands actually played,
+  and a challenger pays its own folds exactly once for each hand it opens.
 
 - **Stale checkpoints are not punishable.** A peer holds every checkpoint it ever
   signed and nothing stops it settling on an old one. Decrementing timelocks or

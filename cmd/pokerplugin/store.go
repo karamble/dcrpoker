@@ -81,12 +81,23 @@ type record struct {
 	// the settlement it blocks both survive a restart. The secrets
 	// themselves live in the hands area.
 	Challenges []recordedChallenge `json:"challenges,omitempty"`
+	// Judged is every hand already answered for. A challenge blocks the
+	// payout while it is open, and a hand that could be reopened for ever
+	// would be a way to hold the table's money without ever owing anything.
+	Judged []recordedVerdict `json:"judged,omitempty"`
 }
 
 // recordedChallenge is one open challenge.
 type recordedChallenge struct {
 	Hand uint64 `json:"hand"`
 	By   uint32 `json:"by"`
+}
+
+// recordedVerdict is a hand a challenge has already answered for. Kept so a
+// restart cannot turn one hand into an unbounded supply of challenges.
+type recordedVerdict struct {
+	Hand    uint64 `json:"hand"`
+	Verdict string `json:"verdict"`
 }
 
 // recordedAccusation is one answer and the signatures gathered for it.

@@ -87,9 +87,16 @@ type table struct {
 	// who challenged it - persisted, because the reveal it obliges and the
 	// settlement it blocks must survive a restart. cheats is the seats an
 	// audit has named.
-	bundles  map[uint64]*handBundle
-	openChal map[uint64]uint32
-	cheats   map[uint32]bool
+	// judged is every hand a challenge has already answered for, and how -
+	// persisted, because a hand that could be re-challenged after a restart
+	// could be re-challenged for ever. forfeited is the seats whose bonds
+	// have been taken, so a challenge nobody can answer any more can be told
+	// apart from one somebody is still refusing.
+	bundles   map[uint64]*handBundle
+	openChal  map[uint64]uint32
+	judged    map[uint64]string
+	cheats    map[uint32]bool
+	forfeited map[uint32]bool
 
 	// replyWith is what adopting a message decided to say back, collected
 	// because the adopt path returns an error rather than frames.
@@ -482,6 +489,9 @@ func (tbl *table) record() *record {
 	for hand, by := range tbl.openChal {
 		rec.Challenges = append(rec.Challenges, recordedChallenge{Hand: hand, By: by})
 	}
+	for hand, verdict := range tbl.judged {
+		rec.Judged = append(rec.Judged, recordedVerdict{Hand: hand, Verdict: verdict})
+	}
 	if len(tbl.bonded) > 0 {
 		rec.Bonded = make(map[uint32]string, len(tbl.bonded))
 		for seat, outpoint := range tbl.bonded {
@@ -673,6 +683,12 @@ func (tbl *table) resume(rec *record) error {
 			tbl.openChal = map[uint64]uint32{}
 		}
 		tbl.openChal[c.Hand] = c.By
+	}
+	for _, j := range rec.Judged {
+		if tbl.judged == nil {
+			tbl.judged = map[uint64]string{}
+		}
+		tbl.judged[j.Hand] = j.Verdict
 	}
 	for i, wj := range rec.Joins {
 		j, err := wj.Into()
