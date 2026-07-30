@@ -471,3 +471,79 @@ func TestTakingOneBondDoesNotLaunderTheOtherRefusers(t *testing.T) {
 		t.Fatalf("the closed hand's verdict is %q, want %q", verdict, verdictUnanswered)
 	}
 }
+
+// A hand that failed to reproduce is not paid out, even though its challenge is
+// closed and nobody can be named for it.
+//
+// The closed challenge is right: every reveal is in and nobody owes anything, so
+// nobody is accused. What must not follow is the payout - there is no bond to
+// take for an unattributed break, so refusing to settle is the whole of the
+// answer, and each seat's stake goes back the way it always can.
+func TestAHandThatDidNotReproduceIsNotPaidOut(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+
+	sayWhereToPay(t, h, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+	getUp(t, h, terms.SID, a)
+	waitOver(t, h, terms.SID, a, b)
+
+	a.tables.mu.Lock()
+	defer a.tables.mu.Unlock()
+	atbl := a.tables.m[terms.SID]
+
+	// The verdict a failed recomputation leaves, with no challenge open and no
+	// seat named: exactly the state the audit reaches on a *deck.Wrong.
+	atbl.judged = map[uint64]string{1: verdictWrong}
+	if atbl.challengeOpen() {
+		t.Fatal("this is meant to test a closed challenge")
+	}
+	if !atbl.resultInDoubt() {
+		t.Fatal("a hand that did not reproduce leaves the result settled")
+	}
+	if out := atbl.proposeSettlement(); len(out) != 0 {
+		t.Fatal("a table with a hand that did not reproduce proposed a payout")
+	}
+	if out := atbl.proposeReleases(); len(out) != 0 {
+		t.Fatal("a table with a hand that did not reproduce released a bond")
+	}
+
+	// An inconclusive audit is the other case and must not block anything: it
+	// says nothing about the hand, only that this peer could not finish asking.
+	atbl.judged = map[uint64]string{1: verdictInconclusive}
+	if atbl.resultInDoubt() {
+		t.Fatal("an audit that could not run is holding the table's money")
+	}
+	if out := atbl.proposeSettlement(); len(out) == 0 {
+		t.Fatal("an inconclusive audit blocked the payout")
+	}
+}
+
+// A named cheat holds the payout too. Withholding only that seat's bond while
+// paying out the stacks its rigged hand produced answers the smaller half.
+func TestAProvenCheatIsNotPaidOutEither(t *testing.T) {
+	h := newHub(t)
+	a, b, terms := dealingTable(t, h)
+	waitBetting(t, a, b)
+
+	sayWhereToPay(t, h, a, b)
+	playHand(t, h, terms.SID, checkOrCall, a, b)
+	waitSettled(t, terms.SID, 1, a, b)
+	getUp(t, h, terms.SID, a)
+	waitOver(t, h, terms.SID, a, b)
+
+	a.tables.mu.Lock()
+	defer a.tables.mu.Unlock()
+	atbl := a.tables.m[terms.SID]
+	atbl.judged = map[uint64]string{1: verdictCheat}
+	atbl.cheats = map[uint32]bool{theirSeat(t, atbl): true}
+
+	if out := atbl.proposeSettlement(); len(out) != 0 {
+		t.Fatal("a table with a proven crooked hand proposed a payout")
+	}
+	if out := atbl.proposeReleases(); len(out) != 0 {
+		t.Fatal("a table with a proven crooked hand released a bond")
+	}
+}

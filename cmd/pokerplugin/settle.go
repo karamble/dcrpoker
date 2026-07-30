@@ -614,9 +614,9 @@ func (tbl *table) proposeSettlement() []outgoing {
 	if tbl.play == nil || !tbl.play.Over() || tbl.settled {
 		return nil
 	}
-	if tbl.challengeOpen() {
-		// A challenged hand is a result being checked. Settling before the
-		// audit answers would pay out the thing in doubt.
+	if tbl.resultInDoubt() {
+		// A challenged hand is a result being checked, and a hand that failed
+		// to reproduce is one already answered against. Neither is paid out.
 		return nil
 	}
 	d, err := tbl.settleDraft()
@@ -687,8 +687,9 @@ func (tbl *table) adoptSettlement(ctx context.Context, body schema.Settle) []out
 	if tbl.play == nil {
 		return nil
 	}
-	if tbl.challengeOpen() {
-		tbl.note(eventRefused, "a settlement arrived while a hand is challenged, and was not signed", "", nil)
+	if tbl.resultInDoubt() {
+		tbl.note(eventRefused,
+			"a settlement arrived for a table with a hand in doubt, and was not signed", "", nil)
 		return nil
 	}
 	d, err := tbl.settleDraft()

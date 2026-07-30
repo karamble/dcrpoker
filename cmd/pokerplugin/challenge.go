@@ -52,11 +52,16 @@ import (
 const (
 	verdictClean = "clean"
 	verdictCheat = "cheat"
+	// verdictWrong is a hand that did not reproduce with nobody to name for
+	// it. Nothing is paid out on one: there is no bond to take, so refusing
+	// to settle is the whole of the answer.
+	verdictWrong = "wrong"
 	// verdictUnanswered is a hand nobody can recompute any more, because every
 	// seat still owing it has had its bond taken instead.
 	verdictUnanswered = "unanswered"
 	// verdictInconclusive is an audit that could not run at all - a transcript
-	// this peer cannot complete. The log says why; reopening would not.
+	// this peer cannot complete, which says nothing about the hand. The log
+	// says why; reopening would not, and it holds nothing up.
 	verdictInconclusive = "inconclusive"
 )
 
@@ -484,6 +489,7 @@ func (tbl *table) maybeAudit(hand uint64) {
 	cards, err := deck.AuditedDeck(b.hand, secrets)
 	verdict := verdictInconclusive
 	var cheat *deck.Cheat
+	var wrong *deck.Wrong
 	switch {
 	case err == nil:
 		verdict = verdictClean
@@ -503,6 +509,15 @@ func (tbl *table) maybeAudit(hand uint64) {
 			}
 			tbl.cheats[uint32(*seat)] = true
 		}
+	case errors.As(err, &wrong):
+		// The audit ran and disagreed, and no seat's own secrets account for
+		// it. Nobody's bond can answer that, so the only answer left is that
+		// this hand is not paid out.
+		verdict = verdictWrong
+		log.Printf("pokerplugin: table %s: hand %d did not reproduce: %v", tbl.terms.SID, hand, err)
+		tbl.note(eventWrong, fmt.Sprintf(
+			"hand %d did not reproduce and no seat can be named for it: %s; nothing settles on it",
+			hand, wrong.Reason), "", nil)
 	default:
 		log.Printf("pokerplugin: table %s: hand %d's audit could not run: %v", tbl.terms.SID, hand, err)
 		tbl.note(eventBlocked, fmt.Sprintf("hand %d's audit could not run: %v", hand, err), "", nil)
@@ -611,6 +626,30 @@ func (tbl *table) closeChallengesAfterTake(seat uint32) {
 // While one is, this peer signs no settlement and no release: nothing gets
 // paid until the table has answered for itself.
 func (tbl *table) challengeOpen() bool { return len(tbl.openChal) > 0 }
+
+// resultInDoubt reports whether anything here must not be paid out.
+//
+// A challenge still waiting on reveals, or a hand that has already been
+// recomputed and disagreed. The second is not the same as the challenge being
+// open - every reveal is in and the duty is discharged, so nobody is accused
+// any more - but a result the table itself has disproved is not one to settle
+// on, and the stakes go back the way they always can: each seat's own refund,
+// after its own timelock.
+//
+// A named cheat counts too. Withholding only that seat's bond release, while
+// paying out the stacks its rigged hand produced, would be answering the smaller
+// half of it.
+func (tbl *table) resultInDoubt() bool {
+	if tbl.challengeOpen() {
+		return true
+	}
+	for _, v := range tbl.judged {
+		if v == verdictWrong || v == verdictCheat {
+			return true
+		}
+	}
+	return false
+}
 
 // caughtCheating reports whether the audit named this seat.
 func (tbl *table) caughtCheating(seat uint32) bool { return tbl.cheats[seat] }

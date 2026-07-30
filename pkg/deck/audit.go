@@ -108,12 +108,30 @@ func (c *Cheat) Error() string {
 	return "player " + k[:16] + " " + c.Reason
 }
 
+// Wrong is a hand that did not reproduce.
+//
+// The audit ran to the end and what it recomputed is not what the table played,
+// and no seat can be named for it: every published deck matched its author's own
+// secrets and every published share matched its author's own key, and the result
+// is still not the one the hand acted on. That is a break of the kind this whole
+// file exists to catch, and it is separate from a *Cheat because there is nobody
+// to take a bond from - and separate from a plain error because a plain error is
+// a transcript this peer cannot complete, which is a different thing entirely
+// from one it completed and disagreed with.
+//
+// Nobody should be paid out on a hand that did not reproduce, whether or not it
+// can be attributed.
+type Wrong struct{ Reason string }
+
+func (w *Wrong) Error() string { return w.Reason }
+
 // Audit replays a hand's deck from the transcript and the published secrets.
 //
-// Returns nil if the hand was honest, a *Cheat naming the player who broke it,
-// or a plain error if the transcript is malformed or incomplete. The three are
-// different things: an incomplete transcript is a bug or a missing message, and
-// only a *Cheat is an accusation.
+// Four outcomes, and they must not be run together. nil is an honest hand. A
+// *Cheat names the player who broke it. A *Wrong is a hand that did not
+// reproduce with nobody to name for it. A plain error is a transcript this peer
+// cannot complete, which says nothing about the hand at all - only a *Cheat is
+// an accusation, and only a plain error is safe to shrug at.
 //
 // Note what is *not* consulted: Step.Proof. The audit recomputes each shuffle
 // from its author's own secrets and compares against what they published. If
@@ -204,12 +222,15 @@ func audit(h *Hand, secrets []*Secrets) ([]Card, error) {
 		if err != nil {
 			// Unreachable if every shuffle above checked out, because a
 			// re-masked permutation of a valid deck is a valid deck. If it
-			// ever fires, this package is wrong rather than a player.
-			return nil, fmt.Errorf("slot %d of the final deck is not a card, "+
-				"which every shuffle checking out should have made impossible: %w", i, err)
+			// ever fires this package is wrong rather than a player - and it is
+			// still a hand that did not reproduce, so it is still not a hand
+			// anybody should be paid out on.
+			return nil, &Wrong{Reason: fmt.Sprintf("slot %d of the final deck is not a card, "+
+				"which every shuffle checking out should have made impossible: %v", i, err)}
 		}
 		if seen[card] {
-			return nil, fmt.Errorf("the final deck holds card %d twice despite every shuffle checking out", card)
+			return nil, &Wrong{Reason: fmt.Sprintf(
+				"the final deck holds card %d twice despite every shuffle checking out", card)}
 		}
 		seen[card] = true
 		cards[i] = card
@@ -220,13 +241,18 @@ func audit(h *Hand, secrets []*Secrets) ([]Card, error) {
 		if s.Slot < 0 || s.Slot >= len(cards) {
 			return nil, fmt.Errorf("the hand acted on slot %d of a %d card deck", s.Slot, len(cards))
 		}
-		if s.Card != cards[s.Slot] {
-			return nil, fmt.Errorf("the table played slot %d as card %d when it was card %d",
-				s.Slot, s.Card, cards[s.Slot])
-		}
-		// Attribute it, if a published share is what made it wrong.
+		// Attribution first, because a card that came out wrong was made wrong
+		// by a share or by a shuffle, the shuffles are all attributed above, and
+		// so this is where the rest of the blame lives. Checked before the
+		// comparison rather than after it: after it, the only path that reaches
+		// this is the one where nothing is wrong.
 		if err := auditShares(h, deck[s.Slot], s, secrets); err != nil {
 			return nil, err
+		}
+		if s.Card != cards[s.Slot] {
+			return nil, &Wrong{Reason: fmt.Sprintf(
+				"the table played slot %d as card %d when it was card %d",
+				s.Slot, s.Card, cards[s.Slot])}
 		}
 	}
 	return cards, nil

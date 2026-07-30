@@ -364,6 +364,17 @@ What a seat cannot do is reveal dishonestly and be believed: the secrets must
 reproduce the deck that seat itself signed, so a false reveal is the proof
 rather than an escape. What it *can* do is documented in section 8.
 
+The audit has four outcomes and they must not be run together. A clean
+recomputation settles the doubt. A **named seat** - its own secrets do not
+produce the deck or the share it published - is an attribution, and its bond is
+withheld. A hand that **did not reproduce with nobody to name**, every seat's
+secrets checking out and the result still wrong, is the case the unsound
+dependency would actually produce: there is no bond to take, so the only answer
+left is that the hand is not paid out, and each stake goes back through its own
+refund. And an audit that **could not run at all** - a transcript this peer
+cannot complete - says nothing about the hand and holds nothing up. Collapsing
+the last two would let a hand the audit just disproved settle anyway.
+
 ### Faults: attributable and subjective
 
 These must never be mixed.
@@ -528,11 +539,17 @@ Ordered by what would bite first.
 
 - **A revealed-and-caught cheat is named, not confiscated from.** The audit runs
   on challenge and it works (section 5), but revealing dishonestly still
-  discharges the reveal: the punishment is the proof itself, plus every honest
-  peer refusing to co-sign that seat's bond release. A release needs every
-  member, so one withholder pins the bond until the week-long backstop - which is
-  delay and evidence rather than forfeiture. Taking it automatically would need a
-  bond branch conditioned on something no script can judge.
+  discharges the reveal: the punishment is the proof itself, every honest peer
+  refusing to co-sign that seat's bond release, and nothing being paid out on the
+  hand at all. A release needs every member, so one withholder pins the bond
+  until the week-long backstop - which is delay, evidence and an unsettled table
+  rather than forfeiture. Taking it automatically would need a bond branch
+  conditioned on something no script can judge.
+
+  So a table with a hand in doubt ends in refunds rather than a payout, and that
+  is the intended outcome: everybody recovers their own stake through the branch
+  that needs nobody's cooperation. It is also why the challenge itself has to be
+  bounded - see below.
 
   A challenge that arrives after the settlement is already co-signed is answered
   voluntarily and enforced by nothing, because there is no longer anything to

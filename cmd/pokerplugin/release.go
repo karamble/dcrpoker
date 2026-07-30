@@ -73,9 +73,10 @@ func (tbl *table) proposeReleases() []outgoing {
 	if tbl.play == nil || !tbl.play.Over() || tbl.session == nil {
 		return nil
 	}
-	if tbl.challengeOpen() {
-		// Once a bond is back, refusing a challenge costs its owner
-		// nothing - so no bond goes back while one is open.
+	if tbl.resultInDoubt() {
+		// Once a bond is back, refusing a challenge costs its owner nothing -
+		// so no bond goes back while one is open, nor while a hand stands
+		// disproved.
 		return nil
 	}
 	seats, ok := tbl.form.Seats()
@@ -212,8 +213,9 @@ func (tbl *table) adoptRelease(ctx context.Context, body schema.Release) []outgo
 	if tbl.play == nil {
 		return nil
 	}
-	if tbl.challengeOpen() {
-		tbl.note(eventRefused, "a bond release arrived while a hand is challenged, and was not signed", "", nil)
+	if tbl.resultInDoubt() {
+		tbl.note(eventRefused,
+			"a bond release arrived for a table with a hand in doubt, and was not signed", "", nil)
 		return nil
 	}
 	if tbl.caughtCheating(body.Seat) {

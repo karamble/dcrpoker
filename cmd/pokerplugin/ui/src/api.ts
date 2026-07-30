@@ -151,6 +151,7 @@ export type ChainEvent = {
     | 'challenged'
     | 'audited'
     | 'cheat'
+    | 'wrong'
   text: string
   txid?: string
   seat?: number

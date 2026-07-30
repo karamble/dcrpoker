@@ -353,3 +353,61 @@ func TestAuditedDeckOpensEveryCard(t *testing.T) {
 		seen[c] = true
 	}
 }
+
+// A bad share for a card the hand acted on names the seat that published it.
+//
+// A wrong opened card is caused by a bad share or a bad shuffle, and the
+// shuffles are all attributed already - so the share is where the rest of the
+// blame lives. Checked before the card comparison, because after it the only
+// path that reaches the share check is the one where nothing is wrong.
+func TestABadShareForAnActedOnCardNamesItsSeat(t *testing.T) {
+	h, secrets := play(t, 3)
+
+	// Slot 0 opened. An honest share for a card is that seat's key applied to
+	// the card's own C1, so every other seat's is built that way and seat 1's
+	// is not.
+	final := h.Steps[len(h.Steps)-1].Deck
+	shares := make([]kyber.Point, 3)
+	for i := range shares {
+		shares[i] = suite.Point().Mul(secrets[i].Key, final[0].C1)
+	}
+	shares[1] = suite.Point().Mul(suite.Scalar().SetInt64(3), final[0].C1)
+	// The card the table claims to have read is also wrong, which is what a
+	// bad share produces - and is exactly the case that used to come back
+	// unattributed.
+	h.Shown = []Shown{{Slot: 0, Card: Card(7), Shares: shares}}
+
+	var cheat *Cheat
+	err := Audit(h, secrets)
+	if !errors.As(err, &cheat) {
+		t.Fatalf("a bad share for an acted-on card came back as %v, want a cheat naming seat 1", err)
+	}
+	if !cheat.By.Equal(h.Pubs[1]) {
+		t.Fatal("the cheat names the wrong seat")
+	}
+}
+
+// A hand that does not reproduce with every share and every shuffle checking
+// out is a *Wrong, not a plain error: the audit ran and disagreed, which is a
+// different thing from a transcript it could not complete.
+func TestAHandThatDoesNotReproduceIsWrongRatherThanUnreadable(t *testing.T) {
+	h, secrets := play(t, 2)
+
+	cards, err := AuditedDeck(h, secrets)
+	if err != nil {
+		t.Fatalf("an honest hand did not audit: %v", err)
+	}
+	// The table claims a card that is not the one at that slot, and publishes
+	// no shares to blame it on.
+	h.Shown = []Shown{{Slot: 4, Card: (cards[4] + 1) % Size}}
+
+	err = Audit(h, secrets)
+	var wrong *Wrong
+	if !errors.As(err, &wrong) {
+		t.Fatalf("a hand that did not reproduce came back as %v (%T), want a *Wrong", err, err)
+	}
+	var cheat *Cheat
+	if errors.As(err, &cheat) {
+		t.Fatal("a hand nobody can be named for named somebody")
+	}
+}

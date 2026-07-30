@@ -28,6 +28,7 @@ const wording: Record<ChainEvent['kind'], string> = {
   challenged: 'Hand challenged',
   audited: 'Hand recomputed clean',
   cheat: 'Cheating proven',
+  wrong: 'Hand did not reproduce',
 }
 
 export function OnChain({
@@ -49,7 +50,10 @@ export function OnChain({
       <h2>On the chain</h2>
 
       {challenges.map((ch) => (
-        <div key={`ch${ch.hand}`} className={ch.verdict === 'cheat' ? 'banner' : 'banner calm'}>
+        <div
+          key={`ch${ch.hand}`}
+          className={ch.verdict === 'cheat' || ch.verdict === 'wrong' ? 'banner' : 'banner calm'}
+        >
           {ch.open ? (
             <>
               <div>
@@ -60,6 +64,14 @@ export function OnChain({
                 {ch.revealed?.length ?? 0} of {ch.needs} seats have revealed
               </div>
             </>
+          ) : ch.verdict === 'wrong' ? (
+            <div>
+              <strong className="alarm">Hand {ch.hand} did not reproduce.</strong>{' '}
+              Every seat's secrets matched what that seat published, and the hand still
+              does not recompute to the result it was played as. Nobody can be named for
+              it, so nothing settles on this table and each stake goes back to whoever
+              paid it.
+            </div>
           ) : ch.verdict === 'cheat' ? (
             <div>
               <strong className="alarm">
@@ -164,7 +176,7 @@ export function OnChain({
             <li className="event" key={i}>
               <span className={`pip ${e.kind}`} />
               <span className="event-text">
-                <span className={e.kind === 'unanswerable' || e.kind === 'cheat' ? 'alarm' : undefined}>
+                <span className={e.kind === 'unanswerable' || e.kind === 'cheat' || e.kind === 'wrong' ? 'alarm' : undefined}>
                   {wording[e.kind] ?? e.kind}
                 </span>
                 {' — '}

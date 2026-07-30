@@ -269,6 +269,10 @@ const (
 	eventChallenged = "challenged"
 	eventAudited    = "audited"
 	eventCheat      = "cheat"
+	// eventWrong is a hand that did not reproduce with nobody to name for it.
+	// Alarming like a cheat, and deliberately not the same word: no seat has
+	// been proven to have done anything.
+	eventWrong = "wrong"
 )
 
 // maxEvents is how much of a table's history is kept.
