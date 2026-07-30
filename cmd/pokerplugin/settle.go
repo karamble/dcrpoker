@@ -148,48 +148,6 @@ func (tbl *table) accuseChain(seat uint32) ([]*wire.MsgTx, []byte, error) {
 		"seat %d's bond sits at %s, which no agreed accusation reaches", seat, outpoint)
 }
 
-// accuseDraft describes an accusation: a seat's bond moved into the claimed bond,
-// where that seat has the window to answer.
-//
-// Nothing about who gets paid, because an accusation pays nobody - which also
-// means it can be built at a table where somebody has not yet said where to pay
-// them, unlike the claim it replaces.
-//
-// The value is read off the ladder, not assumed: every answer costs the bond a
-// fee, so a bond that has moved holds less than it was posted with, and an
-// accusation naming the posted amount would spend more than is there.
-func (tbl *table) accuseDraft(seat uint32) (escrow.AccuseDraft, []byte, error) {
-	outpoint := tbl.bondedAt[seat]
-	if outpoint == "" {
-		outpoint = tbl.bonded[seat]
-	}
-	if outpoint == "" {
-		return escrow.AccuseDraft{}, nil, fmt.Errorf("seat %d has no bond on the chain", seat)
-	}
-	prevout, err := outpointOf(outpoint)
-	if err != nil {
-		return escrow.AccuseDraft{}, nil, err
-	}
-	r, err := tbl.bondLadder(seat)
-	if err != nil {
-		return escrow.AccuseDraft{}, nil, err
-	}
-	for _, a := range r.accuse {
-		if a.TxIn[0].PreviousOutPoint != prevout {
-			continue
-		}
-		return escrow.AccuseDraft{
-			Bond:       r.script,
-			Prevout:    prevout,
-			ValueAtoms: a.TxIn[0].ValueIn,
-			FeeAtoms:   claimFee,
-			Params:     tbl.netParams,
-		}, r.script, nil
-	}
-	return escrow.AccuseDraft{}, nil, fmt.Errorf(
-		"seat %d's bond sits at %s, which no agreed accusation reaches", seat, outpoint)
-}
-
 // rungs is every position a seat's bond can occupy and how it moves between
 // them.
 //

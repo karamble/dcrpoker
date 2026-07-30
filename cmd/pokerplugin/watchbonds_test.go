@@ -174,17 +174,18 @@ func TestAPeerFindsAnotherSeatsMovedBond(t *testing.T) {
 	}
 
 	// What is derived from the position follows it: the next accusation spends
-	// the moved bond and names what that output actually holds.
-	d, _, err := tbl.accuseDraft(theirs)
+	// the moved bond and names what that output actually holds - two fees less
+	// than it was posted with, one for the accusation and one for the answer.
+	chain, _, err := tbl.accuseChain(theirs)
 	if err != nil {
-		t.Fatalf("accuseDraft: %v", err)
+		t.Fatalf("accuseChain: %v", err)
 	}
-	if got := d.Prevout.String(); got != positions[1] {
+	if got := chain[0].TxIn[0].PreviousOutPoint.String(); got != positions[1] {
 		t.Fatalf("the next accusation spends %s, and the bond sits at %s", got, positions[1])
 	}
-	if want := int64(escrow.MinBondAtoms) - 2*claimFee; d.ValueAtoms != want {
+	if want := int64(escrow.MinBondAtoms) - 2*claimFee; chain[0].TxIn[0].ValueIn != want {
 		t.Fatalf("the next accusation names %d atoms, and the answered bond holds %d",
-			d.ValueAtoms, want)
+			chain[0].TxIn[0].ValueIn, want)
 	}
 	_ = ours
 }
