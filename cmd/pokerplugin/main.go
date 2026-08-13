@@ -47,8 +47,23 @@ func main() {
 		debug   = flag.Bool("debug", false, "log the transport: stream connections, and frames dropped and why")
 		dataDir = flag.String("datadir", "/data/poker", "where this game keeps its identity")
 		network = flag.String("network", "mainnet", "the chain this plays on")
+
+		// Asked by the release script, which needs to know what got embedded
+		// into this file rather than what the tree looked like at the time.
+		// It answers before anything is loaded, so it works on a binary that
+		// has never been configured.
+		checkUI = flag.Bool("check-interface", false, "report whether the interface is baked in, and exit")
 	)
 	flag.Parse()
+
+	if *checkUI {
+		if !uiBuilt() {
+			fmt.Println("interface: placeholder")
+			os.Exit(1)
+		}
+		fmt.Println("interface: built")
+		return
+	}
 
 	// How to reach the bridge, asked for on the first run and remembered.
 	// A terminal is what makes the asking possible, so a service manager

@@ -28,31 +28,19 @@ cd "$here"
 CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
   -trimpath -ldflags "-s -w" -o "$binary" ./cmd/pokerplugin
 
-# Ask the binary itself. Reading the source tree would only prove the tree was
-# right at some point, and this is a check on the artifact.
+# Ask the artifact, not the tree. A tree that was right at some point says
+# nothing about what got embedded into this file.
+#
+# It used to be asked by starting it and calling /health. That route went with
+# the portal that polled it, and the binary now needs a configured bridge before
+# it will start - so it answers this one flag before loading anything, and a
+# release that shipped the placeholder would be signed and would serve a page
+# explaining itself.
 if [[ "$goos" == "$(go env GOHOSTOS)" && "$goarch" == "$(go env GOHOSTARCH)" ]]; then
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-
-  "$binary" --bridge "http://127.0.0.1:1/gaming" --token check \
-    --listen "127.0.0.1:8791" --datadir "$tmp" --network simnet >"$tmp/log" 2>&1 &
-  pid=$!
-  trap 'kill "$pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
-
-  ui=""
-  for _ in $(seq 1 50); do
-    if ui="$(curl -fsS "http://127.0.0.1:8791/health" 2>/dev/null | sed -n 's/.*"ui":"\([a-z]*\)".*/\1/p')"; then
-      [[ -n "$ui" ]] && break
-    fi
-    sleep 0.2
-  done
-  kill "$pid" 2>/dev/null || true
-
-  if [[ "$ui" != "built" ]]; then
-    echo "build-pokerplugin: the binary reports its interface as '${ui:-unknown}', not 'built'" >&2
+  if ! "$binary" --check-interface; then
+    echo "build-pokerplugin: this binary would serve the placeholder page" >&2
     exit 1
   fi
-  echo "build-pokerplugin: the binary confirms its interface is baked in"
 else
   echo "build-pokerplugin: cross-built for $goos/$goarch, so the binary was not asked about its interface" >&2
 fi

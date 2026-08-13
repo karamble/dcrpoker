@@ -55,11 +55,20 @@ export function useHost(): Host {
 
   useEffect(() => {
     if (standalone()) {
-      // Nothing hands us a token here, so requests go out without one and
-      // the plugin answers 404 unless it is being run with its guard
-      // satisfied some other way. That is the right failure: it looks
-      // exactly like a route that is not there, which is what it is.
-      configure({ token: '' })
+      // The token is in the fragment of the URL the game printed when it
+      // started. A fragment rather than a query because it is never sent to
+      // a server and never lands in a log, and this page is the only thing
+      // that reads it.
+      //
+      // It is taken out of the address bar immediately afterwards, so a
+      // screenshot or a shoulder does not carry it, and so reloading from
+      // history does not resurrect a token from a previous run.
+      const fragment = new URLSearchParams(window.location.hash.slice(1))
+      const fromURL = fragment.get('token') ?? ''
+      if (fromURL) {
+        window.history.replaceState(null, '', window.location.pathname)
+      }
+      configure({ token: fromURL, apiBase: '.' })
       return
     }
 

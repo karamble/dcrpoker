@@ -50,7 +50,23 @@ result lands in `releases/`, which is gitignored.
 
 ### Running it
 
-The plugin does not run on its own. It runs inside dcrpulse's gaming sandbox,
-which supplies its bearer token and is its only route to the chain and to Bison
-Relay - see `interface.md` for how the two repositories fit together, and
+It runs on its own, wherever you like. What it needs is a dcrpulse gaming
+bridge to connect to: that is its only route to the chain and to Bison Relay,
+and it dials out to one rather than being reached, so this machine needs no
+inbound port.
+
+The first run asks for the bridge on the terminal - an address, a port, and the
+three certificates dcrpulse hands you when you generate this game a credential
+under Bison Relay > Gaming. It connects before it saves anything, so a
+configuration that was written is one that worked. Afterwards:
+
+```
+go run ./cmd/pokerplugin --datadir ~/.pokerplugin --network simnet
+```
+
+It prints a URL with a token in it. That is this game's own interface, on
+loopback, and the token is minted fresh each run - it is not the credential the
+bridge knows this game by, and the two never mix.
+
+See `interface.md` for how the two repositories fit together, and
 `trust-model.md` for what the arrangement is trying to guarantee.

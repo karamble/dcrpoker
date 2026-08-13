@@ -8,6 +8,7 @@ import { Money } from './table/Money'
 import { Progress } from './table/Progress'
 import { OnChain } from './table/OnChain'
 import { Provenance } from './table/Provenance'
+import { Seed } from './table/Seed'
 import { Verify } from './table/Verify'
 import { ActionBar } from './felt/ActionBar'
 import { Status } from './felt/Status'
@@ -205,6 +206,7 @@ export function App() {
           <>
             <Nothing ready={host.ready} error={state.error} />
             {host.ready && <Bond />}
+            {host.ready && <Seed />}
           </>
         ) : (
           <>

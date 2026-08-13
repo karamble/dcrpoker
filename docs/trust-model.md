@@ -588,10 +588,6 @@ Ordered by what would bite first.
   signed and nothing stops it settling on an old one. Decrementing timelocks or
   Lightning-style revocation each close it; neither is built.
 
-- **The table bond has no production reclaim path.** It can be posted and it can
-  be forfeited, but the backstop branch has no caller, so a bond from a table that
-  simply ended sits until somebody writes one.
-
 - **Short-handed continuation.** A table dissolves when somebody leaves, because
   the escrow, the bond and the roster all name the full membership - continuing
   without a seat means re-forming all three, which is a new table with carried

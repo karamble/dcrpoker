@@ -349,6 +349,35 @@ export const api = {
       body: JSON.stringify({ detach: true }),
     }),
   spend: (id: string) => call<Spend>(`spend?id=${encodeURIComponent(id)}`),
+
+  /** The seed this game plays as, shown to the person sitting at this machine
+   *  and to nobody else. It never crosses the bridge: there is no call for it
+   *  in the contract, and the dashboard is told only that a backup was taken.
+   *
+   *  The confirm header is what stops a stray fetch from carrying it off. It
+   *  is not a secret - it is a deliberate step, of the kind an accident does
+   *  not take. */
+  seedBackup: () =>
+    call<{ seedHex: string; bondOutpoint: string }>('identity/backup', {
+      headers: { 'X-Poker-Confirm': 'seed' },
+    }),
+
+  /** Says the person has written it down, so nothing asks again. Their word,
+   *  not a check: nothing here can verify what they copied. */
+  seedAcknowledge: () =>
+    call<{ acknowledged: boolean }>('identity/acknowledge', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  /** Takes a seed back, onto an empty data directory. Refused once this game
+   *  has sat at a table: two players holding one seed would both be asked to
+   *  sign, and the table would deadlock on which of them meant it. */
+  seedRestore: (seedHex: string, bondOutpoint: string) =>
+    call<{ restored: boolean; bondOutpoint: string }>('identity/restore', {
+      method: 'POST',
+      body: JSON.stringify({ seedHex, bondOutpoint }),
+    }),
 }
 
 /** Bond is the standing deposit that makes a seat cost something.
