@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -181,8 +182,8 @@ func TestARefusedRevealCostsTheBond(t *testing.T) {
 
 	for _, p := range []*plugin{a, b} {
 		addr := payoutAddress(t, p)
-		if code, body := post(t, p, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
-			t.Fatalf("/payout/set returned %d: %s", code, body)
+		if err := p.setPayout(context.Background(), addr); err != nil {
+			t.Fatalf("set the payout address: %v", err)
 		}
 	}
 	waitPayouts(t, terms.SID, a, b)

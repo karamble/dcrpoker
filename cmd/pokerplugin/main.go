@@ -104,6 +104,9 @@ func main() {
 		log.Fatalf("pokerplugin: %v", err)
 	}
 	go transport.Receive(ctx, frames, p.router)
+	// What the operator asked for, on the same stream. Nothing else can make
+	// this process do anything: the console has no route to it.
+	go p.serveBridgeRequests(ctx)
 	go p.watchChain(ctx)
 	go p.watchTables(ctx)
 	// Payments that were still in flight when this process last stopped. A
@@ -364,7 +367,6 @@ func (p *plugin) routes() http.Handler {
 
 	// Tables. Accepting an invitation is a user's decision, taken in the
 	// host's interface, so the host is what drives this.
-	mux.HandleFunc("/table/join", p.guard(p.handleJoin))
 	mux.HandleFunc("/table/leave", p.guard(p.handleLeave))
 	mux.HandleFunc("/table/challenge", p.guard(p.handleTableChallenge))
 	mux.HandleFunc("/tables", p.guard(p.handleTables))
@@ -381,12 +383,9 @@ func (p *plugin) routes() http.Handler {
 	// Where this player wants coin sent that it did not pay for itself: a
 	// share of somebody's forfeited bond, and settlement later. This process
 	// holds no wallet, so it has to be told.
-	mux.HandleFunc("/payout/set", p.guard(p.handlePayoutSet))
 	// What identities are called, said by the host at panel mint. Host-only
 	// for the same reason /payout/set is: it is the host's knowledge, and a
 	// page must not get to rewrite it.
-	mux.HandleFunc("/names/set", p.guard(p.handleNamesSet))
-	mux.HandleFunc("/payout", p.guard(p.handlePayoutSet))
 
 	// Playing. /table/hand is what a caller polls to know whose turn it is
 	// and what it may do; /table/act is the one place a person's decision
@@ -416,19 +415,16 @@ func (p *plugin) routes() http.Handler {
 
 	// Taking our own coin back out, once its lock has matured. The escape
 	// hatch that works when nothing else does.
-	mux.HandleFunc("/table/refund", p.guard(p.handleTableRefund))
-	mux.HandleFunc("/bond/sweep", p.guard(p.handleBondSweep))
 	// Three locks, three routes, because the coin behind each is held by a
 	// different key on a different clock: the stake by the session key for
 	// this table's CSV, the standing bond by the identity's bond key for the
 	// minimum, and this by the session key for a week.
-	mux.HandleFunc("/table/bond/sweep", p.guard(p.handleTableBondSweep))
 	// What is still locked at tables, and when each of it comes back.
-	mux.HandleFunc("/table/bonds", p.guard(p.handleTableBonds))
 
 	// The seed nothing can regenerate, and the one way to put it back.
 	mux.HandleFunc("/identity/backup", p.guard(p.handleIdentityBackup))
 	mux.HandleFunc("/identity/restore", p.guard(p.handleIdentityRestore))
+	mux.HandleFunc("/identity/acknowledge", p.guard(p.handleSeedAcknowledge))
 
 	// The bond, which is what makes a seat cost something. Without one this
 	// player cannot join anything.
@@ -461,42 +457,6 @@ func (p *plugin) guard(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
-}
-
-func (p *plugin) handleJoin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		Invite string `json:"invite"`
-		GCID   string `json:"gcid"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	inv, err := schema.ParseInvite(req.Invite)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	gcID := strings.ToLower(strings.TrimSpace(req.GCID))
-	if !gcIDRe.MatchString(gcID) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("gcid must be 64 hex characters"))
-		return
-	}
-
-	out, err := p.tables.join(inv, gcID, p.id)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	p.publish(p.ctx, out)
-
-	log.Printf("pokerplugin: joined table %s in group chat %s", inv.SID, gcID)
-	writeJSON(w, map[string]any{"sid": inv.SID, "tables": p.tables.snapshots()})
 }
 
 func (p *plugin) handleLeave(w http.ResponseWriter, r *http.Request) {

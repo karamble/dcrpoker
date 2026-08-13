@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/hex"
-	"net/http"
 	"strings"
 	"testing"
 
@@ -572,10 +571,9 @@ func TestASeatIsNamedByItsOwnAnnouncementAndTheHost(t *testing.T) {
 
 	// The host says what "them" is called, before the seat has even funded:
 	// order must not matter, since the mint and the funding race in life.
-	if code, body := post(t, p, "/names/set",
-		map[string]any{"names": map[string]string{"them": "alice"}}); code != http.StatusOK {
-		t.Fatalf("/names/set returned %d: %s", code, body)
-	}
+	// The operator's address book, pushed down the stream. It has no error
+	// path: a name is a label, and there is nothing here to refuse.
+	p.setNames(map[string]string{"them": "alice"})
 
 	seats, ok := p.tables.m[terms.SID].form.Seats()
 	if !ok {

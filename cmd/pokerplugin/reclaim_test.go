@@ -1,11 +1,11 @@
 package main
 
 import (
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/vctt94/pokerbisonrelay/pkg/gaming/gamingpb"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/membership"
 )
@@ -35,12 +35,14 @@ func TestATableBondComesBackOnItsOwnOnceTheLockMatures(t *testing.T) {
 	// the one thing a script engine cannot see, so a build that skipped this
 	// check would produce a transaction that verifies perfectly and that the
 	// network then refuses.
-	code, body := post(t, a, "/table/bond/sweep", map[string]any{"sid": terms.SID, "destAddr": dest})
-	if code == http.StatusOK {
+	_, err = a.doReclaim(&gamingpb.Reclaim{
+		Kind: gamingpb.Reclaim_TABLE_BOND, Sid: terms.SID, DestAddr: dest,
+	})
+	if err == nil {
 		t.Fatalf("swept a bond that is %d blocks short of its lock", membership.TableBondBlocks)
 	}
-	if !strings.Contains(body, "not spendable") {
-		t.Fatalf("the refusal should say the lock has not matured: %s", body)
+	if !strings.Contains(err.Error(), "not spendable") {
+		t.Fatalf("the refusal should say the lock has not matured: %v", err)
 	}
 
 	// Move the chain rather than the transaction.
@@ -49,9 +51,10 @@ func TestATableBondComesBackOnItsOwnOnceTheLockMatures(t *testing.T) {
 	h.mu.Unlock()
 
 	before := len(h.relayed())
-	code, body = post(t, a, "/table/bond/sweep", map[string]any{"sid": terms.SID, "destAddr": dest})
-	if code != http.StatusOK {
-		t.Fatalf("/table/bond/sweep returned %d: %s", code, body)
+	if _, err := a.doReclaim(&gamingpb.Reclaim{
+		Kind: gamingpb.Reclaim_TABLE_BOND, Sid: terms.SID, DestAddr: dest,
+	}); err != nil {
+		t.Fatalf("sweep the table bond: %v", err)
 	}
 	if got := h.relayed(); len(got) != before+1 {
 		t.Fatalf("relayed %d transactions, want one more than %d", len(got), before)

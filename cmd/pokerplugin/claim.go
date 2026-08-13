@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
@@ -255,37 +253,6 @@ func (tbl *table) announcePayout(addr string) []outgoing {
 		return nil
 	}
 	return tbl.payoutFrame(addr)
-}
-
-// handlePayoutSet records where this player wants to be paid, and tells every
-// table it is at.
-//
-// A GET reads it back. Not decoration: until every seat at a table has said
-// this, no claim there can be built at all, so whether it is set is an
-// obligation somebody has to be able to check rather than infer from a claim
-// that never appears.
-func (p *plugin) handlePayoutSet(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		writeJSON(w, map[string]any{"address": p.id.payoutAddress()})
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		Address string `json:"address"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := p.id.setPayout(req.Address, p.params); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	p.publish(r.Context(), p.tables.announcePayouts(p.id.payoutAddress()))
-	writeJSON(w, map[string]any{"address": p.id.payoutAddress()})
 }
 
 // announcePayouts tells every table this player is at where to pay it.

@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
@@ -366,64 +365,6 @@ func (t *tables) ourTableBond(sid string) (seat uint32, bond membership.TableBon
 	return seat, bond, outpoint, nil
 }
 
-// handleTableBondSweep takes this seat's forfeitable bond back on its own.
-//
-// The backstop branch: the owner alone, after the long lock. It is the way out
-// of a table that dissolved rather than ended - one that never dealt, or one
-// whose hand could not finish - where the cooperative release needs signatures
-// from peers who are no longer there to give them.
-//
-// Slow on purpose. The lock has to outlast the table by enough that nobody can
-// sit out their own claim window, so this is a week rather than the stake's few
-// hours. That is the price of a branch that needs nobody's agreement, and it is
-// the right trade for the one path that still works when nothing else does.
-func (p *plugin) handleTableBondSweep(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		SID      string `json:"sid"`
-		DestAddr string `json:"destAddr"`
-		FeeAtoms int64  `json:"feeAtoms"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	sid := strings.ToLower(strings.TrimSpace(req.SID))
-
-	seat, bond, outpoint, err := p.tables.ourTableBond(sid)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	script, err := hex.DecodeString(bond.ScriptHex)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("this seat's bond script: %w", err))
-		return
-	}
-	// The bond names the session key as its owner, because that is the key the
-	// roster seats. The identity's own bond key holds the standing deposit and
-	// could not spend this.
-	key, err := p.id.sessionKey(sid)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	txid, err := p.reclaim(r.Context(), outpoint, script, key, membership.TableBondBlocks,
-		escrow.BackstopSigScript, req.DestAddr, req.FeeAtoms)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-
-	p.tables.forgetTableBond(sid, seat)
-	log.Printf("pokerplugin: table %s: reclaimed seat %d's bond in %s", sid, seat, txid)
-	writeJSON(w, map[string]any{"sid": sid, "seat": seat, "txid": txid})
-}
-
 // forgetTableBond stops a table citing a bond it has spent.
 //
 // Same discipline as forgetStake: a table still announcing an output that is
@@ -439,104 +380,4 @@ func (t *tables) forgetTableBond(sid string, seat uint32) {
 	delete(tbl.bonded, seat)
 	delete(tbl.bondedAt, seat)
 	t.persist(tbl)
-}
-
-// handleTableBonds reports every table bond this player holds and when each
-// comes back.
-//
-// A list rather than a field on the table, because these outlive the table by a
-// week: the lock has to outlast the game by enough that nobody can sit out their
-// own claim window, so by the time one matures the table it belonged to is long
-// finished and would not be the place anybody looks. This is what the host's
-// Bonds screen is built from.
-func (p *plugin) handleTableBonds(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
-		return
-	}
-	type held struct {
-		SID       string `json:"sid"`
-		Seat      uint32 `json:"seat"`
-		Outpoint  string `json:"outpoint"`
-		Address   string `json:"address,omitempty"`
-		Atoms     int64  `json:"atoms,omitempty"`
-		MinBlocks uint32 `json:"minBlocks"`
-
-		Confirmations int64  `json:"confirmations,omitempty"`
-		Height        int64  `json:"height,omitempty"`
-		MaturesAt     int64  `json:"maturesAt,omitempty"`
-		BlocksLeft    int64  `json:"blocksLeft,omitempty"`
-		Spendable     bool   `json:"spendable,omitempty"`
-		Spent         bool   `json:"spent,omitempty"`
-		ChainErr      string `json:"chainErr,omitempty"`
-	}
-
-	// The outpoints first, under the lock, then the chain without it: one slow
-	// lookup must not stall every table.
-	type want struct {
-		sid      string
-		seat     uint32
-		outpoint string
-		address  string
-	}
-	var wants []want
-	p.tables.mu.Lock()
-	for sid, tbl := range p.tables.m {
-		seat, ok := tbl.form.OurSeat()
-		if !ok {
-			continue
-		}
-		outpoint := tbl.bondedAt[seat]
-		if outpoint == "" {
-			outpoint = tbl.bonded[seat]
-		}
-		if outpoint == "" {
-			continue
-		}
-		w := want{sid: sid, seat: seat, outpoint: outpoint}
-		if b, err := tbl.bond(seat, p.tables.params); err == nil {
-			w.address = b.Address
-		}
-		wants = append(wants, w)
-	}
-	p.tables.mu.Unlock()
-
-	sort.Slice(wants, func(i, j int) bool { return wants[i].sid < wants[j].sid })
-
-	ctx := r.Context()
-	tip, tipErr := p.bridge.ChainTip(ctx)
-	out := make([]held, 0, len(wants))
-	for _, w := range wants {
-		h := held{SID: w.sid, Seat: w.seat, Outpoint: w.outpoint, Address: w.address,
-			MinBlocks: membership.TableBondBlocks}
-		txid, vout, err := splitOutpoint(w.outpoint)
-		if err != nil {
-			h.ChainErr = err.Error()
-			out = append(out, h)
-			continue
-		}
-		found, err := p.bridge.Outpoint(ctx, txid, vout)
-		switch {
-		case err != nil:
-			h.ChainErr = err.Error()
-		case !found.Found:
-			// Never confirmed, or already taken back. Both mean the same
-			// thing to somebody asking what is still locked up.
-			h.Spent = true
-		default:
-			h.Atoms = found.ValueAtoms
-			h.Confirmations = found.Confirmations
-			if tipErr == nil {
-				h.Height = tip.Height
-				h.MaturesAt = tip.Height - found.Confirmations + 1 + int64(membership.TableBondBlocks)
-			}
-			if left := int64(membership.TableBondBlocks) - found.Confirmations; left > 0 {
-				h.BlocksLeft = left
-			} else {
-				h.Spendable = true
-			}
-		}
-		out = append(out, h)
-	}
-	writeJSON(w, map[string]any{"bonds": out})
 }

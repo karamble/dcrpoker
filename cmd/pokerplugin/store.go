@@ -517,3 +517,34 @@ func writeDurable(path string, blob []byte) error {
 	defer dir.Close()
 	return dir.Sync()
 }
+
+// seedBackupFile marks that the person has written their seed down.
+//
+// A file rather than a field, because it is a fact about the person and not
+// about any table: it has to survive every session being deleted, and it must
+// never be inferred from anything the game did on its own.
+const seedBackupFile = "seed-backed-up"
+
+func (s *store) seedBackupPath() string {
+	// Beside the sessions directory rather than in it, so clearing sessions
+	// does not quietly un-remember that somebody took a backup.
+	return filepath.Join(filepath.Dir(s.dir), seedBackupFile)
+}
+
+// seedBackedUp reports whether the person said they have kept a copy.
+//
+// It is their claim, not a check: nothing here can verify that what they wrote
+// down is correct, and pretending otherwise would be worse than saying plainly
+// that they were asked and answered.
+func (s *store) seedBackedUp() bool {
+	_, err := os.Stat(s.seedBackupPath())
+	return err == nil
+}
+
+// markSeedBackedUp records that they said so, so nothing asks again.
+func (s *store) markSeedBackedUp() error {
+	if err := os.MkdirAll(filepath.Dir(s.seedBackupPath()), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(s.seedBackupPath(), []byte("acknowledged\n"), 0o600)
+}

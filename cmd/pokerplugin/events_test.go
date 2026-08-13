@@ -304,8 +304,8 @@ func TestAChangeIsPushedWithoutBeingAskedFor(t *testing.T) {
 	// A payout address is a change nobody else has to agree to, so it moves
 	// this peer's own view with no round trip to wait on.
 	addr := payoutAddress(t, a)
-	if code, body := post(t, a, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
-		t.Fatalf("/payout/set returned %d: %s", code, body)
+	if err := a.setPayout(context.Background(), addr); err != nil {
+		t.Fatalf("set the payout address: %v", err)
 	}
 	a.sweep()
 

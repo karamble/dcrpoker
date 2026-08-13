@@ -241,8 +241,8 @@ func TestTheLedgerNamesTheSeatsHoldingUpEveryClaim(t *testing.T) {
 	// other, because a payout is signed by the seat that owns it: nobody can
 	// answer this on a neighbour's behalf.
 	addr := payoutAddress(t, p)
-	if code, body := post(t, p, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
-		t.Fatalf("/payout/set returned %d: %s", code, body)
+	if err := p.setPayout(context.Background(), addr); err != nil {
+		t.Fatalf("set the payout address: %v", err)
 	}
 
 	ours, _ := p.tables.m[terms.SID].form.OurSeat()
@@ -269,34 +269,18 @@ func TestThePayoutAddressCanBeReadBack(t *testing.T) {
 	h := newHub(t)
 	p := h.join(t, "tok")
 
-	code, body := get(t, p, "/payout")
-	if code != http.StatusOK {
-		t.Fatalf("GET /payout returned %d: %s", code, body)
-	}
-	var before struct {
-		Address string `json:"address"`
-	}
-	if err := json.Unmarshal([]byte(body), &before); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if before.Address != "" {
-		t.Fatalf("a fresh player already has a payout address: %q", before.Address)
+	// The console reads the payout address off the state report, which is
+	// where it is echoed back precisely so a push that did not take can be
+	// seen rather than assumed.
+	if got := p.gameState(context.Background()).GetPayoutAddress(); got != "" {
+		t.Fatalf("a fresh player already has a payout address: %q", got)
 	}
 
 	addr := payoutAddress(t, p)
-	if code, body := post(t, p, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
-		t.Fatalf("/payout/set returned %d: %s", code, body)
+	if err := p.setPayout(context.Background(), addr); err != nil {
+		t.Fatalf("set the payout address: %v", err)
 	}
-	code, body = get(t, p, "/payout")
-	if code != http.StatusOK {
-		t.Fatalf("GET /payout returned %d: %s", code, body)
-	}
-	var after struct {
-		Address string `json:"address"`
-	}
-	if err := json.Unmarshal([]byte(body), &after); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	after := struct{ Address string }{Address: p.gameState(context.Background()).GetPayoutAddress()}
 	if after.Address != addr {
 		t.Fatalf("read back %q, want %q", after.Address, addr)
 	}
@@ -432,8 +416,8 @@ func TestAClaimIsReportedAndNotOnlyLogged(t *testing.T) {
 	// are still there and cannot be built until each has said where.
 	for _, p := range []*plugin{a, b} {
 		addr := payoutAddress(t, p)
-		if code, body := post(t, p, "/payout/set", map[string]string{"address": addr}); code != http.StatusOK {
-			t.Fatalf("/payout/set returned %d: %s", code, body)
+		if err := p.setPayout(context.Background(), addr); err != nil {
+			t.Fatalf("set the payout address: %v", err)
 		}
 	}
 	waitPayouts(t, terms.SID, a, b)

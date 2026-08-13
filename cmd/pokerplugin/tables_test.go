@@ -326,15 +326,13 @@ func acceptInvite(t *testing.T, p *plugin, inv schema.Invite) {
 	if err != nil {
 		t.Fatalf("render invite: %v", err)
 	}
-	body, _ := json.Marshal(map[string]string{"invite": link, "gcid": testGC})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bearer "+p.uiToken)
-	p.routes().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("join returned %d: %s", rec.Code, rec.Body.String())
+	// The same call the bridge makes. Accepting is a decision taken in the
+	// operator's console and pushed down, so a test that reached for a route
+	// would be exercising a path nothing uses.
+	if _, err := p.acceptInvite(context.Background(), &gamingpb.AcceptInvite{
+		Invite: link, Gcid: testGC,
+	}); err != nil {
+		t.Fatalf("accept invitation: %v", err)
 	}
 }
 
@@ -535,11 +533,11 @@ func TestFramesFromAnotherGroupChatAreIgnored(t *testing.T) {
 	}
 }
 
-// Every route but health needs the token the host issued, and refusal looks
-// like the route is not there.
-func TestDrivingThisProcessNeedsTheHostsToken(t *testing.T) {
+// Every route needs this run's interface token, and refusal looks like the
+// route is not there.
+func TestDrivingThisProcessNeedsItsOwnToken(t *testing.T) {
 	p := testPlugin(t)
-	for _, path := range []string{"/tables", "/cmd", "/table/join", "/table/leave"} {
+	for _, path := range []string{"/tables", "/cmd", "/table/fund", "/table/leave"} {
 		rec := httptest.NewRecorder()
 		p.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}")))
 		if rec.Code != http.StatusNotFound {
@@ -566,14 +564,11 @@ func TestJoiningRefusesInvitationsToNothing(t *testing.T) {
 		{"bad group chat", "gaming://poker/table?seats=2&sid=ab&csv=64", "nothex"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body, _ := json.Marshal(map[string]string{"invite": tc.invite, "gcid": tc.gcid})
-			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
-			req.Header.Set("Authorization", "Bearer "+p.uiToken)
-			p.routes().ServeHTTP(rec, req)
-
-			if rec.Code == http.StatusOK {
-				t.Fatalf("accepted: %s", rec.Body.String())
+			_, err := p.acceptInvite(context.Background(), &gamingpb.AcceptInvite{
+				Invite: tc.invite, Gcid: tc.gcid,
+			})
+			if err == nil {
+				t.Fatal("accepted an invitation that should have been refused")
 			}
 		})
 	}
@@ -1303,17 +1298,14 @@ func TestThisPlayerCannotJoinWithoutItsOwnBond(t *testing.T) {
 	}
 
 	link, _ := testInvite(2).String()
-	body, _ := json.Marshal(map[string]string{"invite": link, "gcid": testGC})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bearer "+p.uiToken)
-	p.routes().ServeHTTP(rec, req)
-
-	if rec.Code == http.StatusOK {
-		t.Fatalf("a table was joined with no bond: %s", rec.Body.String())
+	_, err = p.acceptInvite(context.Background(), &gamingpb.AcceptInvite{
+		Invite: link, Gcid: testGC,
+	})
+	if err == nil {
+		t.Fatal("a table was joined with no bond")
 	}
-	if !strings.Contains(rec.Body.String(), "bond") {
-		t.Fatalf("the refusal should say what is missing: %s", rec.Body.String())
+	if !strings.Contains(err.Error(), "bond") {
+		t.Fatalf("the refusal should say what is missing: %v", err)
 	}
 }
 
