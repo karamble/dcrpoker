@@ -114,6 +114,17 @@ func main() {
 	// Open the host's frame stream. This is the only way anything reaches
 	// this process from another player: the sandbox has no route anywhere
 	// but the host, so a game that cannot open this can never play.
+	// Introduce this game before anything else. It learns what the bridge
+	// resolved its credential to, and - the part that has to stop the
+	// program - which chain the bridge is on. A game playing across a
+	// network mismatch builds scripts nobody can spend and pays real money
+	// into them.
+	hello, err := p.bridge.Hello(ctx, *network)
+	if err != nil {
+		log.Fatalf("pokerplugin: %v", err)
+	}
+	log.Printf("pokerplugin: the bridge knows this game as %q on %s", hello.GetGame(), hello.GetNetwork())
+
 	frames, err := p.bridge.Events(ctx)
 	if err != nil {
 		log.Fatalf("pokerplugin: %v", err)
