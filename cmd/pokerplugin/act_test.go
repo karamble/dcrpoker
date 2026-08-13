@@ -26,7 +26,7 @@ func post(t *testing.T, p *plugin, path string, body any) (int, string) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(blob)))
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Authorization", "Bearer "+p.uiToken)
 	p.routes().ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
 }
@@ -35,7 +35,7 @@ func get(t *testing.T, p *plugin, path string) (int, string) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Authorization", "Bearer "+p.uiToken)
 	p.routes().ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
 }
@@ -100,7 +100,7 @@ func TestActAndHandUseTheRightMethods(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/table/act", nil)
-	req.Header.Set("Authorization", "Bearer "+a.token)
+	req.Header.Set("Authorization", "Bearer "+a.uiToken)
 	a.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /table/act returned %d, want 405", rec.Code)

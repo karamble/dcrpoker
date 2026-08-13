@@ -39,25 +39,37 @@ import (
 
 func main() {
 	var (
-		bridge = flag.String("bridge", "", "the host's gaming tunnel, e.g. http://dashboard:8080/gaming")
-		token  = flag.String("token", "", "this game's bearer token, issued by the host")
-		// The host reaches this over the sandbox's internal network, so
-		// it cannot be loopback. That network has no route anywhere but
-		// the host, and every route here needs the same bearer token the
-		// host issued, so the exposure is to the host and to whatever
-		// else the sandbox is running.
-		listen  = flag.String("listen", ":8790", "address the host drives this game on")
+		// Loopback, and not configurable away from it. What listens here
+		// is this game's own interface, for the person sitting at this
+		// machine; the bridge never connects to it, and nothing else
+		// should be able to.
+		listen  = flag.String("listen", "127.0.0.1:8790", "address this game serves its own interface on")
 		debug   = flag.Bool("debug", false, "log the transport: stream connections, and frames dropped and why")
 		dataDir = flag.String("datadir", "/data/poker", "where this game keeps its identity")
 		network = flag.String("network", "mainnet", "the chain this plays on")
 	)
 	flag.Parse()
 
-	if *bridge == "" || *token == "" {
-		// Without both there is no way to reach the table and no identity
-		// to reach it as. Refusing now beats starting something that can
-		// never play.
-		log.Fatalf("pokerplugin: --bridge and --token are both required")
+	// How to reach the bridge, asked for on the first run and remembered.
+	// A terminal is what makes the asking possible, so a service manager
+	// starting this unconfigured is told to run it by hand once.
+	// The interface's token is a local session key, printed to this terminal.
+	// Serving it anywhere but loopback would turn it into a network
+	// credential, which is not what it is or how it is handed over.
+	if !loopbackOnly(*listen) {
+		log.Fatalf("pokerplugin: --listen must be a loopback address; %s would put this game's "+
+			"interface on the network, guarded only by a token printed to this terminal", *listen)
+	}
+
+	bridgeCfg, err := loadBridge(*dataDir, os.Stdin, os.Stdout, isTerminal(os.Stdin))
+	if err != nil {
+		log.Fatalf("pokerplugin: %v", err)
+	}
+	// The chain the operator set up with wins over the flag: they answered
+	// it once, against a bridge that agreed, and a flag typed later is the
+	// more likely mistake.
+	if stored := storedNetwork(*dataDir); stored != "" {
+		*network = stored
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -76,7 +88,7 @@ func main() {
 		log.Fatalf("pokerplugin: %v", err)
 	}
 
-	p, err := newPlugin(ctx, *bridge, *token, id, newStore(*dataDir), params)
+	p, err := newPlugin(ctx, bridgeCfg, id, newStore(*dataDir), params)
 	if err != nil {
 		log.Fatalf("pokerplugin: %v", err)
 	}
@@ -111,7 +123,8 @@ func main() {
 		_ = srv.Shutdown(shutdown)
 	}()
 
-	log.Printf("pokerplugin: serving on %s, tunnelling through %s", *listen, *bridge)
+	log.Printf("pokerplugin: open %s to play; connected to the bridge at %s as %q",
+		uiURL(*listen, p.uiToken), bridgeCfg.Addr, p.bridge.Game())
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("pokerplugin: %v", err)
 	}
@@ -120,14 +133,14 @@ func main() {
 }
 
 type plugin struct {
-	ctx    context.Context
-	bridge *transport.Bridge
-	router *transport.Router
-	tables *tables
-	store  *store
-	id     *identity
-	token  string
-	params stdaddr.AddressParams
+	ctx     context.Context
+	bridge  *transport.Bridge
+	router  *transport.Router
+	tables  *tables
+	store   *store
+	id      *identity
+	uiToken string
+	params  stdaddr.AddressParams
 	// notify is what says a table moved, to anybody watching. A table moves
 	// for reasons nobody asked about - a block, somebody else's turn, a
 	// claim - so there has to be something that speaks first.
@@ -137,13 +150,18 @@ type plugin struct {
 	spends *spends
 }
 
-func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *store, params stdaddr.AddressParams) (*plugin, error) {
-	b, err := transport.NewBridge(bridgeURL, token, nil)
+func newPlugin(ctx context.Context, bridgeCfg transport.BridgeConfig, id *identity, st *store, params stdaddr.AddressParams) (*plugin, error) {
+	b, err := transport.Dial(ctx, bridgeCfg)
 	if err != nil {
 		return nil, err
 	}
 
-	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), store: st, id: id, token: token,
+	uiToken, err := newUIToken()
+	if err != nil {
+		return nil, err
+	}
+
+	p := &plugin{ctx: ctx, bridge: b, tables: newTables(st), store: st, id: id, uiToken: uiToken,
 		params: params, notify: newNotifier(), spends: newSpends(st)}
 	// A seat has to cost something, so every join is checked against the
 	// chain before it is admitted. The rule lives in pkg/membership; what
@@ -196,10 +214,14 @@ func newPlugin(ctx context.Context, bridgeURL, token string, id *identity, st *s
 	// signature its table needs to settle, and nothing would ever send it
 	// again. So it also asks, naming what it holds, and the table answers
 	// with the difference.
-	b.OnGap = func() {
-		log.Printf("pokerplugin: reconnected to the host; frames may have been missed")
+	b.SetOnGap(func(gcids []string) {
+		if len(gcids) > 0 {
+			log.Printf("pokerplugin: the bridge missed frames for %d table(s); resynchronising", len(gcids))
+		} else {
+			log.Printf("pokerplugin: the bridge missed frames and could not say which tables; resynchronising")
+		}
 		p.publish(p.ctx, p.tables.resync())
-	}
+	})
 
 	// Tables that are over and still hold coin. Nothing else reads a session
 	// back, so without this a timelocked stake outlives every record of
@@ -220,7 +242,7 @@ func (p *plugin) enableTransportLog() {
 	backend := slog.NewBackend(os.Stdout)
 	logger := backend.Logger("GAME")
 	logger.SetLevel(slog.LevelDebug)
-	p.bridge.Log = logger
+	p.bridge.SetLog(logger)
 	p.router.SetLog(logger)
 }
 
@@ -416,19 +438,19 @@ func (p *plugin) routes() http.Handler {
 	return mux
 }
 
-// guard requires the token the host issued this game.
+// guard requires this run's interface token.
 //
-// The same token in both directions is deliberate: it is the one secret this
-// process and the host share, and it already stands for "this game" in every
-// frame sent through the tunnel. Health is left open because it says nothing
-// and the portal has no token to present.
+// It is not the bridge credential and shares nothing with it. That one is an
+// identity a person carried to this machine and it moves money; this is a
+// session key for a page served to a browser on the same machine, minted at
+// startup and printed once.
 //
-// It bounds who may drive this process, not who may reach it. The token is
-// passed on a command line, so anything else in the sandbox can read it out of
-// /proc - which is a property of how the portal launches games, and worth
-// fixing there rather than pretended away here.
+// It bounds who may drive this process, not who may reach it - so the listener
+// is loopback, checked at startup. The old arrangement passed a token on the
+// command line where anything on the box could read it out of /proc; nothing
+// is passed on the command line now.
 func (p *plugin) guard(next http.HandlerFunc) http.HandlerFunc {
-	want := []byte("Bearer " + p.token)
+	want := []byte("Bearer " + p.uiToken)
 	return func(w http.ResponseWriter, r *http.Request) {
 		got := []byte(strings.TrimSpace(r.Header.Get("Authorization")))
 		if subtle.ConstantTimeCompare(got, want) != 1 {

@@ -1,11 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,8 +17,12 @@ import (
 
 	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+
 	dcrwire "github.com/decred/dcrd/wire"
 	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/pokerbisonrelay/pkg/gaming/gamingpb"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
@@ -90,7 +95,12 @@ type hub struct {
 	// produces a send, which produces more deliveries, so the count only
 	// reaches zero when the table has actually come to rest.
 	inflight sync.WaitGroup
-	srv      *httptest.Server
+
+	srv  *grpc.Server
+	addr string
+	// cert and key are the hub's own pair; every peer pins it, as a game
+	// pins the bridge it was configured against.
+	cert, key []byte
 }
 
 // silence takes a peer off the wire, the way a machine that was switched off
@@ -233,121 +243,29 @@ func newHub(t *testing.T) *hub {
 		asked:   make(map[string]int),
 		shallow: make(map[string]int64),
 	}
-	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/gaming/chain/outpoint" {
-			q := r.URL.Query()
-			key := q.Get("txid") + ":" + q.Get("vout")
-			h.mu.Lock()
-			h.asked[key]++
-			pkScript, gone := h.bonds[key], h.spent[key]
-			if q.Get("mempool") == "1" && h.pending[key] {
-				gone = true
-			}
-			if q.Get("mempool") == "1" && h.unmined[key] != "" {
-				pkScript, gone = h.unmined[key], false
-			}
-			confs := h.confs
-			deep, named := h.shallow[key]
-			h.mu.Unlock()
-			if confs == 0 {
-				confs = int64(escrow.BondConfirmations)
-			}
-			if named {
-				confs = deep
-			}
-			_ = json.NewEncoder(w).Encode(transport.Outpoint{
-				// Spent is indistinguishable from never-existed here, and
-				// that is what the real lookup says too: it answers about
-				// coin anybody can still take, not about history.
-				Found:         pkScript != "" && !gone,
-				ValueAtoms:    testOutpointAtoms,
-				PkScriptHex:   pkScript,
-				Confirmations: confs,
-			})
-			return
-		}
-		if r.URL.Path == "/gaming/chain/broadcast" {
-			var req struct {
-				RawTxHex string `json:"rawTxHex"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			raw, err := hex.DecodeString(req.RawTxHex)
-			if err != nil {
-				http.Error(w, "not hex", http.StatusBadRequest)
-				return
-			}
-			tx := dcrwire.NewMsgTx()
-			if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
-				http.Error(w, "not a transaction: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			h.mu.Lock()
-			for _, in := range tx.TxIn {
-				if h.spent[in.PreviousOutPoint.String()] {
-					// Already taken. A real node refuses this, and a
-					// test that let it through would let two peers
-					// both pay the table out.
-					h.mu.Unlock()
-					http.Error(w, "already spent", http.StatusForbidden)
-					return
-				}
-			}
-			for _, in := range tx.TxIn {
-				h.spent[in.PreviousOutPoint.String()] = true
-			}
-			h.sent = append(h.sent, tx)
-			h.mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]string{"txid": tx.TxHash().String()})
-			return
-		}
-		if r.URL.Path != "/gaming/send" {
-			http.NotFound(w, r)
-			return
-		}
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	h.cert, h.key = hubCert(t, "hub")
+	pair, err := tls.X509KeyPair(h.cert, h.key)
+	if err != nil {
+		t.Fatalf("load the hub's pair: %v", err)
+	}
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	h.addr = lis.Addr().String()
+	h.srv = grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{pair},
+		MinVersion:   tls.VersionTLS12,
+		// Any certificate, resolved by its name below. Which credentials
+		// are admitted is the real bridge's decision and is tested there;
+		// what matters here is that a peer is identified by the one it
+		// presents rather than by anything it says.
+		ClientAuth: tls.RequireAnyClientCert,
+	})))
+	gamingpb.RegisterBridgeServiceServer(h.srv, &hubService{h: h})
+	go func() { _ = h.srv.Serve(lis) }()
 
-		var req struct {
-			GCID  string `json:"gcid"`
-			Frame string `json:"frame"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-
-		h.mu.Lock()
-		if kind, ok := frameKind(req.Frame); ok && h.swallow[kind] > 0 {
-			h.swallow[kind]--
-			h.lost[kind]++
-			h.mu.Unlock()
-			return
-		}
-		targets := make([]*plugin, 0, len(h.peers))
-		if !h.muted[token] {
-			for tok, p := range h.peers {
-				if tok != token && !h.muted[tok] {
-					targets = append(targets, p)
-				}
-			}
-		}
-		h.mu.Unlock()
-
-		// Deliver out of band. A member receiving a frame usually sends
-		// one of its own, and doing that on this call's stack would
-		// make the fan-out reentrant in a way the real host is not.
-		for _, p := range targets {
-			h.inflight.Add(1)
-			go func(p *plugin) {
-				defer h.inflight.Done()
-				p.router.HandleGCMessage(req.GCID, token, req.Frame, time.Now())
-			}(p)
-		}
-	}))
-	t.Cleanup(h.srv.Close)
+	t.Cleanup(h.srv.Stop)
 	return h
 }
 
@@ -370,7 +288,10 @@ func (h *hub) join(t *testing.T, name string) *plugin {
 	}
 	// A seat costs a bond, so a peer with none can join nothing.
 	h.bond(t, id, fmt.Sprintf("%02x", len(h.peers)+1))
-	p, err := newPlugin(context.Background(), h.srv.URL+"/gaming", name, id, newStore(dir), testParams)
+	cert, key := hubCert(t, name)
+	p, err := newPlugin(context.Background(), transport.BridgeConfig{
+		Addr: h.addr, ClientCert: cert, ClientKey: key, BridgeCert: h.cert,
+	}, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -409,7 +330,7 @@ func acceptInvite(t *testing.T, p *plugin, inv schema.Invite) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Authorization", "Bearer "+p.uiToken)
 	p.routes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -648,7 +569,7 @@ func TestJoiningRefusesInvitationsToNothing(t *testing.T) {
 			body, _ := json.Marshal(map[string]string{"invite": tc.invite, "gcid": tc.gcid})
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
-			req.Header.Set("Authorization", "Bearer "+p.token)
+			req.Header.Set("Authorization", "Bearer "+p.uiToken)
 			p.routes().ServeHTTP(rec, req)
 
 			if rec.Code == http.StatusOK {
@@ -737,7 +658,10 @@ func (h *hub) restart(t *testing.T, dir, token string) *plugin {
 	if id.bondDeposit() == "" {
 		h.bond(t, id, "aa")
 	}
-	p, err := newPlugin(context.Background(), h.srv.URL+"/gaming", token, id, newStore(dir), testParams)
+	cert, key := hubCert(t, token)
+	p, err := newPlugin(context.Background(), transport.BridgeConfig{
+		Addr: h.addr, ClientCert: cert, ClientKey: key, BridgeCert: h.cert,
+	}, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -1254,7 +1178,7 @@ func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"invite": link, "gcid": testGC})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Authorization", "Bearer "+p.uiToken)
 	h.restart(t, dir, "tok").routes().ServeHTTP(rec, req)
 
 	if rec.Code == http.StatusOK {
@@ -1370,7 +1294,10 @@ func TestThisPlayerCannotJoinWithoutItsOwnBond(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	p, err := newPlugin(context.Background(), "http://host/gaming", "tok", id, newStore(dir), testParams)
+	cert, key := hubCert(t, "tok")
+	p, err := newPlugin(context.Background(), transport.BridgeConfig{
+		Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: key, BridgeCert: cert,
+	}, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -1379,7 +1306,7 @@ func TestThisPlayerCannotJoinWithoutItsOwnBond(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"invite": link, "gcid": testGC})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/table/join", strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Authorization", "Bearer "+p.uiToken)
 	p.routes().ServeHTTP(rec, req)
 
 	if rec.Code == http.StatusOK {

@@ -289,6 +289,7 @@ func TestAComplaintSurvivesARestart(t *testing.T) {
 		t.Fatalf("the restarted complainer repeats %d frames, want its complaint", len(repeats))
 	}
 }
+
 // A table that is over cannot lapse. The chain-truth clearing empties the coin
 // maps as the settlement and the releases confirm - correctly, and gated on
 // the table being finished or over - and the lapse checks judge those same

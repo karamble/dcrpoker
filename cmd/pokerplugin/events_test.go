@@ -27,7 +27,7 @@ func stream(t *testing.T, p *plugin) (<-chan sse, func()) {
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Authorization", "Bearer "+p.uiToken)
 	ctx, cancel := context.WithCancel(context.Background())
 	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err != nil {
@@ -465,7 +465,7 @@ func TestTheSeedNeedsMoreThanAFetch(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/identity/backup", nil)
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Authorization", "Bearer "+p.uiToken)
 	req.Header.Set(confirmHeader, confirmSeed)
 	p.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

@@ -2,10 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -246,54 +242,6 @@ func TestNewRouterRefusesIncompleteConfig(t *testing.T) {
 		if _, err := NewRouter(cfg); err == nil {
 			t.Errorf("%s should be refused", name)
 		}
-	}
-}
-
-// The bridge is how a game reaches Bison Relay without holding its credentials.
-func TestBridgeSendsThroughTheHost(t *testing.T) {
-	var gotBody map[string]string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/gaming/send" || r.Method != http.MethodPost {
-			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer tok-123" {
-			t.Errorf("authorization header is %q", got)
-		}
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	b, err := NewBridge(srv.URL+"/gaming", "tok-123", srv.Client())
-	if err != nil {
-		t.Fatalf("new bridge: %v", err)
-	}
-	if err := b.SendGC(context.Background(), testGCID, "a-frame"); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	// The game is not stated: the host takes it from the token.
-	if _, stated := gotBody["game"]; stated {
-		t.Error("the request should not name the game; the token identifies it")
-	}
-	if gotBody["gcid"] != testGCID || gotBody["frame"] != "a-frame" {
-		t.Fatalf("host received %+v", gotBody)
-	}
-}
-
-// A host refusal is configuration, not a blip, and should not read as one.
-func TestBridgeReportsHostRefusal(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "game is not installed", http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	b, _ := NewBridge(srv.URL+"/gaming", "tok-123", srv.Client())
-	err := b.SendGC(context.Background(), testGCID, "a-frame")
-	if err == nil {
-		t.Fatal("expected a refusal")
-	}
-	if !strings.Contains(err.Error(), "not installed") {
-		t.Fatalf("refusal did not carry the reason: %v", err)
 	}
 }
 

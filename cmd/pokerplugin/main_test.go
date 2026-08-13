@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
+	"github.com/vctt94/pokerbisonrelay/pkg/gaming/transport"
 )
 
 const testToken = "tok"
@@ -21,7 +22,10 @@ func testPlugin(t *testing.T) *plugin {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	p, err := newPlugin(context.Background(), "http://host/gaming", testToken, id, newStore(dir), testParams)
+	cert, key := hubCert(t, "poker")
+	p, err := newPlugin(context.Background(), transport.BridgeConfig{
+		Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: key, BridgeCert: cert,
+	}, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -68,11 +72,19 @@ func TestPluginRequiresBridgeAndToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	if _, err := newPlugin(context.Background(), "", "tok", id, newStore(dir), testParams); err == nil {
-		t.Fatal("a plugin with no bridge should not start")
+	cert, key := hubCert(t, "poker")
+	if _, err := newPlugin(context.Background(), transport.BridgeConfig{
+		ClientCert: cert, ClientKey: key, BridgeCert: cert,
+	}, id, newStore(dir), testParams); err == nil {
+		t.Fatal("a plugin with no bridge address should not start")
 	}
-	if _, err := newPlugin(context.Background(), "http://host/gaming", "", id, newStore(dir), testParams); err == nil {
-		t.Fatal("a plugin with no token should not start")
+	// A credential that does not load is the commonest way this goes wrong:
+	// the operator copied one of the three blocks short. It has to be refused
+	// here, where the message can say so, rather than at the first call.
+	if _, err := newPlugin(context.Background(), transport.BridgeConfig{
+		Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: []byte("not a key"), BridgeCert: cert,
+	}, id, newStore(dir), testParams); err == nil {
+		t.Fatal("a plugin whose credential does not load should not start")
 	}
 }
 
