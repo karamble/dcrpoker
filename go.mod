@@ -1,4 +1,4 @@
-module github.com/vctt94/pokerbisonrelay
+module github.com/vctt94/dcrpoker
 
 go 1.25.0
 

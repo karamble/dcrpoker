@@ -5,9 +5,9 @@ being able to take their money.
 
 ```
 browser (on this machine)
-  └─ http://127.0.0.1:8790/ui/       cmd/pokerplugin/ui/, baked into the binary
+  └─ http://127.0.0.1:8790/ui/       cmd/dcrpoker/ui/, baked into the binary
        └─ the game's own API          loopback, behind this run's token
-            └─ pokerplugin            cmd/pokerplugin
+            └─ dcrpoker            cmd/dcrpoker
                  └─ gRPC + mutual TLS, dialled out
                       └─ the dcrpulse gaming bridge
 ```
@@ -75,9 +75,9 @@ the order anybody expects:
 
 ### Building it
 
-`scripts/build-ui.sh` builds the bundle; `scripts/build-pokerplugin.sh` builds
+`scripts/build-ui.sh` builds the bundle; `scripts/build-dcrpoker.sh` builds
 it and the binary around it, then **asks the binary** whether its interface is
-really baked in. A committed placeholder at `cmd/pokerplugin/ui/placeholder.html`
+really baked in. A committed placeholder at `cmd/dcrpoker/ui/placeholder.html`
 keeps `go build ./...` and `go test ./...` working without a JavaScript
 toolchain - the Go side is the part with money in it and should not need npm to
 be worked on - and `--check-interface` answers `built` or `placeholder` so a release

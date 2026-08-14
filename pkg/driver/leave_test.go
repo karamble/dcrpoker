@@ -3,7 +3,7 @@ package driver
 import (
 	"testing"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 // Getting up from a table.

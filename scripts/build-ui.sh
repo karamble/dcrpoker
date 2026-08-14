@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the interface that ships inside pokerplugin.
+# Build the interface that ships inside dcrpoker.
 #
 # Separate from the Go build because it needs npm, and the Go build has to work
 # without one: a committed placeholder keeps `go build ./...` and `go test ./...`
@@ -8,14 +8,14 @@
 # side is the part with the money in it and it should not need a JavaScript
 # toolchain to be worked on.
 #
-# The output is one self-contained document. See cmd/pokerplugin/ui/vite.config.ts
+# The output is one self-contained document. See cmd/dcrpoker/ui/vite.config.ts
 # for why: the page is framed at an opaque origin, where a separate module
 # script would be a cross-origin fetch.
 
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ui="$here/cmd/pokerplugin/ui"
+ui="$here/cmd/dcrpoker/ui"
 
 cd "$ui"
 

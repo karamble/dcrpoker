@@ -5,10 +5,10 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
-	"github.com/vctt94/pokerbisonrelay/pkg/replay"
+	"github.com/vctt94/dcrpoker/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/replay"
 )
 
 // A table is a sequence of hands, and the seams between them are where the

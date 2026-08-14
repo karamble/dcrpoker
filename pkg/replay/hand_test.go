@@ -5,8 +5,8 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 // A hand played on a real deck, from the shuffle to the money.

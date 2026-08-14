@@ -41,7 +41,7 @@ jobs:
       - name: Go tests (race, repeated)
         run: go test -v -race ./... -count=3 -timeout 600s
 
-  # The interface that ships inside pokerplugin.
+  # The interface that ships inside dcrpoker.
   #
   # A separate job on purpose, and vet-and-format above is deliberately left
   # alone: it runs against the committed placeholder, and its continuing to pass
@@ -67,10 +67,10 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: cmd/pokerplugin/ui/package-lock.json
+          cache-dependency-path: cmd/dcrpoker/ui/package-lock.json
 
       - name: Typecheck the interface
-        working-directory: cmd/pokerplugin/ui
+        working-directory: cmd/dcrpoker/ui
         run: |
           npm ci --no-audit --no-fund
           npx tsc --noEmit
@@ -80,8 +80,8 @@ jobs:
 
       - name: Build and test the plugin around it
         run: |
-          go build ./cmd/pokerplugin
-          go test ./cmd/pokerplugin/... -count=1 -timeout 600s
+          go build ./cmd/dcrpoker
+          go test ./cmd/dcrpoker/... -count=1 -timeout 600s
 
       # The built bundle is an artifact and dist/ is gitignored, so building it
       # must leave the tree exactly as it was. If this fails, something in the
@@ -92,7 +92,7 @@ jobs:
       - name: Fail if the build changed the tree
         run: |
           dirty=$(git status --porcelain --untracked-files=all \
-            | grep -v 'cmd/pokerplugin/ui/node_modules/' || true)
+            | grep -v 'cmd/dcrpoker/ui/node_modules/' || true)
           if [ -n "$dirty" ]; then
             echo "Building the interface changed the tree:" >&2
             echo "$dirty" >&2

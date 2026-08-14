@@ -6,9 +6,9 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
-	"github.com/vctt94/pokerbisonrelay/pkg/poker"
+	"github.com/vctt94/dcrpoker/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/poker"
 )
 
 // Where the cards come from, and who is allowed to see them.

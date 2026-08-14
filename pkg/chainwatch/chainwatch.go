@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 )
 
 // ChainWatch is a player's own copy of the table's history.

@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/membership"
+	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 // The wire shapes above are hex strings; the formation logic works in bytes and

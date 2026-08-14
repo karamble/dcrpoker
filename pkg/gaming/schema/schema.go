@@ -24,7 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 // Version is the game protocol version, carried as gv in the envelope and

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/dcrpoker/pkg/escrow"
 )
 
 // A game invite is an ordinary chat message, not a wire frame.

@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
-	"github.com/vctt94/pokerbisonrelay/pkg/membership"
+	"github.com/vctt94/dcrpoker/pkg/escrow"
+	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 // testCreds gives a key a bond, so it can join. Whether the deposit is really

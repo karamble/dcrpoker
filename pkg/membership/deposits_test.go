@@ -3,7 +3,7 @@ package membership
 import (
 	"testing"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/dcrpoker/pkg/escrow"
 )
 
 const testOutpoint = "1def0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab:1"

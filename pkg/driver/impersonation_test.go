@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 // Sitting in somebody else's chair.

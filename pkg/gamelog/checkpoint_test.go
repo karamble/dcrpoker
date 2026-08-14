@@ -3,7 +3,7 @@ package gamelog
 import (
 	"testing"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 func TestACheckpointIsSignedAndVerifies(t *testing.T) {

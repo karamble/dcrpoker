@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/driver"
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/driver"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 // Checkpoint is a seat's signature over the stacks at the end of a hand.

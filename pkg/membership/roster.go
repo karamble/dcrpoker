@@ -20,7 +20,7 @@ import (
 	"strings"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
-	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/dcrpoker/pkg/escrow"
 )
 
 // Roster is the set of session keys the escrow scripts of one match commit to.

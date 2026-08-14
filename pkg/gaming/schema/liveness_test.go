@@ -4,9 +4,9 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/driver"
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/driver"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 const cpMatch = "9bbccbcc99e2421852775868835efd6926eab532fb3286f1051f79f7572bb9b9"

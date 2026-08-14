@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
-	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/dcrpoker/pkg/escrow"
 )
 
 // State is where one peer has got to in forming a table.

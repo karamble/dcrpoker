@@ -5,7 +5,7 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/deck"
 )
 
 // What a finished hand leaves behind.

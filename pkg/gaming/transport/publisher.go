@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
+	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
+	"github.com/vctt94/dcrpoker/pkg/gaming/wire"
 )
 
 // Publisher frames messages and sends them to a group chat.

@@ -9,7 +9,7 @@ import (
 	"github.com/decred/dcrd/chaincfg/v3"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
+	"github.com/vctt94/dcrpoker/pkg/escrow"
 )
 
 func testTerms(seats uint32) Terms {

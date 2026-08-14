@@ -3,9 +3,9 @@ package driver
 import (
 	"testing"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
-	"github.com/vctt94/pokerbisonrelay/pkg/replay"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/replay"
 )
 
 // A table of tables: several hands, played by peers who only ever see each

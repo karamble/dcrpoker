@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 const testMatch = "table1|sess1"

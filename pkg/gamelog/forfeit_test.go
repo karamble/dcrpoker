@@ -5,7 +5,7 @@ import (
 
 	"github.com/decred/dcrd/crypto/blake256"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 // The whole point of the log, end to end.

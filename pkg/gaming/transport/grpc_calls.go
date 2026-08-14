@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/gamingpb"
+	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
 )
 
 // Everything the game asks the bridge for, and the one stream it listens on.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/gamingpb"
+	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
 )
 
 // The one channel from the bridge to this game.

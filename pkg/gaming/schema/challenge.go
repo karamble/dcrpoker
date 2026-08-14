@@ -6,8 +6,8 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
-	"github.com/vctt94/pokerbisonrelay/pkg/driver"
+	"github.com/vctt94/dcrpoker/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/driver"
 )
 
 // A challenge and what answers it.

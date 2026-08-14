@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 // A shuffle that arrives and does not verify leaves each seat owing the other.

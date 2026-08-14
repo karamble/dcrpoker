@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/gamingpb"
+	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
 )
 
 // A real bridge, on a real socket, behind real mutual TLS.

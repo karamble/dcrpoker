@@ -11,8 +11,8 @@ Nothing else. There is no server to start, no database to migrate, no protobuf t
 regenerate, and no port to keep free.
 
 ```bash
-git clone https://github.com/vctt94/pokerbisonrelay.git
-cd pokerbisonrelay
+git clone https://github.com/vctt94/dcrpoker.git
+cd dcrpoker
 go mod download
 ```
 
@@ -41,7 +41,7 @@ Two habits worth keeping when adding tests, both learned expensively:
 
 ```bash
 ./scripts/build-ui.sh            # the panel's interface
-./scripts/build-pokerplugin.sh   # the binary, with the interface baked in
+./scripts/build-dcrpoker.sh   # the binary, with the interface baked in
 ```
 
 The second asks the binary it just built whether its interface is really embedded
@@ -61,7 +61,7 @@ under Bison Relay > Gaming. It connects before it saves anything, so a
 configuration that was written is one that worked. Afterwards:
 
 ```
-go run ./cmd/pokerplugin --datadir ~/.pokerplugin --network simnet
+go run ./cmd/dcrpoker --datadir ~/.dcrpoker --network simnet
 ```
 
 It prints a URL with a token in it. That is this game's own interface, on

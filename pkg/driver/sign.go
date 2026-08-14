@@ -11,8 +11,8 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
 	"go.dedis.ch/kyber/v4"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 // Who dealt this.

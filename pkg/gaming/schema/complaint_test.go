@@ -6,7 +6,7 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/deck"
 )
 
 // disputed builds a real two-seat shuffle worth disputing: the input, the

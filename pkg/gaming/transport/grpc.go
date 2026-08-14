@@ -17,8 +17,8 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/gamingpb"
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
+	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
+	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 )
 
 // The host, over gRPC and mutual TLS.
@@ -218,7 +218,7 @@ func (c *Bridge) Hello(ctx context.Context, network string) (*gamingpb.HelloRepl
 }
 
 // clientVersion is what the console shows beside a connected game.
-const clientVersion = "pokerplugin"
+const clientVersion = "dcrpoker"
 
 // hostErr turns a gRPC status into something a person reading a log can act on.
 //

@@ -27,8 +27,8 @@ import (
 	"time"
 
 	"github.com/decred/slog"
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/schema"
-	"github.com/vctt94/pokerbisonrelay/pkg/gaming/wire"
+	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
+	"github.com/vctt94/dcrpoker/pkg/gaming/wire"
 )
 
 // GCSender delivers one message body to a Bison Relay group chat.

@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/vctt94/pokerbisonrelay/pkg/escrow"
-	"github.com/vctt94/pokerbisonrelay/pkg/forfeit"
-	"github.com/vctt94/pokerbisonrelay/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/escrow"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 // The point of putting log keys in joins: a peer that has only ever received
