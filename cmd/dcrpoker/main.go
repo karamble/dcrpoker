@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -100,7 +101,14 @@ func main() {
 		log.Fatalf("pokerplugin: %v", err)
 	}
 
-	p, err := newPlugin(ctx, bridgeCfg, id, newStore(*dataDir), params)
+	store := newStore(*dataDir)
+	if left := store.strandedTranscripts(); len(left) > 0 {
+		log.Fatalf("pokerplugin: %d transcript(s) are still in %s and nothing reads them there: %s. "+
+			"Move them to %s.", len(left), filepath.Join(*dataDir, "logs"), strings.Join(left, ", "),
+			filepath.Join(*dataDir, transcriptDir))
+	}
+
+	p, err := newPlugin(ctx, bridgeCfg, id, store, params)
 	if err != nil {
 		log.Fatalf("pokerplugin: %v", err)
 	}

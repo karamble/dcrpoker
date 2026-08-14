@@ -139,6 +139,9 @@ type recordedAccusation struct {
 // filename out of one. It must stay the shape the invite grammar accepts.
 var sidRe = regexp.MustCompile(`^[0-9a-f]{1,32}$`)
 
+// transcriptDir is where a table's signed log is kept, one file per session.
+const transcriptDir = "transcripts"
+
 // store keeps one record per session under the data directory.
 type store struct{ dir string }
 
@@ -377,11 +380,40 @@ func (s *store) loadTranscript(sid string) ([]byte, error) {
 	return blob, nil
 }
 
+// logPath names a table's transcript. Kept apart from logs/, which is where
+// the program writes its own rotated log: one is evidence a dispute is argued
+// from and the other is a diary, and a directory holding both is a directory
+// nobody can hand to somebody else.
 func (s *store) logPath(sid string) (string, error) {
 	if !sidRe.MatchString(sid) {
 		return "", fmt.Errorf("session id %q is not a name this can store", sid)
 	}
-	return filepath.Join(s.dir, "..", "logs", sid+".json"), nil
+	return filepath.Join(s.dir, "..", transcriptDir, sid+".json"), nil
+}
+
+// strandedTranscripts names transcripts left in logs/, where they used to live.
+//
+// Nothing reads them there any more, so a directory that still holds some is a
+// move somebody started and did not finish. Worth stopping for rather than
+// warning about: the program would otherwise answer "no transcript" about a
+// table that dealt and has money in it, which reads as the evidence never
+// having been kept rather than as a file in the wrong place.
+func (s *store) strandedTranscripts() []string {
+	entries, err := os.ReadDir(filepath.Join(s.dir, "..", "logs"))
+	if err != nil {
+		return nil
+	}
+	var found []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".json")
+		if name != e.Name() && sidRe.MatchString(name) {
+			found = append(found, e.Name())
+		}
+	}
+	return found
 }
 
 // load reads a session's record, returning nil when there is none.

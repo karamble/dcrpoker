@@ -37,8 +37,13 @@ func (p *plugin) handleTableLog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if blob == nil {
+		// Says where it looked rather than why it found nothing. A table that
+		// never dealt has no transcript, but so does one whose file was left
+		// behind by a move, and asserting the first would send somebody
+		// looking for a bug in the wrong half of the program.
+		path, _ := p.store.logPath(sid)
 		writeErr(w, http.StatusNotFound,
-			fmt.Errorf("no log was kept for %s; a table that never dealt has none", sid))
+			fmt.Errorf("no transcript for %s at %s", sid, path))
 		return
 	}
 
