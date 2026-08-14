@@ -25,6 +25,9 @@ export function TableOver({
   table: Snapshot
   ledger?: LedgerView
   onDetails: () => void
+  /** Where "done here" goes. It cannot close the window - a browser refuses
+   *  that for a tab a script did not open, so the button would silently do
+   *  nothing - so it goes back to the tables, which is what a person means. */
   onClose: () => void
 }) {
   // The overall result: what the last signed boundary left this seat against
@@ -149,7 +152,7 @@ export function TableOver({
             Details
           </button>
           <button className="act primary" onClick={onClose}>
-            Close
+            Back to the tables
           </button>
         </div>
       </div>

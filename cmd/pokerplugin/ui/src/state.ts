@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef } from 'react'
 import {
   api,
+  ApiError,
   authToken,
   haveToken,
   streamPath,
@@ -8,6 +9,28 @@ import {
   type LedgerView,
   type Snapshot,
 } from './api'
+
+import { forgetToken } from './session'
+
+// describe turns a failed request into something true for the person reading
+// it.
+//
+// The plugin answers a bad token with 404 "not found", deliberately
+// indistinguishable from a route that is not there - that ambiguity is for
+// somebody probing it, not for this page, which knows every route it calls
+// exists. So a bare 404 here means the token is wrong, which after a reload
+// means the session is gone rather than anything being broken.
+function describe(err: unknown): string {
+  if (err instanceof ApiError && err.status === 404 && err.message.trim() === 'not found') {
+    // Only a token that was actually presented and rejected is worth
+    // forgetting. Clearing one that was never sent would throw away the
+    // stored token on any request that raced ahead of it.
+    if (!haveToken()) return 'Signing in...'
+    forgetToken()
+    return 'This page is no longer signed in. Open the link the game printed when it started.'
+  }
+  return String(err instanceof Error ? err.message : err)
+}
 
 // One picture of the table, from either of two transports.
 //
@@ -31,6 +54,11 @@ export type State = {
    *  rather than hiding, because "nothing is happening" and "we stopped
    *  hearing" look identical and are not. */
   live: boolean
+  /** loaded says a table list has arrived, from either transport. "No tables
+   *  yet" and "no tables" look identical and are not: a route naming a table
+   *  must not fall back to the lobby before anybody has answered, and a player
+   *  with no tables must not sit on a spinner for one that will never come. */
+  loaded: boolean
   error?: string
 }
 
@@ -41,7 +69,7 @@ type Action =
   | { type: 'live'; live: boolean }
   | { type: 'error'; error?: string }
 
-const empty: State = { tables: [], hands: {}, ledgers: {}, live: false }
+const empty: State = { tables: [], hands: {}, ledgers: {}, live: false, loaded: false }
 
 /** ordered fixes the order tables are shown in, newest first and finished ones
  *  last.
@@ -69,7 +97,7 @@ function reduce(state: State, action: Action): State {
       const ledgers: Record<string, LedgerView> = {}
       for (const [sid, v] of Object.entries(state.hands)) if (live.has(sid)) hands[sid] = v
       for (const [sid, v] of Object.entries(state.ledgers)) if (live.has(sid)) ledgers[sid] = v
-      return { ...state, tables: ordered(action.tables), hands, ledgers }
+      return { ...state, tables: ordered(action.tables), hands, ledgers, loaded: true }
     }
     case 'hand':
       return { ...state, hands: { ...state.hands, [action.sid]: action.view } }
@@ -87,12 +115,11 @@ function reduce(state: State, action: Action): State {
  *  already struggling is not help. */
 const pollEvery = 2000
 
-export function useTableState(ready: boolean): State {
+export function useTableState(): State {
   const [state, dispatch] = useReducer(reduce, empty)
   const stopped = useRef(false)
 
   useEffect(() => {
-    if (!ready) return
     stopped.current = false
     const control = new AbortController()
 
@@ -120,7 +147,7 @@ export function useTableState(ready: boolean): State {
         }
         dispatch({ type: 'error', error: undefined })
       } catch (err) {
-        dispatch({ type: 'error', error: String(err instanceof Error ? err.message : err) })
+        dispatch({ type: 'error', error: describe(err) })
       }
     }
     const startPolling = () => {
@@ -203,7 +230,7 @@ export function useTableState(ready: boolean): State {
       control.abort()
       stopPolling()
     }
-  }, [ready])
+  }, [])
 
   return state
 }

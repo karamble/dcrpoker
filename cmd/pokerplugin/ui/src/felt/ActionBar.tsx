@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, type HandView } from '../api'
 import { atoms, dcr } from '../format'
+import { play } from '../sound/engine'
 
 // Taking a turn, in a bar that never moves.
 //
@@ -64,7 +65,12 @@ export function ActionBar({ hand }: { hand?: HandView }) {
           : 0
     api
       .act(hand.sid, action, value)
-      .catch((e) => setRefused(String(e instanceof Error ? e.message : e)))
+      .catch((e) => {
+        // The refusal already appears beside the buttons. The sound is for the
+        // player whose eyes were on the pot when they pressed.
+        play('refuse')
+        setRefused(String(e instanceof Error ? e.message : e))
+      })
       .finally(() => setBusy(false))
   }
 

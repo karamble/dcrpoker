@@ -1,8 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { HandView, SeatView } from '../api'
 import { dcr } from '../format'
+import { useTableSound } from '../sound/useTableSound'
+import { sweep } from './motion'
 import { PlayingCard } from './PlayingCard'
+import { betAt, centre, seatAt, spotFor } from './positions'
 import { Seat } from './Seat'
+import { SoundToggle } from './SoundToggle'
 
 // The table, filling the space it is given.
 //
@@ -15,6 +20,13 @@ import { Seat } from './Seat'
 // Between hands there is no HandView, and the table still stands: the seats,
 // the stacks every member signed for, and no cards. A table that vanished
 // between hands would read as a table that crashed between hands.
+//
+// The table measures itself because two things need to know how big it is in
+// pixels: a card dealt from the middle has to cover the distance to its seat,
+// and chips have to reach the pot from wherever the seat happens to be. Both
+// used to be impossible - the positions were fixed stylesheet rules, so the
+// only chip sweep that existed was two hand-written keyframes for a heads-up
+// table, and every larger table fell back to a fade.
 
 // rotate maps a protocol seat to a display position, ours at 0.
 function rotate(seat: number, ours: number, n: number): number {
@@ -39,6 +51,23 @@ export function Table({
 }) {
   const n = Math.max(roster.length, 2)
   const ours = ourSeat ?? roster.find((s) => s.ours)?.seat ?? 0
+  const still = useReducedMotion()
+
+  useTableSound(hand, roster, ourSeat)
+
+  // How big the felt is, in pixels. Zero until it has been laid out, which the
+  // motion treats as "no distance to cover" and so animates in place.
+  const wrap = useRef<HTMLDivElement>(null)
+  const [size, setSize] = useState({ w: 0, h: 0 })
+  useLayoutEffect(() => {
+    const el = wrap.current
+    if (!el) return
+    const read = () => setSize({ w: el.clientWidth, h: el.clientHeight })
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // The pot bumps when it grows. Growth is read from the signed entries the
   // plugin already folded into pot/committed, so the motion trails the log
@@ -75,8 +104,9 @@ export function Table({
   }
 
   return (
-    <div className={`table-wrap s${n}`}>
+    <div className="table-wrap" ref={wrap}>
       <div className="oval" />
+      <SoundToggle />
 
       <div className="center">
         <div className={`pot${grew ? ' grew' : ''}`}>
@@ -91,12 +121,20 @@ export function Table({
 
       {roster.map((s) => {
         const pos = rotate(s.seat, ours, n)
+        const seat = spotFor(seatAt, n, pos)
+        const bet = spotFor(betAt, n, pos)
         const chair = hand?.chairs?.find((c) => c.seat === s.seat)
         const committed = chair?.committed ?? 0
         return (
           <div key={s.seat} className="contents">
             <Seat
               pos={pos}
+              spot={seat}
+              deal={{
+                x: ((centre.left - seat.left) / 100) * size.w,
+                y: ((centre.top - seat.top) / 100) * size.h,
+              }}
+              hand={hand?.hand}
               chair={chair}
               view={s}
               name={s.name}
@@ -107,12 +145,31 @@ export function Table({
               cards={cardsFor(s.seat, s.seat === ours)}
               fallbackStack={stacks?.[s.seat]}
             />
-            {committed > 0 && (
-              <div className={`bet bpos${pos} enter`} key={`${hand?.hand}-${hand?.street}-${committed}`}>
-                <span className="disc" />
-                {dcr(committed)}
-              </div>
-            )}
+            {/* Chips in front of a seat, and where they go when the street
+              * ends. The sweep is the one thing here that needs the chips to
+              * outlive the state that put them there: React unmounts them the
+              * moment the street closes, and an unmount has no CSS. */}
+            <AnimatePresence>
+              {committed > 0 && (
+                <motion.div
+                  className="bet"
+                  key={s.seat}
+                  initial={{ left: `${bet.left}%`, top: `${bet.top}%`, x: '-50%', y: '-50%', opacity: 0, scale: 0.6 }}
+                  animate={{ left: `${bet.left}%`, top: `${bet.top}%`, x: '-50%', y: '-50%', opacity: 1, scale: 1 }}
+                  exit={
+                    still
+                      ? { opacity: 0 }
+                      : { left: `${centre.left}%`, top: `${centre.top + 4}%`, opacity: 0 }
+                  }
+                  transition={sweep}
+                >
+                  <span className="disc" />
+                  <motion.span key={committed} initial={{ scale: 0.8 }} animate={{ scale: 1 }}>
+                    {dcr(committed)}
+                  </motion.span>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         )
       })}

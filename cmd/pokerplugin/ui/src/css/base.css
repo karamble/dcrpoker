@@ -1,0 +1,110 @@
+/* Tokens, the reset, and the type this game is set in.
+ *
+ * The palette is dcrpulse's Pulse theme, copied by hand. Pulse is dark-only, so
+ * the light theme this file used to carry is gone on purpose.
+ *
+ * Every animation lives behind prefers-reduced-motion: the table must say
+ * everything in stillness first.
+ *
+ * The faces are self-hosted and inlined as data URIs, latin only. Nothing here
+ * may reach the network: this page is served from a loopback listener and a
+ * font that fails to load is a page that renders in the fallback forever. */
+
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Archivo carries the figures and the titles. It is the one thing on screen
+ * that is allowed to look like a game rather than a report. */
+@font-face {
+  font-family: 'Archivo Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/archivo/files/archivo-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  --bg: hsl(222 47% 5%);
+  --panel: hsl(222 47% 8%);
+  --panel-2: hsl(222 47% 10%);
+  --line: hsl(217 32% 17%);
+  --ink: hsl(210 40% 98%);
+  --ink-2: hsl(215 20% 72%);
+  --ink-3: hsl(215 20% 55%);
+  --accent: hsl(217 91% 60%);
+  --accent-2: hsl(173 80% 40%);
+  --good: hsl(142 76% 46%);
+  --warn: hsl(38 92% 50%);
+  --bad: hsl(0 72% 51%);
+  --felt: hsl(168 45% 13%);
+  --felt-2: hsl(168 45% 17%);
+  --felt-line: hsl(168 40% 26%);
+  --radius: 12px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Inter reads; Archivo counts. The tails matter: both faces are declared with
+   * a latin unicode-range, so an arrow, a chain link or a suit falls through to
+   * a family named here rather than to whatever the machine reaches for last. */
+  --ui: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Segoe UI Symbol', 'Noto Sans Symbols 2', sans-serif;
+  --display: 'Archivo Variable', var(--ui);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 var(--ui);
+  /* Every number on this screen is money, a block height, a count or a seat
+   * number. There is not one place where proportional figures would be better,
+   * and a stack that changes width as it changes value is a stack that cannot
+   * be read at a glance. This was eleven scattered declarations saying the same
+   * thing one selector at a time. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* The faces now have real 650 and 750, which is what this stylesheet has been
+ * asking for all along: system-ui is a static family and rounded both to 700
+ * everywhere they appear. */
+
+/* Instrument labels. Archivo's caps are squarer, which reads as a legend on a
+ * panel where Inter's reads as a heading on a page. */
+.card > h2,
+.endcard h2,
+.vrail h3,
+table.grid th,
+.pill {
+  font-family: var(--display);
+}
+
+/* The figures the game is played in. Sizes and weights stay with the components
+ * that own them; this only says which face they are cut from. */
+.pot b,
+.seat-stack,
+.end-result,
+.status .won,
+.status .lost,
+.topbar .hand-no,
+.pcard .rank {
+  font-family: var(--display);
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Inter wants a little taken out above 17px and nothing below it. */
+.headline { letter-spacing: -.011em; }
+

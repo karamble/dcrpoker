@@ -36,9 +36,9 @@ import (
 //go:embed ui/placeholder.html
 var uiFS embed.FS
 
-// uiIndex is the built bundle: one self-contained document, because the page is
-// framed at an opaque origin where a separate module script would be a
-// cross-origin fetch. See ui/vite.config.ts.
+// uiIndex is the built bundle: one self-contained document, so that serving the
+// interface is serving a single file with nothing else to fetch. See
+// ui/vite.config.ts.
 const uiIndex = "ui/dist/index.html"
 
 // uiBuilt reports whether a real bundle was baked in.
@@ -60,9 +60,10 @@ func uiBuilt() bool {
 
 // handleUI serves the bundle.
 //
-// No single-page fallback. There is no client-side router in this UI, so a path
-// that names nothing is a missing asset, and answering it with the index would
-// turn a build mistake into a blank page rather than a 404.
+// No single-page fallback. The interface does route itself, but it routes in
+// the fragment, which never reaches here - so a path that names nothing is a
+// missing asset, and answering it with the index would turn a build mistake
+// into a blank page rather than a 404.
 func (p *plugin) handleUI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)

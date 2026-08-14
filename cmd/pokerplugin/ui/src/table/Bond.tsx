@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api, type Asked, type Bond as BondInfo } from '../api'
 import { blocks, dcr, short } from '../format'
 
@@ -14,41 +14,41 @@ import { blocks, dcr, short } from '../format'
 // question anybody has about it is when it comes back, and that is not a
 // property of the deposit but of how many blocks now sit on top of it.
 //
-// Reclaiming it is not offered here. It builds and broadcasts a transaction
-// this seat signs alone, and this page runs in a sandboxed frame with an
-// allowlisted API - a page that could cause a broadcast is a larger thing than
-// a page that can read. Where to do it is said instead of shown.
+// A presenter. The fetch and its clock live in bond.ts, because the step rail
+// asks whether this player can join anything at all and this card says when the
+// bond comes back - and this card is only mounted on one tab, so a value it
+// owned would be missing everywhere else.
+//
+// Reclaiming it is not offered here. There is no route for it on the plugin's
+// mux: it builds and broadcasts a transaction this seat signs alone, and the
+// place that already does that is the dashboard. Where to do it is said instead
+// of shown.
 
-export function Bond({ onLoad }: { onLoad?: (b: BondInfo) => void }) {
-  const [bond, setBond] = useState<BondInfo>()
-  const [error, setError] = useState<string>()
+export function Bond({
+  bond,
+  error,
+  reload,
+}: {
+  bond?: BondInfo
+  error?: string
+  reload: () => void
+}) {
   const [asked, setAsked] = useState<Asked>()
   const [busy, setBusy] = useState(false)
-
-  const load = useCallback(() => {
-    api
-      .bond()
-      .then((b) => {
-        setBond(b)
-        onLoad?.(b)
-        setError(undefined)
-      })
-      .catch((e) => setError(String(e instanceof Error ? e.message : e)))
-  }, [onLoad])
-
-  useEffect(() => {
-    load()
-    // Slowly. A lock measured in thousands of blocks does not need watching,
-    // and the only thing that moves here is the chain.
-    const id = window.setInterval(load, 60_000)
-    return () => window.clearInterval(id)
-  }, [load])
+  const [said, setSaid] = useState<string>()
 
   if (!bond) {
     return (
       <section className="card">
         <h2>Your bond</h2>
         <p className="lede">{error ?? 'Asking…'}</p>
+        {error && (
+          <div className="actions">
+            <button className="act" onClick={reload}>
+              Ask again
+            </button>
+          </div>
+        )}
       </section>
     )
   }
@@ -76,11 +76,11 @@ export function Bond({ onLoad }: { onLoad?: (b: BondInfo) => void }) {
               disabled={busy || asked !== undefined}
               onClick={() => {
                 setBusy(true)
-                setError(undefined)
+                setSaid(undefined)
                 api
                   .fundBond()
                   .then((a) => setAsked(a))
-                  .catch((e) => setError(String(e instanceof Error ? e.message : e)))
+                  .catch((e) => setSaid(String(e instanceof Error ? e.message : e)))
                   .finally(() => setBusy(false))
               }}
             >
@@ -90,11 +90,11 @@ export function Bond({ onLoad }: { onLoad?: (b: BondInfo) => void }) {
         </div>
         {asked && (
           <p className="lede">
-            Asked the host. Approve the payment in the dashboard behind this panel; it may
-            sit there for a while, and nothing here is waiting on it.
+            Asked the host. Approve the payment in the dashboard; it may sit there for a
+            while, and nothing here is waiting on it.
           </p>
         )}
-        {error && <p className="lede bad">{error}</p>}
+        {(said ?? error) && <p className="lede bad">{said ?? error}</p>}
       </section>
     )
   }
@@ -154,7 +154,7 @@ export function Bond({ onLoad }: { onLoad?: (b: BondInfo) => void }) {
       </div>
       <p className="lede muted">
         {ready
-          ? 'Taking it back is done from the dashboard, in Bison Relay > Gaming. It signs and broadcasts a transaction, which is not something a game’s own page is allowed to do.'
+          ? 'Taking it back is done from the dashboard, in Bison Relay > Gaming. This game has no route for it: it signs and broadcasts a transaction alone, and the dashboard is where that already happens.'
           : 'Until the lock matures nothing can move it, including this player. Taking it back afterwards is done from the dashboard, in Bison Relay > Gaming.'}
       </p>
       {bond.chainErr && (
@@ -163,7 +163,7 @@ export function Bond({ onLoad }: { onLoad?: (b: BondInfo) => void }) {
           The bond is where it says either way.
         </p>
       )}
-      {error && <p className="lede bad">{error}</p>}
+      {(said ?? error) && <p className="lede bad">{said ?? error}</p>}
     </section>
   )
 }

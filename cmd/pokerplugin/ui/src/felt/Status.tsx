@@ -1,3 +1,4 @@
+import { useEffect, useReducer } from 'react'
 import type { HandView, Snapshot } from '../api'
 import { dcr } from '../format'
 
@@ -14,18 +15,37 @@ import { dcr } from '../format'
 // and reading absence as zero once told both players they had lost the same
 // hand, which no hand can do.
 
+/** useCountdown is the seconds left, counted here and nowhere else.
+ *
+ *  The hold used to run a 250ms interval at the top of the tree, re-rendering
+ *  every card and every seat four times a second to move one number. The
+ *  deadline is a prop now and the ticking is this leaf's. */
+function useCountdown(until?: number): number | undefined {
+  const [, tick] = useReducer((n: number) => n + 1, 0)
+
+  useEffect(() => {
+    if (until === undefined) return
+    const id = window.setInterval(tick, 250)
+    return () => window.clearInterval(id)
+  }, [until])
+
+  if (until === undefined) return undefined
+  return Math.max(0, Math.ceil((until - Date.now()) / 1000))
+}
+
 export function Status({
   table,
   hand,
-  holdingLeft,
+  holdUntil,
   names,
 }: {
   table: Snapshot
   hand?: HandView
-  /** Seconds left on the showdown hold, when a finished hand is being shown. */
-  holdingLeft?: number
+  /** When the showdown hold ends, while a finished hand is being shown. */
+  holdUntil?: number
   names: Map<number, string>
 }) {
+  const holdingLeft = useCountdown(holdUntil)
   const who = (seat: number) => names.get(seat) || `seat ${seat}`
 
   // A table that is over serves a between-hands view with done=true and no

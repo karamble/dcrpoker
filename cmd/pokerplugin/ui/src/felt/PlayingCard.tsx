@@ -1,4 +1,5 @@
 import { cardParts } from '../format'
+import { Pip, suitOf } from './Pip'
 
 // One card, honestly.
 //
@@ -10,9 +11,12 @@ import { cardParts } from '../format'
 //
 // The enter class is how a card animates on arrival, and it is only ever put on
 // a card that just appeared - which, since cards appear when they open, means
-// the motion asserts nothing the protocol has not already established. The i0..
-// i4 classes stagger a row; fixed classes, never computed styles, so the host's
-// style-src stays strict.
+// the motion asserts nothing the protocol has not already established. The
+// i1..i4 classes stagger a row. A card dealt to a seat is animated by its seat
+// instead, because only the seat knows where the middle of the table is from
+// where it sits.
+//
+// The suits are drawn, not typed. See Pip.
 
 export function PlayingCard({
   card,
@@ -24,20 +28,27 @@ export function PlayingCard({
   card?: string
   small?: boolean
   index?: number
+  /** Whether to run the arrival animation. Left off by a caller that is doing
+   *  the arrival itself. */
   entered?: boolean
 }) {
   const size = small ? ' small' : ''
   const anim = entered ? ' enter' : ''
-  const stagger = index ? ` i${Math.min(index, 4)}` : ''
+  const stagger = entered && index ? ` i${Math.min(index, 4)}` : ''
 
   if (card === undefined) return <div className={`pcard gap${size}`} />
   if (card === '') return <div className={`pcard back${size}${anim}${stagger}`} />
 
-  const { rank, suit, red } = cardParts(card)
+  const { rank, red } = cardParts(card)
+  const suit = suitOf(card)
   return (
     <div className={`pcard face${red ? ' red' : ''}${size}${anim}${stagger}`}>
+      {/* Large and faint behind the rank, the way a real card carries it. It is
+        * the same shape as the corner pip and takes the same colour, so it
+        * reads as one card rather than as a background. */}
+      <Pip suit={suit} size={small ? 34 : 46} className="pip-watermark" />
       <span className="rank">{rank}</span>
-      <span className="suit">{suit}</span>
+      <Pip suit={suit} size={small ? 13 : 16} className="pip-corner" />
     </div>
   )
 }

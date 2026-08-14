@@ -1,0 +1,317 @@
+/* ======================= the stage ======================= */
+
+.stage { display: flex; height: 100%; min-height: 0; background: var(--bg); }
+
+/* -- verify rail -- */
+.vrail {
+  display: flex; flex-direction: column; gap: 10px;
+  width: 240px; flex: none; overflow-y: auto;
+  border-right: 1px solid var(--line); background: var(--panel);
+  padding: 10px;
+}
+.vrail.closed {
+  width: 40px; padding: 10px 6px; align-items: center; gap: 14px;
+  cursor: pointer;
+}
+.vrail-toggle {
+  appearance: none; border: 0; background: none; color: var(--ink-3); cursor: pointer;
+  padding: 2px; border-radius: 6px; font: inherit;
+}
+.vrail-toggle:hover { color: var(--ink); }
+.vrail-glyph { font-size: 15px; color: var(--ink-3); }
+.vrail-glyph.ok { color: var(--good); }
+.vrail h3 {
+  margin: 0; font-size: 11px; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--ink-3);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.vrail section { border-bottom: 1px solid var(--line); padding-bottom: 10px; display: flex; flex-direction: column; gap: 5px; }
+.vrail section:last-of-type { border-bottom: 0; }
+.vrail .vr-line { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--ink-2); }
+.vrail .vr-line b { font-weight: 600; color: var(--ink); }
+.vrail .vr-note { font-size: 12px; color: var(--ink-3); }
+.vr-ok { color: var(--good); }
+.vr-wait { color: var(--warn); }
+
+/* -- the arena: topbar / table / status / actions, fixed rows -- */
+.arena { flex: 1; min-width: 0; display: grid; grid-template-rows: auto 1fr auto auto auto; }
+
+.topbar {
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  border-bottom: 1px solid var(--line); font-size: 14px; color: var(--ink-2);
+}
+.topbar .hand-no { font-weight: 740; color: var(--ink); font-size: 16px; letter-spacing: -.01em; }
+.topbar .spacer { flex: 1; }
+.topbar .link {
+  appearance: none; background: none; border: 0; color: var(--ink-3); font: inherit;
+  font-size: 13px; cursor: pointer; padding: 4px 8px; border-radius: 8px;
+}
+.topbar .link:hover { color: var(--ink); background: var(--panel-2); }
+
+/* -- the table -- */
+.table-wrap { position: relative; min-height: 0; overflow: hidden; }
+.oval {
+  position: absolute; left: 7%; right: 7%; top: 12%; bottom: 14%;
+  border-radius: 45% / 48%;
+  background: radial-gradient(ellipse at 50% 38%, var(--felt-2), var(--felt) 75%);
+  border: 2px solid var(--felt-line);
+  box-shadow: inset 0 0 40px rgb(0 0 0 / .45), 0 10px 30px rgb(0 0 0 / .4);
+}
+.oval::after {
+  content: ''; position: absolute; inset: 7%;
+  border-radius: 45% / 48%; border: 1px solid color-mix(in srgb, var(--felt-line) 60%, transparent);
+}
+
+/* One switch, in the corner of the felt where the oval is not. Deliberately
+ * nowhere near Fold. */
+.sound {
+  position: absolute; right: 8px; top: 6px; z-index: 4;
+  appearance: none; border: 0; background: none; cursor: pointer;
+  color: var(--ink-3); padding: 5px; border-radius: 8px; line-height: 0;
+}
+.sound:hover { color: var(--ink); background: var(--panel-2); }
+.sound.off { opacity: .6; }
+/* On, but the browser has not been given a gesture yet, so nothing can sound.
+ * Saying so is better than seeming broken. */
+.sound.waiting { opacity: .42; }
+.sound:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.center {
+  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.pot {
+  font-size: 14px; color: var(--ink-2);
+  display: flex; align-items: baseline; gap: 8px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  border: 1px solid var(--felt-line); border-radius: 999px; padding: 4px 15px;
+}
+.pot b { font-size: 22px; font-weight: 800; color: var(--ink); letter-spacing: -.025em; }
+/* The board is the one place a card turns over rather than arriving, so it is
+ * the one place that needs depth behind the rotation. Without a perspective a
+ * rotateY is a squash. */
+.board { display: flex; gap: 7px; min-height: 76px; perspective: 900px; }
+
+/* -- playing cards -- */
+.pcard {
+  width: 54px; height: 76px; border-radius: 7px; position: relative; flex: none;
+  backface-visibility: hidden;
+}
+.pcard.small { width: 42px; height: 59px; border-radius: 6px; }
+.pcard.face {
+  background: hsl(210 40% 96%); color: hsl(222 47% 12%);
+  border: 1px solid hsl(210 20% 80%);
+  display: flex; flex-direction: column; justify-content: space-between;
+  padding: 4px 5px; box-shadow: 0 2px 6px rgb(0 0 0 / .35);
+  overflow: hidden;
+}
+.pcard.face.red { color: hsl(0 72% 42%); }
+.pcard .rank {
+  font-size: 21px; font-weight: 820; line-height: 1; letter-spacing: -.04em;
+  position: relative; z-index: 1;
+}
+.pcard.small .rank { font-size: 16px; }
+/* The pip, large and faint behind the rank, the way a real card carries it. It
+ * is what stops a 54x76 rectangle reading as a tile. */
+.pip-watermark {
+  position: absolute; inset: 0; margin: auto; z-index: 0;
+  opacity: .08; pointer-events: none;
+}
+.pip-corner { align-self: flex-end; position: relative; z-index: 1; }
+.pcard.back {
+  background:
+    repeating-linear-gradient(45deg, transparent 0 4px, rgb(255 255 255 / .05) 4px 8px),
+    repeating-linear-gradient(-45deg, transparent 0 7px, rgb(255 255 255 / .025) 7px 14px),
+    linear-gradient(160deg, hsl(217 60% 30%), hsl(222 55% 18%));
+  border: 1px solid hsl(217 40% 38%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .1), 0 2px 6px rgb(0 0 0 / .35);
+}
+.pcard.gap { background: none; border: 1px dashed color-mix(in srgb, var(--felt-line) 70%, transparent); box-shadow: none; }
+
+/* -- seats -- */
+.seat {
+  position: absolute; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  width: 148px;
+}
+.seat-cards { display: flex; gap: 5px; height: 59px; perspective: 700px; }
+/* The wrapper a card is dealt in. It carries the flight from the middle of the
+ * table; preserve-3d is what lets the perspective above reach the card's own
+ * flip inside it. */
+.dealt { flex: none; transform-style: preserve-3d; }
+.seat-plate {
+  width: 100%; background: var(--panel); border: 1.5px solid var(--line);
+  border-radius: 12px; padding: 6px 10px 7px; text-align: center;
+  box-shadow: 0 3px 10px rgb(0 0 0 / .35);
+  position: relative;
+}
+.seat-name {
+  font-size: 13px; font-weight: 650; color: var(--ink-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+}
+.seat-name .you { color: var(--accent-2); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+/* A stack can be 1,234.5678 in a plate 148px wide, and eight decimals when the
+ * blinds are small enough that four would all be zero. It gives up size before
+ * it gives up digits. */
+.seat-stack {
+  font-size: clamp(15px, 1.35vw, 19px); font-weight: 760;
+  letter-spacing: -.022em; line-height: 1.25;
+}
+.seat-move { font-size: 12px; color: var(--ink-3); min-height: 17px; }
+.seat-move .did { color: var(--ink-2); font-weight: 600; }
+.seat.turn .seat-plate { border-color: var(--accent); }
+.seat.folded { opacity: .45; }
+.seat.folded .seat-cards { visibility: hidden; }
+.seat.allin .seat-move .did { color: var(--warn); }
+.seat.win .seat-plate { border-color: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 30%, transparent), 0 3px 10px rgb(0 0 0 / .35); }
+
+.dealer {
+  position: absolute; width: 22px; height: 22px; border-radius: 999px;
+  background: hsl(210 40% 96%); color: hsl(222 47% 12%);
+  font-size: 11px; font-weight: 800; display: grid; place-items: center;
+  border: 1px solid hsl(210 20% 70%); box-shadow: 0 1px 4px rgb(0 0 0 / .4);
+  right: -8px; top: -8px;
+}
+
+/* A seat's chips in front of it, toward the table. Where it sits and where it
+ * goes are both computed in felt/positions.ts, because the vector to the pot is
+ * a difference between two of those numbers and a stylesheet cannot subtract.
+ * The centring translate is set there too, so the sweep can scale without
+ * fighting a transform declared here. */
+.bet {
+  position: absolute;
+  display: flex; align-items: center; gap: 5px;
+  font-size: 13px; font-weight: 650; color: var(--ink);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  border: 1px solid var(--felt-line); border-radius: 999px; padding: 2px 9px 2px 4px;
+}
+.bet .disc {
+  width: 14px; height: 14px; border-radius: 999px; flex: none;
+  background: radial-gradient(circle at 35% 35%, hsl(217 91% 70%), hsl(217 91% 45%));
+  border: 2px dashed rgb(255 255 255 / .55);
+}
+
+/* a keyless wrapper that adds no box, so seats position against the table */
+.contents { display: contents; }
+
+/* the table plus whatever must sit over it, filling the arena's middle row */
+.table-zone { position: relative; min-height: 0; display: flex; }
+.table-zone > .table-wrap { flex: 1; }
+
+/* the end of the table, over the felt and under nothing */
+.stage-over {
+  position: absolute; inset: 0; z-index: 5;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+.endcard {
+  width: min(440px, calc(100% - 32px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 18px 50px rgb(0 0 0 / .5);
+  padding: 18px 20px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.endcard h2 {
+  margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.end-result { margin: 0; font-size: 25px; font-weight: 800; letter-spacing: -.028em; }
+.end-result.won { color: var(--good); }
+.end-result.lost { color: var(--bad); }
+.end-rows { display: flex; flex-direction: column; gap: 5px; }
+.end-row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.end-row > span { color: var(--ink-2); }
+.end-row > b { font-weight: 650; }
+.end-note { margin: 0; font-size: 13px; color: var(--ink-3); }
+.end-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+/* -- what the table is waiting on this seat for --
+ *
+ * The one thing on the felt with a cost attached to ignoring it: an obligation
+ * that stands long enough is one the other seats can take this seat's table
+ * bond over. It gets the loudest treatment on the screen and no clock at all,
+ * because the count that would take the bond is another machine's and this page
+ * cannot see it. It changes when the chain does and not on any other schedule -
+ * which is why there is nothing here that repeats or pulses. */
+.felt-alarm .alarm {
+  margin: 0; padding: 7px 11px;
+  border: 1px solid var(--bad); border-left-width: 3px; border-radius: 8px;
+  background: color-mix(in srgb, var(--bad) 14%, var(--bg));
+  color: var(--ink); font-size: 14px; font-weight: 600;
+}
+.felt-alarm .lede.warn { margin: 0; font-size: 13px; }
+
+/* -- status line: always present, fixed height, only the words change -- */
+.status {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 44px; padding: 4px 14px;
+  border-top: 1px solid var(--line); background: var(--panel);
+  font-size: 16px; color: var(--ink-2); text-align: center;
+}
+.status b { color: var(--ink); font-weight: 700; }
+.status .won { color: var(--good); font-weight: 780; font-size: 19px; letter-spacing: -.015em; }
+.status .lost { color: var(--bad); font-weight: 780; font-size: 19px; letter-spacing: -.015em; }
+.status .count { font-size: 13px; color: var(--ink-3); }
+
+/* -- action bar: fixed height whether or not anything may be pressed -- */
+.actbar {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 64px; padding: 8px 14px;
+  border-top: 1px solid var(--line); background: var(--panel);
+}
+.actbar button.act { font-size: 16px; padding: 11px 22px; border-radius: 12px; }
+/* An amount somebody is about to commit, set in the face the money is set in
+ * everywhere else. cards.css resets the shorthand, so this has to say it after. */
+.actbar .amount { font-family: var(--display); font-weight: 700; letter-spacing: -.015em; }
+.actbar .quick {
+  appearance: none; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer;
+  color: var(--ink-3); background: none; border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 8px;
+}
+.actbar .quick:hover { color: var(--ink); }
+
+/* ======================= motion ======================= */
+/* Nothing below asserts anything: a card animates when it opened, chips when
+ * the entry was signed. Stillness must already say all of it, which is why the
+ * whole block sits behind reduced-motion. The framer-motion half of the felt -
+ * the deal, the chip sweep, the dealer button - is behind the same preference
+ * through MotionConfig reducedMotion="user" at the app root.
+ *
+ * The chip trajectories that used to live here are gone. They were two
+ * hand-written keyframes that only worked heads-up, because the positions were
+ * fixed rules and the vector to the pot was too; every larger table fell back
+ * to a fade. */
+@media (prefers-reduced-motion: no-preference) {
+  .pcard.enter { animation: card-in .28s cubic-bezier(.2, .8, .3, 1) backwards; }
+  .pcard.face.enter { animation: card-flip .34s cubic-bezier(.2, .8, .3, 1) backwards; }
+  .pcard.i1 { animation-delay: .07s; }
+  .pcard.i2 { animation-delay: .14s; }
+  .pcard.i3 { animation-delay: .21s; }
+  .pcard.i4 { animation-delay: .28s; }
+  .seat.turn .seat-plate { animation: turn-pulse 1.8s ease-in-out infinite; }
+  .pot.grew b { animation: pot-bump .3s ease-out; }
+  .seat.win .seat-plate { animation: win-glow 1s ease-in-out 2; }
+  /* Arriving, once. A thing that was not there a moment ago is allowed to say
+   * so; it is not allowed to keep saying it. */
+  .felt-alarm .alarm { animation: alarm-in .34s cubic-bezier(.2, .8, .3, 1) backwards; }
+}
+@keyframes card-in { from { opacity: 0; transform: translateY(-14px) scale(.85); } }
+@keyframes card-flip { from { opacity: 0; transform: rotateY(88deg); } }
+@keyframes turn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent), 0 3px 10px rgb(0 0 0 / .35); }
+  50% { box-shadow: 0 0 0 6px transparent, 0 3px 10px rgb(0 0 0 / .35); }
+}
+@keyframes pot-bump { 40% { transform: scale(1.18); } }
+@keyframes win-glow {
+  50% { box-shadow: 0 0 24px color-mix(in srgb, var(--good) 55%, transparent), 0 3px 10px rgb(0 0 0 / .35); }
+}
+@keyframes alarm-in { from { opacity: 0; transform: translateY(-8px); } }
+
+/* narrow windows: the verify rail folds; the arena keeps its rows */
+@media (max-width: 640px) {
+  .vrail { display: none; }
+  .vrail.closed { display: flex; }
+  .seat { width: 120px; }
+}

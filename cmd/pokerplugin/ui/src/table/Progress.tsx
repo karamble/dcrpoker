@@ -20,10 +20,10 @@ import { Awaited } from './Money'
 // rendered as an unfinished task reads as a stall. They say what is being waited
 // on and roughly how long it takes.
 //
-// And the payment steps say where the approval happens, which is not here. This
-// page runs in a sandboxed frame and can no more take a passphrase than it can
-// sign; it asks the host, and a person approves it in the dashboard. Saying so
-// is the honest version of a progress bar that would otherwise appear to stop.
+// And the payment steps say where the approval happens, which is not here. The
+// spend goes out over the bridge: this game asks, and a person approves it in
+// the dashboard, which holds the wallet and the passphrase. Saying so is the
+// honest version of a progress bar that would otherwise appear to stop.
 
 type StepState = 'done' | 'now' | 'later'
 
@@ -53,7 +53,13 @@ export function Progress({
   const roster = ledger?.roster ?? table.roster ?? []
   const ours = roster.find((s) => s.ours)
   const seated = table.seat !== undefined
-  const missing = ledger?.payoutsMissing ?? []
+  // Without a ledger the list is empty and the warning below disappears, so
+  // fall back to the snapshot, which reports the same fact about this seat.
+  const missing = ledger
+    ? (ledger.payoutsMissing ?? [])
+    : table.seat !== undefined && !table.payoutSet
+      ? [table.seat]
+      : []
 
   const steps: Step[] = [
     {
@@ -318,9 +324,8 @@ function Row({ label, value }: { label: string; value: string }) {
  *  the gap between them is exactly where a payment goes missing.
  *
  *  Where the approval happens is said out loud, because it is not here and a
- *  button that appeared to do nothing would be the alternative. This page runs
- *  in a sandboxed frame; it can ask for a payment and it can never take a
- *  passphrase. */
+ *  button that appeared to do nothing would be the alternative. This game can
+ *  ask for a payment; it never holds a wallet and never takes a passphrase. */
 function Task({
   label,
   note,
@@ -353,7 +358,7 @@ function Task({
           } else if (s.txid) {
             setSaid('approved, and being located on the chain')
           } else {
-            setSaid(`${s.state} — approve it in your wallet, below this panel`)
+            setSaid(`${s.state} — approve it in your wallet, in the dashboard`)
           }
         })
         .catch(() => {
@@ -381,7 +386,7 @@ function Task({
             run()
               .then((asked) => {
                 setSpendId(asked.spendId)
-                setSaid('asked your wallet; approve it below this panel')
+                setSaid('asked your wallet; approve it in the dashboard')
               })
               .catch((e) => setSaid(String(e instanceof Error ? e.message : e)))
               .finally(() => setBusy(false))

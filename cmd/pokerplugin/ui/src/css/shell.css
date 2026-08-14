@@ -1,0 +1,32 @@
+/* ---------- the frame: the bar, the tab strip, the alarm's place ---------- */
+
+.app { display: flex; flex-direction: column; height: 100%; }
+.body { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+
+.bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.bar-spacer { flex: 1; }
+.tab {
+  appearance: none; border: 1px solid transparent; background: none; color: var(--ink-3);
+  font: inherit; font-weight: 600; font-size: 14px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+}
+.tab[aria-selected='true'] { color: var(--ink); background: var(--panel-2); border-color: var(--line); }
+.live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); }
+.dot { width: 8px; height: 8px; border-radius: 999px; background: var(--ink-3); }
+.dot.on { background: var(--good); }
+.dot.off { background: var(--warn); }
+
+/* The four questions. One row, and it scrolls rather than wraps: a strip that
+ * reflows moves the tab under the cursor. */
+.tabs {
+  display: flex; gap: 4px; overflow-x: auto;
+  border-bottom: 1px solid var(--line); padding-bottom: 6px;
+}
+
+/* Where the owes alarm sits on the felt. A row of the arena's grid, so the
+ * status line and the buttons below it keep their places; it collapses to
+ * nothing when there is nobody to name. */
+.felt-alarm { padding: 6px 14px 0; }
+.felt-alarm:empty { display: none; }

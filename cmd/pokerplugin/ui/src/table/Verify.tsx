@@ -14,6 +14,14 @@ import { dcr, short } from '../format'
 // never overstate. "Ours" is a stronger claim than "verified"; Signed is a fact
 // and Now is a promise; an outpoint shown here is one this peer checked against
 // the chain itself, not one it was told about.
+//
+// Two shapes. The rail is the felt's, where all of it is at a glance and none of
+// it is in the way. The card is the audit tab's, and it carries the part that
+// cannot be got at any other way: whether the log is in step, and the challenge.
+// The deck, the money and the escrow are three whole cards on that tab already,
+// and a second telling of them there would be a page arguing with itself. Once a
+// table ends the felt is unreachable, so without the card the challenge would be
+// too.
 
 const RAIL_KEY = 'poker.vrail'
 
@@ -22,11 +30,13 @@ export function Verify({
   ledger,
   hand,
   names,
+  variant = 'rail',
 }: {
   table: Snapshot
   ledger?: LedgerView
   hand?: HandView
   names: Map<number, string>
+  variant?: 'rail' | 'card'
 }) {
   // Collapsed by default: the rail is where a curious player checks the
   // deck and the escrow, not something they need in their way to play. It
@@ -57,8 +67,73 @@ export function Verify({
   const settled = ledger?.settled ?? table.settled
   const live = ledger?.live ?? table.live
   const shuffles = hand?.shuffles ?? []
-  const deckDone = shuffles.length > 0 && shuffles.every((s) => s.state !== 'awaited')
+  const checked = shuffles.filter((s) => s.state !== 'awaited').length
+  const deckDone = shuffles.length > 0 && checked === shuffles.length
   const haveOpenChallenge = (ledger?.challenges ?? []).some((c) => c.open)
+
+  const challenge = () => {
+    if (!settled) return
+    setChallengePending(true)
+    setChallengeError(undefined)
+    api
+      .challenge(table.sid, settled.hand)
+      .catch((e) => setChallengeError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setChallengePending(false))
+  }
+
+  if (variant === 'card') {
+    return (
+      <section className="card quiet">
+        <h2>Checking it yourself</h2>
+        <div className="rows">
+          <div className="row">
+            <span>The log</span>
+            <span className={table.waiting > 0 ? 'warn' : 'good'}>
+              {table.waiting > 0
+                ? `${table.waiting} entries waiting on one before them`
+                : 'in step'}
+            </span>
+          </div>
+          {shuffles.length > 0 && (
+            <div className="row">
+              <span>Shuffles this process checked</span>
+              <span>
+                {checked} of {shuffles.length}
+                {hand?.hand ? ` · hand ${hand.hand}` : ''}
+              </span>
+            </div>
+          )}
+        </div>
+        <p className="lede muted">
+          Every action is signed by its seat and chains forward. This is what a dispute
+          would be argued from, and it needs nobody to be believed.
+        </p>
+        {settled && settled.hand > 0 && (
+          <>
+            <div className="actions">
+              <button
+                className="act"
+                disabled={challengePending || haveOpenChallenge}
+                onClick={challenge}
+              >
+                {haveOpenChallenge
+                  ? 'A hand is already challenged'
+                  : `Challenge hand ${settled.hand}`}
+              </button>
+            </div>
+            <p className="lede muted">
+              Any seat may demand a settled hand be recomputed from everyone's secrets.
+              Refusing costs the bond — and the challenged hand shows its cards to this
+              table, folds included, yours too.
+            </p>
+            {challengeError && (
+              <p className="lede bad">The challenge did not reach the table: {challengeError}</p>
+            )}
+          </>
+        )}
+      </section>
+    )
+  }
 
   if (!open) {
     return (
@@ -130,14 +205,7 @@ export function Verify({
             <button
               className="ghost"
               disabled={challengePending || haveOpenChallenge}
-              onClick={() => {
-                setChallengePending(true)
-                setChallengeError(undefined)
-                api
-                  .challenge(table.sid, settled.hand)
-                  .catch((e) => setChallengeError(e instanceof Error ? e.message : String(e)))
-                  .finally(() => setChallengePending(false))
-              }}
+              onClick={challenge}
             >
               {haveOpenChallenge ? 'a hand is challenged' : `challenge hand ${settled.hand}`}
             </button>

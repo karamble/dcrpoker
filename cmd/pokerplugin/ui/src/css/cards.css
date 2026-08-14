@@ -1,0 +1,218 @@
+/* The shared vocabulary: cards, the words in them, and the small shapes that
+ * carry state.
+ *
+ * Three postures do the hierarchy, and which one a card wears is the whole of
+ * it: lead is the card asking for something, plain is context, quiet is a
+ * record. Six boxes of identical weight is what made this page read as an
+ * admin panel; weight is the cheapest signal there is and none of it was spent.
+ *
+ * These selectors are frozen. Anyone may use them, nobody renames them, and a
+ * variant goes beside its base rather than replacing it.
+ */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+/* The card asking for something. `.lead-slot` is the same posture applied from
+ * the outside, for a card whose own markup belongs to another file. */
+.card.lead, .lead-slot > .card {
+  position: relative; padding-left: 19px;
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  box-shadow: var(--lift, 0 3px 10px rgb(0 0 0 / .35));
+}
+.card.lead::before, .lead-slot > .card::before {
+  content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--accent);
+}
+
+/* A record is not a box. A hairline and the text, so a page of records reads as
+ * one page rather than as five things each demanding a frame. */
+.card.quiet {
+  background: none; border: 0; border-top: 1px solid var(--line);
+  border-radius: 0; padding: 12px 2px 2px;
+}
+.card.quiet > h2 { color: var(--ink-2); }
+
+/* While the seed is on screen the card is plainly a different kind of object. */
+.card.grave { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
+
+/* A section title is a title. The 13px uppercase eyebrow this used to be is the
+ * settings-panel idiom: right as a label on a group of numbers, wrong as a
+ * heading, and it was used only as a heading. It survives as `.sub`. */
+.card > h2 {
+  margin: 0 0 6px; font-size: 15px; font-weight: 650;
+  letter-spacing: 0; text-transform: none; color: var(--ink);
+}
+.card > h2 .aside { font-weight: 400; font-size: 13px; color: var(--ink-3); margin-left: 8px; }
+.card > .lede { margin: 0 0 10px; }
+.card > .lede:last-child { margin-bottom: 0; }
+.lede { color: var(--ink-2); font-size: 15px; }
+.headline { font-size: 20px; font-weight: 700; line-height: 1.25; letter-spacing: -.01em; margin: 2px 0 8px; }
+.sub {
+  font-size: 11px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+
+.muted { color: var(--ink-3); }
+.mono { font-family: var(--mono); font-size: 13px; }
+.bad { color: var(--bad-ink, hsl(0 84% 64%)); }
+.good { color: var(--good); }
+.warn { color: var(--warn); }
+.alarm { color: var(--bad-ink, hsl(0 84% 64%)); font-weight: 700; }
+.empty { color: var(--ink-3); font-size: 14px; }
+.waiting { color: var(--ink-2); font-size: 15px; text-align: center; margin: 6px 0; }
+
+.rows { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.rows:last-child { margin-bottom: 0; }
+.row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  font-size: 14px; min-width: 0;
+}
+.row > span:first-child { color: var(--ink-2); }
+.row > span:last-child { text-align: right; overflow: hidden; text-overflow: ellipsis; }
+
+.banner {
+  border: 1px solid var(--warn); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  padding: 10px 12px; font-size: 14px;
+}
+.banner.calm { border-color: var(--line); background: var(--panel-2); }
+
+.pill {
+  display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--accent-2);
+  border: 1px solid var(--felt-line); border-radius: 999px; padding: 2px 10px;
+}
+
+table.grid { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 14px; }
+table.grid th {
+  text-align: left; font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--ink-3); padding: 4px 6px; border-bottom: 1px solid var(--line);
+}
+table.grid td { padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+table.grid .num { text-align: right; font-variant-numeric: tabular-nums; }
+table.grid tr.ours td { color: var(--ink); font-weight: 600; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font-size: 12px;
+  color: var(--ink-2); background: var(--panel-2);
+}
+.chip.ours { border-color: var(--accent-2); }
+.chip.verified { border-color: var(--good); }
+.chip.awaited { border-color: var(--warn); }
+
+/* Coin on the chain that is not yours to move yet, given a surface of its own.
+ *
+ * Hatched rather than coloured: locked is a different kind of fact from good or
+ * bad, and hatching says "fenced off" without asking anybody to know what amber
+ * means here. There is no countdown on it, because the lock is a number of
+ * blocks on top of an output and the chain does not run in seconds.
+ *
+ * `.locked` in lobby.css is the same fact stated in one line, and the lock glyph
+ * is shared with it deliberately. This is the denser reading of it, for the tab
+ * that is about the money rather than a row that mentions it. */
+.fenced {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 4px 10px; border-radius: var(--radius-sm, 8px);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
+  background:
+    repeating-linear-gradient(45deg, transparent 0 5px,
+      color-mix(in srgb, var(--warn) 9%, transparent) 5px 10px),
+    var(--panel-2);
+  font-variant-numeric: tabular-nums;
+}
+.fenced svg { color: var(--ink-3); flex: none; }
+.fenced b { font-weight: 700; }
+.fenced .until { font-size: 12px; color: var(--ink-2); }
+
+button.act {
+  appearance: none; font: inherit; font-weight: 650; font-size: 15px;
+  display: inline-flex; align-items: center; gap: 8px;
+  color: var(--ink); background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 9px 16px; cursor: pointer;
+}
+button.act:hover { border-color: var(--ink-3); }
+button.act:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.act:disabled { opacity: .45; cursor: default; }
+button.act.primary { background: var(--accent); border-color: var(--accent); color: hsl(222 47% 5%); }
+button.act.fold { color: var(--bad); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+.amount-field {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg); padding: 0 10px;
+}
+.amount {
+  appearance: none; border: 0; background: none; color: var(--ink);
+  font: inherit; font-size: 16px; font-variant-numeric: tabular-nums; width: 9ch; padding: 9px 0;
+}
+.amount:focus { outline: none; }
+.unit { font-size: 12px; color: var(--ink-3); }
+
+/* ---------- the table's own header, in the scrolling view ---------- */
+/* Felt, with the oval's inner hairline, so a tab is plainly part of the table
+ * the felt view is rather than a page about it. */
+.table-head {
+  position: relative; overflow: hidden;
+  padding: 12px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  border: 1px solid var(--felt-line); border-radius: var(--radius);
+  background: radial-gradient(ellipse at 50% -20%, var(--felt-2), var(--felt) 70%);
+  box-shadow: inset 0 0 30px rgb(0 0 0 / .35), var(--lift, 0 3px 10px rgb(0 0 0 / .35));
+}
+.table-head::after {
+  content: ''; position: absolute; inset: 6px; pointer-events: none;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--felt-line) 45%, transparent);
+}
+.table-head > * { position: relative; }
+.table-head .head-spacer { flex: 1; }
+.head-what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.head-title { font-size: 16px; font-weight: 650; }
+.head-note { font-size: 12px; color: var(--ink-2); }
+.head-note .sid { font-family: var(--mono); }
+
+/* Seats as chairs, where an oval is too big to be worth drawing. */
+.rail-seats { display: inline-flex; align-items: center; gap: 4px; }
+.rail-seats .ch {
+  width: 8px; height: 8px; border-radius: 2px 2px 3px 3px;
+  border: 1.5px solid var(--felt-line); background: none;
+}
+.rail-seats .ch.taken { background: var(--ink-2); border-color: var(--ink-2); }
+.rail-seats .ch.ours { background: var(--accent-2); border-color: var(--accent-2); }
+
+/* The tab strip itself is styled in shell.css. This is the one thing that
+ * changes because those tabs are anchors: a tab is not a sentence with a link
+ * in it. */
+.tablink { text-decoration: none; }
+.tablink:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* One tab's body. The frame's gap belongs to .body and the panel is one item of
+ * it, so the panel carries the gap for the cards inside it. */
+.sheet { display: flex; flex-direction: column; gap: 12px; }
+
+/* the step rail (pre-deal) */
+.rail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 12px; padding: 0; list-style: none; }
+.rail-step { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; letter-spacing: .03em; color: var(--ink-3); white-space: nowrap; }
+.rail-pip {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 999px;
+  border: 1px solid var(--line); font-size: 11px; font-weight: 650; line-height: 1;
+}
+.rail-step.done .rail-pip { border-color: var(--good); color: var(--good); }
+.rail-step.now .rail-pip { border-color: var(--accent); color: var(--accent); }
+.rail-step.now .rail-name { color: var(--ink); font-weight: 650; }
+.rail-step.later { opacity: .5; }
+
+/* chain events (On the chain) */
+.events { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.event { display: flex; gap: 8px; font-size: 14px; }
+.event-text { color: var(--ink-2); }
+.event-meta { color: var(--ink-3); font-size: 12px; }
+.pip { width: 8px; height: 8px; border-radius: 999px; background: var(--ink-3); margin-top: 6px; flex: none; }
+.pip.settled { background: var(--good); }
+.pip.claimed, .pip.unanswerable { background: var(--bad); }
+.pip.proposed, .pip.blocked { background: var(--warn); }

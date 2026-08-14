@@ -4,15 +4,16 @@
 // side pins their names in a test, and a code generator would be a build step
 // and a dependency in a bundle that deliberately has neither.
 //
-// Every path here is relative. The document is served at <prefix>/ui/ and the
-// host mounts <prefix> wherever it likes, so `../tables` is the only form that
-// works - and it means the request goes back through the proxy that swaps this
-// page's short-lived token for the plugin's real one. Nothing here ever holds
-// the plugin's own credentials.
+// Every path here is relative. The document is served at /ui/ and the routes
+// sit one level up, so `../tables` is the form that works wherever the binary
+// is listening. Nothing in this file knows an absolute address, which is what
+// keeps the bundle the same bytes in every copy of the binary.
 
 export type Duty = {
   seat: number
-  kind: 'cardkey' | 'shuffle' | 'share' | 'action' | 'checkpoint'
+  // Every kind in pkg/driver/duty.go. 'reveal' is owed by every seat at once
+  // the moment a hand is challenged, so it is the busiest of them.
+  kind: 'cardkey' | 'shuffle' | 'share' | 'action' | 'checkpoint' | 'reveal'
   hand: number
   at: number
 }
@@ -229,10 +230,12 @@ export type DisputeView = {
   named: number
 }
 
-/** The token the host handed this page over its message port, and the only
- *  credential it ever has. Kept in a module variable rather than storage: an
- *  opaque origin has no useful storage anyway, and a token that outlived the
- *  panel would be a token nobody revoked. */
+/** The token this page was opened with, and the only credential it ever has.
+ *
+ *  Held in a module variable and read at request time. It comes from the URL
+ *  the game printed at startup and stays there, so a reload still has it; the
+ *  token dies with the process that minted it, so a stale one can only fail
+ *  closed. */
 let token = ''
 let base = '..'
 

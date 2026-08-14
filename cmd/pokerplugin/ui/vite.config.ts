@@ -6,18 +6,18 @@ import { viteSingleFile } from 'vite-plugin-singlefile'
 //
 // Two constraints, both from where this ends up rather than from taste.
 //
-// The page is framed with an opaque origin - `sandbox="allow-scripts"` and
-// deliberately not `allow-same-origin` - so every request it makes is
-// cross-origin. Vite's normal output is `<script type="module">`, and a module
-// script is always fetched in CORS mode: from an opaque origin that needs the
-// host to answer with the right headers on every asset, and the credentials it
-// would otherwise send are not sent at all. Inlining everything into the
-// document removes the whole class of problem, and lets the host hash the one
-// inline script into a strict script-src rather than naming an origin.
+// Everything inlines into the one document because the document is the whole
+// artifact: it is go:embedded into a binary that gets signed and then served
+// from a loopback listener with no network behind it. A separate asset is a
+// request that can fail; a data URI cannot. Fonts and images inline for the
+// same reason, which is what `assetsInlineLimit` is doing below.
 //
-// `base: './'` because the host mounts this under a prefix that is not knowable
-// here. A signed binary cannot be parameterised per install, so nothing in the
-// bundle may contain an absolute path.
+// `base: './'` so nothing in the bundle contains an absolute path. A signed
+// binary cannot be parameterised per install.
+//
+// (This file used to say the page was framed at an opaque origin by dcrpulse.
+// That host is gone - the game serves its own page now - but inlining is still
+// right, for the reason above.)
 export default defineConfig({
   plugins: [react(), viteSingleFile()],
   base: './',
