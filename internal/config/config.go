@@ -101,7 +101,7 @@ func Load(args []string, version string) (*Config, error) {
 	pre := defaults()
 	preParser := flags.NewParser(pre, flags.HelpFlag|flags.PassDoubleDash|flags.IgnoreUnknown)
 	if _, err := preParser.ParseArgs(args); err != nil {
-		return nil, err
+		return nil, answerOrFail(err)
 	}
 
 	if pre.ShowVersion {
@@ -144,7 +144,7 @@ func Load(args []string, version string) (*Config, error) {
 	// Second pass over the same parser, so anything typed on the line beats
 	// what the file said.
 	if _, err := parser.ParseArgs(args); err != nil {
-		return nil, err
+		return nil, answerOrFail(err)
 	}
 
 	if cfg.TestNet && cfg.SimNet {
@@ -206,6 +206,21 @@ func Load(args []string, version string) (*Config, error) {
 // ErrDone says the program was asked something it has now answered, and should
 // stop without being treated as having failed.
 var ErrDone = errors.New("nothing left to do")
+
+// answerOrFail turns a request for help into an answer, and leaves everything
+// else a failure.
+//
+// go-flags carries the help text inside the error rather than writing it,
+// because PrintErrors is off - so without this, asking for help succeeds
+// silently and prints nothing at all.
+func answerOrFail(err error) error {
+	var fe *flags.Error
+	if errors.As(err, &fe) && fe.Type == flags.ErrHelp {
+		fmt.Fprintln(os.Stdout, fe.Message)
+		return ErrDone
+	}
+	return err
+}
 
 // IsDone reports whether loading ended in an answered question rather than a
 // failure: --version, or go-flags having written the help text itself.

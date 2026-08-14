@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -205,20 +206,32 @@ func run() (err error) {
 	return nil
 }
 
-// version reports what this build is, for --version. There is no release
-// number to state, so it says what it can prove: the protocol it speaks and
-// the revision it was built from.
+// version reports what this build is, in the shape dcrd answers in.
+//
+// There is no release number to state, so the revision stands in for one: it
+// says what can be proved about this file rather than what a constant somebody
+// forgot to raise says. A build from a modified tree says so, because that is
+// exactly when the revision alone would mislead.
 func version() string {
-	rev := "unknown revision"
+	rev, dirty := "unknown", false
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, s := range info.Settings {
-			if s.Key == "vcs.revision" {
+			switch s.Key {
+			case "vcs.revision":
+				if len(s.Value) > 12 {
+					s.Value = s.Value[:12]
+				}
 				rev = s.Value
-				break
+			case "vcs.modified":
+				dirty = s.Value == "true"
 			}
 		}
 	}
-	return fmt.Sprintf("protocol %d (%s)", schema.Version, rev)
+	if dirty {
+		rev += "-dirty"
+	}
+	return fmt.Sprintf("%s (protocol %d, Go version %s %s/%s)",
+		rev, schema.Version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
 
 type plugin struct {

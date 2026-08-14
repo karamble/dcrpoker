@@ -5,6 +5,7 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -246,17 +247,53 @@ func TestAskingTheVersionIsNotAFailure(t *testing.T) {
 	}
 }
 
-func TestAskingForHelpIsNotAFailure(t *testing.T) {
-	// go-flags returns a *flags.Error that neither wraps nor equals
-	// flags.ErrHelp. Comparing with errors.Is sends the help text to stderr
-	// under a program prefix and exits 1.
-	_, err := loadIn(t, t.TempDir(), "--help")
-	if err == nil {
-		t.Fatal("--help kept going")
+func TestAskingForHelpPrintsTheHelp(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		// go-flags returns a *flags.Error that neither wraps nor equals
+		// flags.ErrHelp. Comparing with errors.Is sends the help text to
+		// stderr under a program prefix and exits 1.
+		out := captureStdout(t, func() {
+			_, err := loadIn(t, t.TempDir(), flag)
+			if err == nil {
+				t.Fatalf("%s kept going", flag)
+			}
+			if !IsDone(err) {
+				t.Fatalf("%s reads as a failure: %v", flag, err)
+			}
+		})
+		// And with PrintErrors off, go-flags carries the text in the error
+		// rather than writing it, so exiting quietly here would answer a
+		// request for help with nothing at all.
+		if out == "" {
+			t.Fatalf("%s printed nothing", flag)
+		}
+		for _, want := range []string{"--appdata", "--debuglevel", "--bridge.addr"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("%s does not mention %s:\n%s", flag, want, out)
+			}
+		}
 	}
-	if !IsDone(err) {
-		t.Fatalf("--help reads as a failure: %v", err)
+}
+
+// captureStdout runs fn with os.Stdout redirected, and returns what it wrote.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
 	}
+	saved := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var sb strings.Builder
+		io.Copy(&sb, r)
+		done <- sb.String()
+	}()
+	fn()
+	w.Close()
+	os.Stdout = saved
+	return <-done
 }
 
 func TestAnUnknownFlagIsAFailure(t *testing.T) {
