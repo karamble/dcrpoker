@@ -12,7 +12,7 @@ require (
 	github.com/decred/dcrd/txscript/v4 v4.1.1
 	github.com/decred/dcrd/wire v1.7.0
 	github.com/decred/slog v1.2.0
-	github.com/gorilla/websocket v1.5.3
+	github.com/jrick/logrotate v1.1.2
 	go.dedis.ch/kyber/v4 v4.0.2
 	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.12
