@@ -93,6 +93,18 @@ type record struct {
 	// withholds a named seat's bond release, and a restart must not launder
 	// a cheat.
 	Cheats []uint32 `json:"cheats,omitempty"`
+	// Settled is the last boundary every seat signed: the hand it ended at
+	// and what each seat held there. It is the only record of who won.
+	//
+	// The driver holds it while a table is playing and dies with the process,
+	// and it is in no other file - the transcript carries the actions but no
+	// checkpoint, and a hand bundle carries secrets but no stacks. Without
+	// this a finished table comes back saying only that it is finished, and a
+	// person cannot be told what their own table paid them.
+	//
+	// Absent means no hand was ever settled here, which is not the same as a
+	// loss: a table that never dealt still holds its buy-in.
+	Settled *settledBoundary `json:"settled,omitempty"`
 }
 
 // recordedComplaint is one judged shuffle dispute.

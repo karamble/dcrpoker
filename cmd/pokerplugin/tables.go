@@ -119,6 +119,11 @@ type table struct {
 	accused   bool
 	settle    *settlement
 	settled   bool
+	// boundary is the last signed result, kept for a table whose driver is
+	// gone. While one is playing the driver is authoritative and this is not
+	// read; a receipt restored from disk has no driver, and this is the only
+	// place the outcome survives.
+	boundary *settledBoundary
 	// session is the key this seat signs table business with, and netParams
 	// the network its addresses belong to. Both are needed long after the
 	// table was joined, and deriving them twice risks deriving them
@@ -564,6 +569,14 @@ func (tbl *table) record() *record {
 	if tbl.form.State() == membership.Aborted {
 		rec.Aborted, rec.Reason = true, tbl.form.Reason()
 	}
+	// The driver's answer while there is one, so a table that settles and is
+	// saved again does not write back a staler boundary than it now holds.
+	if tbl.play != nil {
+		at, stacks := tbl.play.Settled()
+		rec.Settled = &settledBoundary{Hand: at, Stacks: stacks}
+	} else if tbl.boundary != nil {
+		rec.Settled = tbl.boundary
+	}
 	return rec
 }
 
@@ -686,6 +699,7 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 func (tbl *table) resume(rec *record) error {
 	tbl.finished = rec.Finished
 	tbl.dealt = rec.Dealt
+	tbl.boundary = rec.Settled
 	for at, digest := range rec.Signed {
 		if tbl.signed == nil {
 			tbl.signed = map[string]string{}
@@ -1098,6 +1112,13 @@ func (t *tables) tick(height int64) []outgoing {
 			// forever, re-offering a deposit and warning about a seat
 			// that stopped. Persisted, so it survives a restart the
 			// same way a table somebody left does.
+			// And the result, while there is still something to ask.
+			// The driver holds the only copy and dies with the
+			// process; the transcript being written above carries
+			// the actions but no checkpoint, so without this nobody
+			// can be told afterwards what their own table paid them.
+			at, stacks := tbl.play.Settled()
+			tbl.boundary = &settledBoundary{Hand: at, Stacks: stacks}
 			if !tbl.finished {
 				tbl.finished = true
 				t.persist(tbl)
@@ -2192,6 +2213,13 @@ func (t *tables) snapshots() []snapshot {
 			if h := tbl.play.Hand(); h != nil {
 				s.Hand = h.State().Hand
 			}
+		} else if tbl.boundary != nil {
+			// A receipt: the driver is gone and this is what it last
+			// signed. Over, because a table with a settled boundary
+			// and no driver has stopped for good - but deliberately
+			// not Dealing, which would say a dead table is playing.
+			s.Settled = tbl.boundary
+			s.Over = true
 		}
 		out = append(out, s)
 	}
