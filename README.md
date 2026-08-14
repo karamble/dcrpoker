@@ -16,9 +16,33 @@ for it.
 There is no referee to trust, and no shuffler to trust either. What replaces them
 is arithmetic and an escrow the players build themselves.
 
-It runs as an installable game inside [dcrpulse](https://github.com/karamble/dcrpulse),
+It runs as its own program, alongside [dcrpulse](https://github.com/karamble/dcrpulse),
 which supplies its chain access and carries its messages over Bison Relay group
-chats.
+chats. It dials out to one dcrpulse gaming bridge and reaches nothing else, so
+the machine it runs on needs no inbound port, and it holds no wallet key: every
+payment is something it asks the bridge for and a person approves.
+
+## Running it
+
+```
+dcrpoker
+```
+
+The first run asks where the bridge is and writes the answer down, then prints a
+loopback URL with a token in it. That page is the game.
+
+Everything it keeps lives in one directory, `~/.dcrpoker` by default, including a
+documented `dcrpoker.conf` it leaves there the first time it runs. Common options:
+
+| flag | what it does |
+|---|---|
+| `--appdata` | where everything lives, default `~/.dcrpoker` |
+| `--listen` | the interface's address, loopback only, default `127.0.0.1:8790` |
+| `--debuglevel` | one level, or a list like `info,SETL=debug` |
+| `--testnet`, `--simnet` | the chain to play on, mainnet otherwise |
+
+Logs go to the terminal and to `<appdata>/logs/<network>/dcrpoker.log`.
+`docs/dev.md` lists the subsystem tags.
 
 ## Reading it
 
