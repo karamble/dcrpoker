@@ -70,6 +70,21 @@ func loadIdentity(dir string) (*identity, error) {
 		return nil, fmt.Errorf("read identity: %w", err)
 	}
 
+	// A directory holding a game's things but no identity is one this was
+	// pointed at by mistake, or one whose seed has been lost. Generating here
+	// would quietly make a new player, while the tables and coin belonging to
+	// the old one stayed on the chain with nothing left that can sign for them.
+	//
+	// Named artifacts rather than "not empty": a first run has already been
+	// given a config file by the time it reaches here.
+	for _, mark := range []string{"bridge.json", "sessions", "hands", "spends", transcriptDir} {
+		if _, err := os.Stat(filepath.Join(dir, mark)); err == nil {
+			return nil, fmt.Errorf("%s holds %s but no identity.json; refusing to generate a new "+
+				"seed here, because coin held by the player this directory belongs to could no "+
+				"longer be signed for", dir, mark)
+		}
+	}
+
 	priv, err := secp256k1.GeneratePrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("generate seed: %w", err)

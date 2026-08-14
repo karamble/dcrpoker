@@ -21,13 +21,8 @@ import (
 	"github.com/jrick/logrotate/rotator"
 )
 
-const (
-	// logRollSizeKB is the size at which the log file rolls, in kilobytes.
-	logRollSizeKB = 10 * 1024
-
-	// logMaxRolls is how many gzipped rolls are kept.
-	logMaxRolls = 3
-)
+// logMaxRolls is how many gzipped rolls are kept.
+const logMaxRolls = 3
 
 // logWriter tees every backend write to stdout and, once opened, to the
 // rotating file. slog serialises its own writes, but InitRotator and
@@ -77,10 +72,11 @@ var subsystems = map[string]slog.Logger{
 	"TABL": TABL,
 }
 
-// InitRotator opens the log file at logFile, creating parent directories as
-// needed, and wires the rotating writer. Subsequent calls are no-ops so a
-// second call cannot orphan the open file handle.
-func InitRotator(logFile string) error {
+// InitRotator opens the log file at logFile, rolling it at rollSizeKB
+// kilobytes, and wires the rotating writer. Parent directories are created as
+// needed. Subsequent calls are no-ops so a second call cannot orphan the open
+// file handle.
+func InitRotator(logFile string, rollSizeKB int64) error {
 	writer.mtx.Lock()
 	defer writer.mtx.Unlock()
 	if writer.rot != nil {
@@ -89,7 +85,7 @@ func InitRotator(logFile string) error {
 	if err := os.MkdirAll(filepath.Dir(logFile), 0o700); err != nil {
 		return fmt.Errorf("create log directory: %w", err)
 	}
-	r, err := rotator.New(logFile, logRollSizeKB, false, logMaxRolls)
+	r, err := rotator.New(logFile, rollSizeKB, false, logMaxRolls)
 	if err != nil {
 		return fmt.Errorf("open log rotator: %w", err)
 	}

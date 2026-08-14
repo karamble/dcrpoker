@@ -16,7 +16,6 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,37 +23,25 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
-	"github.com/decred/slog"
+	"github.com/vctt94/dcrpoker/internal/config"
+	dcrlog "github.com/vctt94/dcrpoker/internal/log"
 	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
 	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 func main() {
-	var (
-		// Loopback, and not configurable away from it. What listens here
-		// is this game's own interface, for the person sitting at this
-		// machine; the bridge never connects to it, and nothing else
-		// should be able to.
-		listen  = flag.String("listen", "127.0.0.1:8790", "address this game serves its own interface on")
-		debug   = flag.Bool("debug", false, "log the transport: stream connections, and frames dropped and why")
-		dataDir = flag.String("datadir", "/data/poker", "where this game keeps its identity")
-		network = flag.String("network", "mainnet", "the chain this plays on")
-
-		// Asked by the release script, which needs to know what got embedded
-		// into this file rather than what the tree looked like at the time.
-		// It answers before anything is loaded, so it works on a binary that
-		// has never been configured.
-		checkUI = flag.Bool("check-interface", false, "report whether the interface is baked in, and exit")
-	)
-	flag.Parse()
-
-	if *checkUI {
+	// Answered before anything is parsed, loaded or created. The release
+	// script asks this of a freshly built binary that has no configuration
+	// and no data directory, and reads both the answer and the exit code, so
+	// nothing here may depend on either existing or touch the disk.
+	if asksAboutInterface(os.Args[1:]) {
 		if !uiBuilt() {
 			fmt.Println("interface: placeholder")
 			os.Exit(1)
@@ -63,76 +50,126 @@ func main() {
 		return
 	}
 
-	// How to reach the bridge, asked for on the first run and remembered.
-	// A terminal is what makes the asking possible, so a service manager
-	// starting this unconfigured is told to run it by hand once.
-	// The interface's token is a local session key, printed to this terminal.
-	// Serving it anywhere but loopback would turn it into a network
-	// credential, which is not what it is or how it is handed over.
-	if !loopbackOnly(*listen) {
-		log.Fatalf("pokerplugin: --listen must be a loopback address; %s would put this game's "+
-			"interface on the network, guarded only by a token printed to this terminal", *listen)
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", config.AppName, err)
+		os.Exit(1)
+	}
+}
+
+// asksAboutInterface reports whether the release script's question is on the
+// line. Scanned rather than parsed: a parser that had already read a config
+// file could fail for an unrelated reason and be reported as a binary shipping
+// the placeholder, which is an accusation whose obvious fix is to delete the
+// check.
+func asksAboutInterface(args []string) bool {
+	for _, a := range args {
+		if a == "--check-interface" || a == "-check-interface" {
+			return true
+		}
+	}
+	return false
+}
+
+func run() (err error) {
+	cfg, err := config.Load(os.Args[1:], version())
+	if err != nil {
+		if config.IsDone(err) {
+			return nil
+		}
+		return err
 	}
 
-	bridgeCfg, err := loadBridge(*dataDir, os.Stdin, os.Stdout, isTerminal(os.Stdin))
-	if err != nil {
-		log.Fatalf("pokerplugin: %v", err)
+	if err := dcrlog.InitRotator(cfg.LogFile(), cfg.RollSizeKB); err != nil {
+		return err
 	}
-	// The chain the operator set up with wins over the flag: they answered
-	// it once, against a bridge that agreed, and a flag typed later is the
-	// more likely mistake.
-	if stored := storedNetwork(*dataDir); stored != "" {
-		*network = stored
+	// Closed last, after the deferred report below has had its say. Anything
+	// that fails before this point can only reach stderr, which includes every
+	// way the configuration itself can be wrong.
+	defer dcrlog.CloseRotator()
+	defer func() {
+		if err != nil {
+			// Said twice on purpose: the file is where an operator looks after
+			// a crash, and stderr is where whatever started this looks.
+			pokrLog.Errorf("%v", err)
+		}
+	}()
+	if err := dcrlog.SetDebugLevel(cfg.DebugLevel); err != nil {
+		return err
+	}
+	dcrlog.RedirectStdLog(dcrlog.POKR)
+
+	// What listens here is this game's own interface, for the person sitting
+	// at this machine. Serving it anywhere but loopback would turn a token
+	// printed to a terminal into a network credential, which is not what it is
+	// or how it is handed over.
+	if !loopbackOnly(cfg.Listen) {
+		return fmt.Errorf("listen must be a loopback address; %s would put this game's "+
+			"interface on the network, guarded only by a token printed to this terminal", cfg.Listen)
+	}
+
+	pokrLog.Infof("dcrpoker starting on %s, protocol %d", cfg.Network(), schema.Version)
+	pokrLog.Infof("App data: %s", cfg.AppDataDir)
+	pokrLog.Infof("Data:     %s", cfg.DataDir)
+	pokrLog.Infof("Log:      %s", cfg.LogFile())
+
+	bridgeCfg, err := loadBridge(cfg, os.Stdin, os.Stdout, isTerminal(os.Stdin))
+	if err != nil {
+		return err
+	}
+	// The chain the bridge was set up against decides, because that answer was
+	// checked by connecting and this one was typed. Disagreeing about it is
+	// refused rather than resolved: the two build different scripts, and the
+	// difference is paid for in real money.
+	network := cfg.Network()
+	if stored := storedNetwork(cfg.DataDir); stored != "" && stored != network {
+		return fmt.Errorf("this game was set up against %s but has been asked to run on %s; "+
+			"change the configuration back or connect it to a %s bridge", stored, network, network)
+	}
+
+	params, err := paramsForNetwork(network)
+	if err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	id, err := loadIdentity(*dataDir)
+	id, err := loadIdentity(cfg.DataDir)
 	if err != nil {
 		// Without a seed there are no session keys, and without those
 		// there is no way to hold a seat. Starting anyway would mean
 		// joining tables this process could never sign for.
-		log.Fatalf("pokerplugin: %v", err)
+		return err
 	}
 
-	params, err := paramsForNetwork(*network)
-	if err != nil {
-		log.Fatalf("pokerplugin: %v", err)
-	}
-
-	store := newStore(*dataDir)
+	store := newStore(cfg.DataDir)
 	if left := store.strandedTranscripts(); len(left) > 0 {
-		log.Fatalf("pokerplugin: %d transcript(s) are still in %s and nothing reads them there: %s. "+
-			"Move them to %s.", len(left), filepath.Join(*dataDir, "logs"), strings.Join(left, ", "),
-			filepath.Join(*dataDir, transcriptDir))
+		return fmt.Errorf("%d transcript(s) are still in %s and nothing reads them there: %s. Move them to %s",
+			len(left), filepath.Join(cfg.DataDir, "logs"), strings.Join(left, ", "),
+			filepath.Join(cfg.DataDir, transcriptDir))
 	}
 
 	p, err := newPlugin(ctx, bridgeCfg, id, store, params)
 	if err != nil {
-		log.Fatalf("pokerplugin: %v", err)
+		return err
 	}
-	if *debug {
-		p.enableTransportLog()
-	}
+	p.wireTransportLog()
 
-	// Open the host's frame stream. This is the only way anything reaches
-	// this process from another player: the sandbox has no route anywhere
-	// but the host, so a game that cannot open this can never play.
 	// Introduce this game before anything else. It learns what the bridge
 	// resolved its credential to, and - the part that has to stop the
 	// program - which chain the bridge is on. A game playing across a
 	// network mismatch builds scripts nobody can spend and pays real money
 	// into them.
-	hello, err := p.bridge.Hello(ctx, *network)
+	hello, err := p.bridge.Hello(ctx, network)
 	if err != nil {
-		log.Fatalf("pokerplugin: %v", err)
+		return err
 	}
-	log.Printf("pokerplugin: the bridge knows this game as %q on %s", hello.GetGame(), hello.GetNetwork())
+	brdgLog.Infof("the bridge knows this game as %q on %s", hello.GetGame(), hello.GetNetwork())
 
+	// The one way anything reaches this process from another player.
 	frames, err := p.bridge.Events(ctx)
 	if err != nil {
-		log.Fatalf("pokerplugin: %v", err)
+		return err
 	}
 	go transport.Receive(ctx, frames, p.router)
 	// What the operator asked for, on the same stream. Nothing else can make
@@ -146,9 +183,12 @@ func main() {
 	p.resumeSpends()
 
 	srv := &http.Server{
-		Addr:              *listen,
+		Addr:              cfg.Listen,
 		Handler:           p.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Its own tag, so a scanner rattling the door can be silenced without
+		// silencing anything that matters.
+		ErrorLog: dcrlog.StdErrorLogger(dcrlog.HTTP),
 	}
 	go func() {
 		<-ctx.Done()
@@ -157,13 +197,29 @@ func main() {
 		_ = srv.Shutdown(shutdown)
 	}()
 
-	log.Printf("pokerplugin: open %s to play; connected to the bridge at %s as %q",
-		uiURL(*listen, p.uiToken), bridgeCfg.Addr, p.bridge.Game())
+	pokrLog.Infof("open %s to play; connected to the bridge at %s as %q",
+		uiURL(cfg.Listen, p.uiToken), bridgeCfg.Addr, p.bridge.Game())
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("pokerplugin: %v", err)
+		return err
 	}
-	log.Printf("pokerplugin: stopped")
-	os.Exit(0)
+	pokrLog.Info("stopped")
+	return nil
+}
+
+// version reports what this build is, for --version. There is no release
+// number to state, so it says what it can prove: the protocol it speaks and
+// the revision it was built from.
+func version() string {
+	rev := "unknown revision"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" {
+				rev = s.Value
+				break
+			}
+		}
+	}
+	return fmt.Sprintf("protocol %d (%s)", schema.Version, rev)
 }
 
 type plugin struct {
@@ -265,19 +321,15 @@ func newPlugin(ctx context.Context, bridgeCfg transport.BridgeConfig, id *identi
 	return p, nil
 }
 
-// enableTransportLog makes the transport say what it is doing.
+// wireTransportLog lets the transport say what it is doing.
 //
-// Without it a frame that is dropped is dropped in silence - an unauthorized
-// sender, a payload that will not decode, a stream that never connected all
-// look identical from outside, which is to say they look like nothing
-// happening at all. That is fine for a game running well and useless the
-// moment one is not.
-func (p *plugin) enableTransportLog() {
-	backend := slog.NewBackend(os.Stdout)
-	logger := backend.Logger("GAME")
-	logger.SetLevel(slog.LevelDebug)
-	p.bridge.SetLog(logger)
-	p.router.SetLog(logger)
+// Always wired, and quiet until asked for with debuglevel: a frame that is
+// dropped is otherwise dropped in silence, and an unauthorized sender, a
+// payload that will not decode and a stream that never connected all look
+// identical from outside, which is to say they look like nothing happening.
+func (p *plugin) wireTransportLog() {
+	p.bridge.SetLog(brdgLog)
+	p.router.SetLog(brdgLog)
 }
 
 // deliver routes one decoded message to the table it belongs to, and sends

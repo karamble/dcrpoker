@@ -352,9 +352,17 @@ func (p *plugin) findBondOutput(ctx context.Context, txid, wantPkScript string) 
 }
 
 // paramsForNetwork picks the chain parameters a bond address is built for.
+//
+// An unnamed network is refused rather than defaulted. Mainnet is the right
+// default for somebody who said nothing, and the wrong answer for a caller
+// that meant to say something and lost it on the way here: the mistake is
+// silent, spends real money, and the bridge cannot catch it because it would
+// be on mainnet too.
 func paramsForNetwork(name string) (stdaddr.AddressParams, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "", "mainnet":
+	case "":
+		return nil, fmt.Errorf("no network was named")
+	case "mainnet":
 		return chaincfg.MainNetParams(), nil
 	case "testnet", "testnet3":
 		return chaincfg.TestNet3Params(), nil

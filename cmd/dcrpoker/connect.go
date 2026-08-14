@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vctt94/dcrpoker/internal/config"
 	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
 )
 
@@ -43,25 +44,66 @@ const (
 	bridgeCertFile   = "bridge.cert"
 )
 
-// loadBridge reads the stored connection, or asks for one and stores it.
+// loadBridge finds the bridge: named in the configuration, or written down by
+// an earlier run, or asked for now.
+//
+// The configuration wins, because it is the only one of the three an operator
+// can set up from somewhere else. When it names the bridge nothing is written
+// down: a file that shadowed the configuration would be answered from on the
+// next run and the edit would look ignored.
 //
 // in and out are the wizard's terminal. They are arguments rather than the real
 // standard streams so the first-run path is testable, and so a caller with no
 // terminal can be refused rather than left hanging on a read that never returns.
-func loadBridge(dataDir string, in io.Reader, out io.Writer, interactive bool) (transport.BridgeConfig, error) {
-	cfg, err := readBridgeConfig(dataDir)
+func loadBridge(cfg *config.Config, in io.Reader, out io.Writer, interactive bool) (transport.BridgeConfig, error) {
+	if cfg.Bridge.Configured() {
+		return readBridgeFiles(cfg.Bridge)
+	}
+
+	stored, err := readBridgeConfig(cfg.DataDir)
 	switch {
 	case err == nil:
-		return cfg, nil
+		return stored, nil
 	case !os.IsNotExist(err):
 		return transport.BridgeConfig{}, err
 	case !interactive:
 		return transport.BridgeConfig{}, fmt.Errorf(
 			"this game has not been connected to a bridge yet, and there is no terminal to ask on. "+
-				"Run it once where you can answer, or write %s yourself",
-			filepath.Join(dataDir, bridgeConfigFile))
+				"Run it once where you can answer, name the bridge in the [bridge] section of %s, "+
+				"or write %s yourself",
+			cfg.ConfigFile, filepath.Join(cfg.DataDir, bridgeConfigFile))
 	}
-	return runWizard(dataDir, in, out)
+	return runWizard(cfg.DataDir, in, out)
+}
+
+// readBridgeFiles loads a bridge named by the configuration rather than by an
+// earlier run's answers.
+func readBridgeFiles(b config.BridgeOptions) (transport.BridgeConfig, error) {
+	read := func(what, path string) ([]byte, error) {
+		blob, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read the %s named in the configuration: %w", what, err)
+		}
+		return blob, nil
+	}
+	clientCert, err := read("client certificate", b.ClientCert)
+	if err != nil {
+		return transport.BridgeConfig{}, err
+	}
+	clientKey, err := read("client key", b.ClientKey)
+	if err != nil {
+		return transport.BridgeConfig{}, err
+	}
+	bridgeCert, err := read("bridge certificate", b.BridgeCert)
+	if err != nil {
+		return transport.BridgeConfig{}, err
+	}
+	return transport.BridgeConfig{
+		Addr:       b.Addr,
+		ClientCert: clientCert,
+		ClientKey:  clientKey,
+		BridgeCert: bridgeCert,
+	}, nil
 }
 
 // readBridgeConfig loads a stored connection and the credential beside it.

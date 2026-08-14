@@ -26,7 +26,7 @@ func TestALineReachesTheFile(t *testing.T) {
 	reset(t)
 	path := filepath.Join(t.TempDir(), "logs", "mainnet", "dcrpoker.log")
 
-	if err := InitRotator(path); err != nil {
+	if err := InitRotator(path, 10*1024); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	if err := SetDebugLevel("info"); err != nil {
@@ -52,10 +52,10 @@ func TestOpeningTheFileTwiceKeepsOneHandle(t *testing.T) {
 	first := filepath.Join(dir, "first.log")
 	second := filepath.Join(dir, "second.log")
 
-	if err := InitRotator(first); err != nil {
+	if err := InitRotator(first, 10*1024); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if err := InitRotator(second); err != nil {
+	if err := InitRotator(second, 10*1024); err != nil {
 		t.Fatalf("second init: %v", err)
 	}
 	if err := SetDebugLevel("info"); err != nil {
@@ -141,7 +141,7 @@ func TestWritingWhileTheFileIsOpenedAndClosed(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = InitRotator(path)
+		_ = InitRotator(path, 10*1024)
 	}()
 	wg.Wait()
 	CloseRotator()
