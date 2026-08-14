@@ -17,7 +17,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -306,9 +305,9 @@ func newPlugin(ctx context.Context, bridgeCfg transport.BridgeConfig, id *identi
 	// with the difference.
 	b.SetOnGap(func(gcids []string) {
 		if len(gcids) > 0 {
-			log.Printf("pokerplugin: the bridge missed frames for %d table(s); resynchronising", len(gcids))
+			brdgLog.Warnf("the bridge missed frames for %d table(s); resynchronising", len(gcids))
 		} else {
-			log.Printf("pokerplugin: the bridge missed frames and could not say which tables; resynchronising")
+			brdgLog.Warnf("the bridge missed frames and could not say which tables; resynchronising")
 		}
 		p.publish(p.ctx, p.tables.resync())
 	})
@@ -366,7 +365,7 @@ func (p *plugin) watchChain(ctx context.Context) {
 			// ordinary at startup, and a table with a deadline
 			// nobody can read simply has not reached it.
 			if ctx.Err() == nil {
-				log.Printf("pokerplugin: cannot read the chain: %v", err)
+				chanLog.Errorf("cannot read the chain: %v", err)
 			}
 		} else {
 			// Before the tick, because the tick is what proposes a bond
@@ -407,12 +406,12 @@ func (p *plugin) drawSeats(ctx context.Context, height int64) {
 	for sid, at := range p.tables.needSeating(height) {
 		hash, err := p.bridge.BlockHash(ctx, at)
 		if err != nil {
-			log.Printf("pokerplugin: table %s: cannot read the block it seats from: %v", sid, err)
+			tablLog.Errorf("table %s: cannot read the block it seats from: %v", sid, err)
 			continue
 		}
 		raw, err := hex.DecodeString(hash)
 		if err != nil || len(raw) == 0 {
-			log.Printf("pokerplugin: table %s: block %d has no usable hash", sid, at)
+			tablLog.Errorf("table %s: block %d has no usable hash", sid, at)
 			continue
 		}
 		p.publish(ctx, p.tables.seat(sid, raw))
@@ -632,7 +631,7 @@ func (p *plugin) handleIdentityRestore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	log.Printf("pokerplugin: identity restored from a backup")
+	pokrLog.Infof("identity restored from a backup")
 	writeJSON(w, map[string]any{"restored": true, "bondOutpoint": p.id.bondDeposit()})
 }
 

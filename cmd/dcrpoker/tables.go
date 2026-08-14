@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -498,7 +497,7 @@ func (t *tables) persist(tbl *table) {
 		return
 	}
 	if err := t.store.save(tbl.terms.SID, tbl.record()); err != nil {
-		log.Printf("pokerplugin: table %s: cannot record its position: %v", tbl.terms.SID, err)
+		tablLog.Errorf("table %s: cannot record its position: %v", tbl.terms.SID, err)
 	}
 }
 
@@ -873,7 +872,7 @@ func (t *tables) leave(sid string) ([]outgoing, bool) {
 	}
 	out, err := tbl.play.Leave()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", sid, err)
+		tablLog.Errorf("table %s: %v", sid, err)
 		t.drop(sid, tbl)
 		return nil, true
 	}
@@ -910,7 +909,7 @@ func (t *tables) drop(sid string, tbl *table) {
 	// nothing. Deleting them is what keeps the muck off the disk.
 	if t.store != nil {
 		if err := t.store.deleteHands(sid); err != nil {
-			log.Printf("pokerplugin: table %s: could not delete its hand secrets: %v", sid, err)
+			tablLog.Errorf("table %s: could not delete its hand secrets: %v", sid, err)
 		}
 	}
 	delete(t.m, sid)
@@ -929,14 +928,14 @@ func (t *tables) archive(tbl *table) {
 	}
 	blob, err := tbl.log()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot render its log: %v", tbl.terms.SID, err)
+		tablLog.Errorf("table %s: cannot render its log: %v", tbl.terms.SID, err)
 		return
 	}
 	if blob == nil {
 		return
 	}
 	if err := t.store.saveTranscript(tbl.terms.SID, blob); err != nil {
-		log.Printf("pokerplugin: table %s: cannot keep its log: %v", tbl.terms.SID, err)
+		tablLog.Errorf("table %s: cannot keep its log: %v", tbl.terms.SID, err)
 		return
 	}
 	tbl.archived = true
@@ -969,7 +968,7 @@ func (t *tables) resumeHeld(id *identity) {
 	}
 	sids, err := t.store.sessions()
 	if err != nil {
-		log.Printf("pokerplugin: cannot list past tables: %v", err)
+		tablLog.Errorf("cannot list past tables: %v", err)
 		return
 	}
 
@@ -991,7 +990,7 @@ func (t *tables) resumeHeld(id *identity) {
 		}
 		tbl, err := t.receipt(rec, id)
 		if err != nil {
-			log.Printf("pokerplugin: cannot read back table %s: %v", sid, err)
+			tablLog.Errorf("cannot read back table %s: %v", sid, err)
 			continue
 		}
 		if !tbl.holdsOurs() {
@@ -1002,9 +1001,9 @@ func (t *tables) resumeHeld(id *identity) {
 		}
 		t.m[sid] = tbl
 		if tbl.finished {
-			log.Printf("pokerplugin: table %s is finished and still holds coin", sid)
+			tablLog.Infof("table %s is finished and still holds coin", sid)
 		} else {
-			log.Printf("pokerplugin: table %s is still forming and holds coin; carrying on", sid)
+			tablLog.Infof("table %s is still forming and holds coin; carrying on", sid)
 		}
 	}
 }
@@ -1155,7 +1154,7 @@ func (t *tables) tick(height int64) []outgoing {
 		// funded" the moment its spent stake was.
 		if !tbl.finished && (tbl.play == nil || !tbl.play.Over()) &&
 			(tbl.fundingLapsed(height) || tbl.bondingLapsed(height) || tbl.commitLapsed(height)) {
-			log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, tbl.form.Reason())
+			tablLog.Infof("table %s: %s", tbl.terms.SID, tbl.form.Reason())
 			t.persist(tbl)
 		}
 	}
@@ -1212,7 +1211,7 @@ func (t *tables) announceAgain(tbl *table, height int64) []outgoing {
 
 	fn, err := t.signFunding(tbl.terms, seat, outpoint)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot say again where our stake is: %v", tbl.terms.SID, err)
+		tablLog.Errorf("table %s: cannot say again where our stake is: %v", tbl.terms.SID, err)
 		return nil
 	}
 	tbl.announcedAt = height
@@ -1265,7 +1264,7 @@ func (t *tables) announceBondAgain(tbl *table, height int64) []outgoing {
 	}
 	bn, err := t.signBonded(tbl.terms, seat, outpoint)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot say again where our bond is: %v", tbl.terms.SID, err)
+		tablLog.Errorf("table %s: cannot say again where our bond is: %v", tbl.terms.SID, err)
 		return nil
 	}
 	tbl.bondedAnnouncedAt = height
@@ -1513,7 +1512,7 @@ func (t *tables) seat(sid string, beacon []byte) []outgoing {
 		return nil
 	}
 	if err := tbl.form.SetBeacon(beacon); err != nil {
-		log.Printf("pokerplugin: table %s: %v", sid, err)
+		tablLog.Errorf("table %s: %v", sid, err)
 		return nil
 	}
 	// The draw is the one step of forming a table that no player has any
@@ -1522,7 +1521,7 @@ func (t *tables) seat(sid string, beacon []byte) []outgoing {
 	// they are seating different tables under one match id, and this line
 	// is where that becomes visible instead of showing up later as a
 	// disagreement about whose turn it is.
-	log.Printf("pokerplugin: table %s drew its seats from block %x", sid, beacon)
+	tablLog.Infof("table %s drew its seats from block %x", sid, beacon)
 	tbl.startWatching()
 	// Write the draw down. It happens once, and a table that came back
 	// unseated would draw again - from whatever block stands at that height
@@ -1546,7 +1545,7 @@ func (t *tables) deliver(ctx context.Context, d transport.Delivery) []outgoing {
 	}
 	// Bonds before the lock, because checking one goes to the chain.
 	if err := t.verifyBonds(ctx, terms, d.Msg); err != nil {
-		log.Printf("pokerplugin: table %s: %v", d.SID, err)
+		tablLog.Errorf("table %s: %v", d.SID, err)
 		return nil
 	}
 
@@ -1574,7 +1573,7 @@ func (t *tables) deliver(ctx context.Context, d transport.Delivery) []outgoing {
 	if err != nil {
 		// A message that does not check is exactly what the signatures
 		// are for. It changes nothing and is not worth failing over.
-		log.Printf("pokerplugin: table %s: %v", d.SID, err)
+		tablLog.Errorf("table %s: %v", d.SID, err)
 		return nil
 	}
 	return out
@@ -1913,7 +1912,7 @@ func (tbl *table) advance(beforeState membership.State, beforeJoins int) []outgo
 		if !tbl.bound && (tbl.form.Agreed() || tbl.form.WindowClosed()) {
 			c, err := tbl.form.Bind()
 			if err != nil {
-				log.Printf("pokerplugin: table %s: bind: %v", tbl.terms.SID, err)
+				tablLog.Errorf("table %s: bind: %v", tbl.terms.SID, err)
 				break
 			}
 			tbl.bound = true
@@ -1936,7 +1935,7 @@ func (tbl *table) advance(beforeState membership.State, beforeJoins int) []outgo
 
 	case membership.Aborted:
 		if beforeState != membership.Aborted {
-			log.Printf("pokerplugin: table %s did not form: %s", tbl.terms.SID, tbl.form.Reason())
+			tablLog.Warnf("table %s did not form: %s", tbl.terms.SID, tbl.form.Reason())
 		}
 	}
 	return out
@@ -1968,11 +1967,11 @@ func (tbl *table) startWatching() {
 	}
 	w, err := chainwatch.New(matchID, seats)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot follow the history: %v", tbl.terms.SID, err)
+		tablLog.Errorf("table %s: cannot follow the history: %v", tbl.terms.SID, err)
 		return
 	}
 	tbl.watch = w
-	log.Printf("pokerplugin: table %s settled with %d seats, match %s", tbl.terms.SID, len(seats), matchID)
+	tablLog.Infof("table %s settled with %d seats, match %s", tbl.terms.SID, len(seats), matchID)
 }
 
 func (tbl *table) publishJoin() []outgoing {
@@ -2290,7 +2289,7 @@ func (p *plugin) publish(ctx context.Context, out []outgoing) {
 		err := p.router.Send(sendCtx, o.gcID, o.sid, o.match, o.kind, o.body, o.class)
 		cancel()
 		if err != nil {
-			log.Printf("pokerplugin: table %s: sending %s: %v", o.sid, o.kind, err)
+			tablLog.Errorf("table %s: sending %s: %v", o.sid, o.kind, err)
 		}
 	}
 }

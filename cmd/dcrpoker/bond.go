@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -241,7 +240,7 @@ func (p *plugin) handleBondFund(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, spendErrStatus(done), err)
 		return
 	}
-	log.Printf("pokerplugin: bond locked at %s", done.Outpoint)
+	coinLog.Infof("bond locked at %s", done.Outpoint)
 	writeJSON(w, map[string]any{"outpoint": done.Outpoint, "funded": true, "txid": done.TxID})
 }
 
@@ -321,7 +320,7 @@ func (p *plugin) handleBondSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	log.Printf("pokerplugin: bond recorded at %s (%d confirmations)", outpoint, out.Confirmations)
+	coinLog.Infof("bond recorded at %s (%d confirmations)", outpoint, out.Confirmations)
 	writeJSON(w, map[string]any{
 		"outpoint":      outpoint,
 		"funded":        true,

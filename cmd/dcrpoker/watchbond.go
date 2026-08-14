@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 )
 
 // Where every bond sits now, asked of the chain.
@@ -183,14 +182,14 @@ func (p *plugin) watchBonds(ctx context.Context) {
 			delete(tbl.bondValue, a.seat)
 			seat := a.seat
 			tbl.note(eventSettled, "the bond left the chain", "", &seat)
-			log.Printf("pokerplugin: table %s: seat %d's bond left the chain; forgetting it",
+			chanLog.Warnf("table %s: seat %d's bond left the chain; forgetting it",
 				a.sid, a.seat)
 			if tbl.finished && !tbl.holdsOurs() {
 				// The receipt was only ever kept for this. See drop:
 				// with nothing of ours left it deletes rather than
 				// marks, and the emptied record on disk is what stops
 				// the next boot resurrecting it.
-				log.Printf("pokerplugin: table %s holds nothing of ours any more; letting it go",
+				chanLog.Infof("table %s holds nothing of ours any more; letting it go",
 					a.sid)
 				p.tables.drop(a.sid, tbl)
 			} else {
@@ -204,11 +203,11 @@ func (p *plugin) watchBonds(ctx context.Context) {
 			// The value shrank by two fees per answer, so what the chain
 			// says is there is re-read rather than remembered.
 			delete(tbl.bondValue, a.seat)
-			log.Printf("pokerplugin: table %s: seat %d's bond moved while nobody said so; it sits at %s",
+			chanLog.Warnf("table %s: seat %d's bond moved while nobody said so; it sits at %s",
 				a.sid, a.seat, a.positions[at])
 		}
 		if answer {
-			log.Printf("pokerplugin: table %s: our bond at %s is claimed against; answering",
+			chanLog.Warnf("table %s: our bond at %s is claimed against; answering",
 				a.sid, a.positions[at])
 			tbl.answerClaim()
 		}

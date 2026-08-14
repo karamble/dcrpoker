@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 )
 
 // Checking our own money against the chain.
@@ -92,7 +91,7 @@ func (p *plugin) confirmOurPayments(ctx context.Context, height int64) {
 
 		if a.stake != "" {
 			if err := checkStake(ctx, p.tables.chain, a.stake, a.stakePk, a.buyIn); err != nil {
-				log.Printf("pokerplugin: table %s: our own stake: %v", a.sid, err)
+				chanLog.Errorf("table %s: our own stake: %v", a.sid, err)
 			} else {
 				stakeSeen = true
 			}
@@ -100,7 +99,7 @@ func (p *plugin) confirmOurPayments(ctx context.Context, height int64) {
 		if a.bond != "" {
 			value, err := checkTableBond(ctx, p.tables.chain, a.bond, a.bondPk)
 			if err != nil {
-				log.Printf("pokerplugin: table %s: our own bond: %v", a.sid, err)
+				chanLog.Errorf("table %s: our own bond: %v", a.sid, err)
 			} else {
 				bondSeen, bondValue = true, value
 			}
@@ -117,7 +116,7 @@ func (p *plugin) confirmOurPayments(ctx context.Context, height int64) {
 		}
 		if stakeSeen && !tbl.ourStakeSeen {
 			tbl.ourStakeSeen = true
-			log.Printf("pokerplugin: table %s: the chain has our own stake at %s",
+			chanLog.Infof("table %s: the chain has our own stake at %s",
 				a.sid, a.stake)
 		}
 		if bondSeen && !tbl.ourBondSeen {
@@ -125,7 +124,7 @@ func (p *plugin) confirmOurPayments(ctx context.Context, height int64) {
 			if bondValue > 0 {
 				tbl.bondValue[a.seat] = bondValue
 			}
-			log.Printf("pokerplugin: table %s: the chain has our own bond at %s",
+			chanLog.Infof("table %s: the chain has our own bond at %s",
 				a.sid, a.bond)
 		}
 		out := tbl.startPlaying()
@@ -196,10 +195,10 @@ func (p *plugin) forgetSpentStakes(ctx context.Context, height int64) {
 		delete(tbl.funded, a.seat)
 		seat := a.seat
 		tbl.note(eventSettled, "the stake left the chain", "", &seat)
-		log.Printf("pokerplugin: table %s: our stake at %s left the chain; forgetting it",
+		chanLog.Warnf("table %s: our stake at %s left the chain; forgetting it",
 			a.sid, a.stake)
 		if tbl.finished && !tbl.holdsOurs() {
-			log.Printf("pokerplugin: table %s holds nothing of ours any more; letting it go",
+			chanLog.Infof("table %s holds nothing of ours any more; letting it go",
 				a.sid)
 			p.tables.drop(a.sid, tbl)
 		} else {

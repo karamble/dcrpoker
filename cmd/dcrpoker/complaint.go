@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"go.dedis.ch/kyber/v4"
 
@@ -160,12 +159,12 @@ func (tbl *table) openComplaintFrom(r *driver.ShuffleRefusal) []outgoing {
 
 	refusedDigest, err := driver.ShuffleFrameDigest(match, hand, r.Seat, r.Deck, r.Proof)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot digest the refused shuffle: %v", tbl.terms.SID, err)
+		dsptLog.Errorf("table %s: cannot digest the refused shuffle: %v", tbl.terms.SID, err)
 		return nil
 	}
 	digest, err := driver.ShuffleComplaintDigest(match, hand, int(mine), uint32(r.Round), r.Input, refusedDigest)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot digest the complaint: %v", tbl.terms.SID, err)
+		dsptLog.Errorf("table %s: cannot digest the complaint: %v", tbl.terms.SID, err)
 		return nil
 	}
 	key, err := tbl.logKeyFor()
@@ -177,13 +176,13 @@ func (tbl *table) openComplaintFrom(r *driver.ShuffleRefusal) []outgoing {
 	// equivocation publishes the key.
 	sig, err := key.Sign(forfeit.DomainShuffleComplaint, hand, digest[:])
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot sign the complaint: %v", tbl.terms.SID, err)
+		dsptLog.Errorf("table %s: cannot sign the complaint: %v", tbl.terms.SID, err)
 		return nil
 	}
 	body, err := schema.ShuffleComplaintFrom(mine, uint32(r.Seat), hand, uint32(r.Round),
 		r.Input, r.Deck, r.Proof, r.Sig, sig)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot render the complaint: %v", tbl.terms.SID, err)
+		dsptLog.Errorf("table %s: cannot render the complaint: %v", tbl.terms.SID, err)
 		return nil
 	}
 
@@ -205,11 +204,11 @@ func (tbl *table) openComplaintFrom(r *driver.ShuffleRefusal) []outgoing {
 	}
 	c, err := decodeComplaintCase(view)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: the complaint does not decode back: %v", tbl.terms.SID, err)
+		dsptLog.Errorf("table %s: the complaint does not decode back: %v", tbl.terms.SID, err)
 		return nil
 	}
 
-	log.Printf("pokerplugin: table %s: disputing seat %d's shuffle for hand %d",
+	dsptLog.Warnf("table %s: disputing seat %d's shuffle for hand %d",
 		tbl.terms.SID, r.Seat, hand)
 	tbl.judgeComplaint(hand, c)
 	return tbl.repeatComplaints()
@@ -258,7 +257,7 @@ func (tbl *table) acceptComplaint(body schema.ShuffleComplaint) []outgoing {
 		return nil
 	}
 	if err := driver.VerifySeatSig(shufflerKey, refusedDigest, refusedSig, int(body.Shuffler)); err != nil {
-		log.Printf("pokerplugin: table %s: a dispute over a shuffle seat %d never signed: %v",
+		dsptLog.Warnf("table %s: a dispute over a shuffle seat %d never signed: %v",
 			tbl.terms.SID, body.Shuffler, err)
 		return nil
 	}
@@ -267,7 +266,7 @@ func (tbl *table) acceptComplaint(body schema.ShuffleComplaint) []outgoing {
 		return nil
 	}
 	if err := driver.VerifySeatSig(byKey, digest, sig, int(body.Seat)); err != nil {
-		log.Printf("pokerplugin: table %s: a complaint seat %d did not sign: %v",
+		dsptLog.Warnf("table %s: a complaint seat %d did not sign: %v",
 			tbl.terms.SID, body.Seat, err)
 		return nil
 	}
@@ -323,7 +322,7 @@ func (tbl *table) disputedUpstream(hand uint64) ([]kyber.Point, []deck.Step, boo
 func (tbl *table) judgeComplaint(hand uint64, c *complaintCase) {
 	verdict, named, err := c.verdictFor()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: hand %d's dispute could not be judged here: %v",
+		dsptLog.Errorf("table %s: hand %d's dispute could not be judged here: %v",
 			tbl.terms.SID, hand, err)
 		return
 	}
@@ -343,7 +342,7 @@ func (tbl *table) judgeComplaint(hand uint64, c *complaintCase) {
 		tbl.cheats = map[uint32]bool{}
 	}
 	tbl.cheats[named] = true
-	log.Printf("pokerplugin: table %s: hand %d's dispute: %s; seat %d is named",
+	dsptLog.Warnf("table %s: hand %d's dispute: %s; seat %d is named",
 		tbl.terms.SID, hand, verdict, named)
 	tbl.note(eventCheat, fmt.Sprintf("hand %d's dispute: %s", hand, verdict), "", seatp(int(named)))
 
@@ -364,7 +363,7 @@ func (tbl *table) saveComplaint(hand uint64, c *complaintCase) {
 		return
 	}
 	if err := tbl.st.saveComplaint(tbl.terms.SID, hand, blob); err != nil {
-		log.Printf("pokerplugin: table %s: cannot write down hand %d's dispute: %v",
+		dsptLog.Errorf("table %s: cannot write down hand %d's dispute: %v",
 			tbl.terms.SID, hand, err)
 		tbl.note(eventBlocked, fmt.Sprintf(
 			"hand %d's dispute could not be written down, and cannot be shown after a restart", hand),

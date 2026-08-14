@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -50,7 +49,7 @@ func (p *plugin) answer(ctx context.Context, req *gamingpb.BridgeRequest) {
 	reply := &gamingpb.RespondRequest{RequestId: req.GetRequestId(), Ok: true}
 
 	if err := p.doRequest(ctx, req, reply); err != nil {
-		log.Printf("pokerplugin: could not do %s: %v", describeRequest(req), err)
+		brdgLog.Errorf("could not do %s: %v", describeRequest(req), err)
 		reply.Ok, reply.Error, reply.Result = false, err.Error(), nil
 	}
 
@@ -61,7 +60,7 @@ func (p *plugin) answer(ctx context.Context, req *gamingpb.BridgeRequest) {
 	answerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := p.bridge.Respond(answerCtx, reply); err != nil {
-		log.Printf("pokerplugin: could not answer %s: %v", req.GetRequestId(), err)
+		brdgLog.Errorf("could not answer %s: %v", req.GetRequestId(), err)
 	}
 }
 
@@ -189,7 +188,7 @@ func (p *plugin) doReclaim(req *gamingpb.Reclaim) (string, error) {
 		// The coin is already moving, so a bookkeeping failure here is
 		// worth saying and not worth failing over.
 		if err := p.id.setBondDeposit(""); err != nil {
-			log.Printf("pokerplugin: swept the bond as %s but could not forget it: %v", txid, err)
+			brdgLog.Errorf("swept the bond as %s but could not forget it: %v", txid, err)
 		}
 		return txid, nil
 

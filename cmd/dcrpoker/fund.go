@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -102,12 +101,12 @@ func checkStake(ctx context.Context, chain *transport.Bridge, outpoint, wantPkSc
 func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outgoing {
 	var body schema.Funded
 	if err := d.Msg.Into(&body); err != nil {
-		log.Printf("pokerplugin: table %s: funded: %v", d.SID, err)
+		coinLog.Errorf("table %s: funded: %v", d.SID, err)
 		return nil
 	}
 	fn, err := body.Into()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: funded: %v", d.SID, err)
+		coinLog.Errorf("table %s: funded: %v", d.SID, err)
 		return nil
 	}
 
@@ -120,7 +119,7 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 	terms := tbl.terms
 	if err := fn.Verify(terms); err != nil {
 		t.mu.Unlock()
-		log.Printf("pokerplugin: table %s: funded: %v", d.SID, err)
+		coinLog.Errorf("table %s: funded: %v", d.SID, err)
 		return nil
 	}
 	seats, seated := tbl.form.Seats()
@@ -132,7 +131,7 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 	}
 	if key, ok := seats[fn.Seat]; !ok || hex.EncodeToString(key) != hex.EncodeToString(fn.Signer) {
 		t.mu.Unlock()
-		log.Printf("pokerplugin: table %s: a key that does not hold seat %d says it funded it", d.SID, fn.Seat)
+		coinLog.Warnf("table %s: a key that does not hold seat %d says it funded it", d.SID, fn.Seat)
 		return nil
 	}
 	if have := tbl.funded[fn.Seat]; have == fn.Outpoint {
@@ -142,12 +141,12 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 	want, err := tbl.deposit(fn.Seat, t.params)
 	t.mu.Unlock()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", d.SID, err)
+		coinLog.Errorf("table %s: %v", d.SID, err)
 		return nil
 	}
 
 	if err := checkStake(ctx, t.chain, fn.Outpoint, want.PkScriptHex, terms.BuyInAtoms); err != nil {
-		log.Printf("pokerplugin: table %s: seat %d: %v", d.SID, fn.Seat, err)
+		coinLog.Errorf("table %s: seat %d: %v", d.SID, fn.Seat, err)
 		// Refused, which is usually only "not yet". Say which, so the wait
 		// is legible as a wait rather than as an absence.
 		t.noteWaiting(d.SID, fn.Seat, false,
@@ -169,7 +168,7 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 		// pair of announcements is evidence anybody can check. Overwriting
 		// let a seat make its own bond unclaimable, since a claim is built
 		// against whichever one this peer happened to keep.
-		log.Printf("pokerplugin: table %s: seat %d announced a second stake at %s "+
+		coinLog.Warnf("table %s: seat %d announced a second stake at %s "+
 			"while %s stands; keeping the first", d.SID, fn.Seat, fn.Outpoint, held)
 		return nil
 	}
@@ -186,7 +185,7 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 	tbl.uids[fn.Seat] = d.Sender
 	delete(tbl.stakeWaiting, fn.Seat)
 	t.persist(tbl)
-	log.Printf("pokerplugin: table %s: seat %d is funded at %s (%d of %d seats)",
+	coinLog.Infof("table %s: seat %d is funded at %s (%d of %d seats)",
 		d.SID, fn.Seat, fn.Outpoint, len(tbl.funded), tbl.terms.Seats)
 
 	// The last stake to arrive is what starts the dealing.
@@ -406,7 +405,7 @@ func (p *plugin) recordOwnStake(sid string, seat uint32, outpoint string) ([]out
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("pokerplugin: table %s: paid seat %d's stake into %s", sid, seat, outpoint)
+	coinLog.Infof("table %s: paid seat %d's stake into %s", sid, seat, outpoint)
 	return []outgoing{tbl.frame(schema.KindFunded, schema.FundedFrom(fn), wire.ClassState)}, nil
 }
 

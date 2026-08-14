@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -87,12 +86,12 @@ func checkTableBond(ctx context.Context, chain *transport.Bridge, outpoint, want
 func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoing {
 	var body schema.Bonded
 	if err := d.Msg.Into(&body); err != nil {
-		log.Printf("pokerplugin: table %s: bonded: %v", d.SID, err)
+		coinLog.Errorf("table %s: bonded: %v", d.SID, err)
 		return nil
 	}
 	bn, err := body.Into()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: bonded: %v", d.SID, err)
+		coinLog.Errorf("table %s: bonded: %v", d.SID, err)
 		return nil
 	}
 
@@ -105,7 +104,7 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 	terms := tbl.terms
 	if err := bn.Verify(terms); err != nil {
 		t.mu.Unlock()
-		log.Printf("pokerplugin: table %s: bonded: %v", d.SID, err)
+		coinLog.Errorf("table %s: bonded: %v", d.SID, err)
 		return nil
 	}
 	seats, seated := tbl.form.Seats()
@@ -115,7 +114,7 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 	}
 	if key, ok := seats[bn.Seat]; !ok || hex.EncodeToString(key) != hex.EncodeToString(bn.Signer) {
 		t.mu.Unlock()
-		log.Printf("pokerplugin: table %s: a key that does not hold seat %d says it bonded it",
+		coinLog.Warnf("table %s: a key that does not hold seat %d says it bonded it",
 			d.SID, bn.Seat)
 		return nil
 	}
@@ -126,13 +125,13 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 	want, err := tbl.bond(bn.Seat, t.params)
 	t.mu.Unlock()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", d.SID, err)
+		coinLog.Errorf("table %s: %v", d.SID, err)
 		return nil
 	}
 
 	value, err := checkTableBond(ctx, t.chain, bn.Outpoint, want.PkScriptHex)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
+		coinLog.Errorf("table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
 		// A bond needs two confirmations, so the first telling is always
 		// refused and a person is owed the difference between "waiting" and
 		// "never arrived".
@@ -150,7 +149,7 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 	if held, ok := tbl.bonded[bn.Seat]; ok && held != bn.Outpoint {
 		// The first one stands, as with a stake: a seat naming two bonds is
 		// naming two, and a claim can only be built against one.
-		log.Printf("pokerplugin: table %s: seat %d announced a second bond at %s "+
+		coinLog.Warnf("table %s: seat %d announced a second bond at %s "+
 			"while %s stands; keeping the first", d.SID, bn.Seat, bn.Outpoint, held)
 		return nil
 	}
@@ -163,7 +162,7 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 	tbl.uids[bn.Seat] = d.Sender
 	delete(tbl.bondWaiting, bn.Seat)
 	t.persist(tbl)
-	log.Printf("pokerplugin: table %s: seat %d is bonded at %s (%d of %d seats)",
+	coinLog.Infof("table %s: seat %d is bonded at %s (%d of %d seats)",
 		d.SID, bn.Seat, bn.Outpoint, len(tbl.bonded), tbl.terms.Seats)
 
 	// The last bond, like the last stake, is what starts the dealing.
@@ -291,7 +290,7 @@ func (p *plugin) handleTableBond(w http.ResponseWriter, r *http.Request) {
 		// is a peer that never accepted this bond. Answering "yes, done"
 		// and sending nothing is the one response that cannot help them.
 		if out, err := p.announceOwnBond(sid); err != nil {
-			log.Printf("pokerplugin: table %s: cannot say again where our bond is: %v", sid, err)
+			coinLog.Errorf("table %s: cannot say again where our bond is: %v", sid, err)
 		} else {
 			p.publish(r.Context(), out)
 		}

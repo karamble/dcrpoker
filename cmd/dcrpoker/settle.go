@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"log"
 
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/wire"
@@ -78,7 +77,7 @@ func (tbl *table) presignAccusations() []outgoing {
 			// gets its turn when it is. Said out loud regardless: a table
 			// with no accusations agreed has no answer to somebody who
 			// stops, and that is not something to discover later.
-			log.Printf("pokerplugin: table %s: no accusations agreed against seat %d: %v",
+			setlLog.Warnf("table %s: no accusations agreed against seat %d: %v",
 				tbl.terms.SID, seat, err)
 			continue
 		}
@@ -89,7 +88,7 @@ func (tbl *table) presignAccusations() []outgoing {
 		for _, tx := range chain {
 			sig, err := escrow.SignBondSpend(tx, bond, tbl.session)
 			if err != nil {
-				log.Printf("pokerplugin: table %s: pre-signing an accusation: %v",
+				setlLog.Errorf("table %s: pre-signing an accusation: %v",
 					tbl.terms.SID, err)
 				continue
 			}
@@ -437,7 +436,7 @@ func (tbl *table) answerClaim() {
 	}
 	chain, bond, err := tbl.accuseChain(seat)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot work out how to answer: %v", tbl.terms.SID, err)
+		setlLog.Errorf("table %s: cannot work out how to answer: %v", tbl.terms.SID, err)
 		return
 	}
 	at := tbl.bondedAt[seat]
@@ -461,7 +460,7 @@ func (tbl *table) answerClaim() {
 		}
 	}
 	if accuse == nil {
-		log.Printf("pokerplugin: table %s: claimed against at %s, which no agreed accusation spends",
+		setlLog.Warnf("table %s: claimed against at %s, which no agreed accusation spends",
 			tbl.terms.SID, at)
 		tbl.note(eventUnanswerable,
 			fmt.Sprintf("claimed against at %s, and no accusation this peer agreed spends it", at),
@@ -482,17 +481,17 @@ func (tbl *table) answerClaim() {
 		Params:     tbl.netParams,
 	})
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot build an answer: %v", tbl.terms.SID, err)
+		setlLog.Errorf("table %s: cannot build an answer: %v", tbl.terms.SID, err)
 		return
 	}
 	sig, err := escrow.SignClaimedSpend(answer, claimed, tbl.session)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot sign an answer: %v", tbl.terms.SID, err)
+		setlLog.Errorf("table %s: cannot sign an answer: %v", tbl.terms.SID, err)
 		return
 	}
 	sigScript, err := escrow.AnswerSigScript(claimed, sig)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: the answer does not satisfy the claimed bond: %v",
+		setlLog.Errorf("table %s: the answer does not satisfy the claimed bond: %v",
 			tbl.terms.SID, err)
 		return
 	}
@@ -538,7 +537,7 @@ func (p *plugin) dispatchAnswers(ctx context.Context) {
 			continue
 		}
 		if err != nil {
-			log.Printf("pokerplugin: table %s: could not answer a claim: %v", ra.sid, err)
+			setlLog.Errorf("table %s: could not answer a claim: %v", ra.sid, err)
 			tbl.note(eventUnanswerable,
 				fmt.Sprintf("claimed against, and the answer could not be sent: %v", err),
 				"", seatp(int(ra.seat)))
@@ -551,7 +550,7 @@ func (p *plugin) dispatchAnswers(ctx context.Context) {
 		if cur := tbl.bondedAt[ra.seat]; cur == "" || cur == ra.from {
 			tbl.bondedAt[ra.seat] = ra.next
 		}
-		log.Printf("pokerplugin: table %s: answered a claim in %s; the bond is posted again at %s",
+		setlLog.Infof("table %s: answered a claim in %s; the bond is posted again at %s",
 			ra.sid, txid, ra.next)
 		tbl.note(eventAnswered,
 			fmt.Sprintf("claimed against, and the answer was sent from this seat's own key; "+
@@ -643,12 +642,12 @@ func (tbl *table) proposeSettlement() []outgoing {
 	}
 	d, err := tbl.settleDraft()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot settle yet: %v", tbl.terms.SID, err)
+		setlLog.Debugf("table %s: cannot settle yet: %v", tbl.terms.SID, err)
 		return nil
 	}
 	tx, err := escrow.BuildSettlement(d)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot settle: %v", tbl.terms.SID, err)
+		setlLog.Errorf("table %s: cannot settle: %v", tbl.terms.SID, err)
 		return nil
 	}
 	return tbl.signSettlement(tx, d)
@@ -662,7 +661,7 @@ func (tbl *table) signSettlement(tx *wire.MsgTx, d escrow.SettleDraft) []outgoin
 	mine, _ := tbl.form.OurSeat()
 	sigs, err := escrow.SignSettlement(tx, d, tbl.session)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: signing a settlement: %v", tbl.terms.SID, err)
+		setlLog.Errorf("table %s: signing a settlement: %v", tbl.terms.SID, err)
 		return nil
 	}
 	raw, err := tx.Bytes()
@@ -727,7 +726,7 @@ func (tbl *table) adoptSettlement(ctx context.Context, body schema.Settle) []out
 		return nil
 	}
 	if err := escrow.CheckSettleDraft(tx, d); err != nil {
-		log.Printf("pokerplugin: table %s: not signing a settlement: %v", tbl.terms.SID, err)
+		setlLog.Warnf("table %s: not signing a settlement: %v", tbl.terms.SID, err)
 		tbl.note(eventRefused,
 			fmt.Sprintf("a proposed payout was not the one this peer would have built: %v", err), "", nil)
 		return nil
@@ -790,7 +789,7 @@ func (tbl *table) broadcastSettlement(ctx context.Context) {
 	}
 	done, err := escrow.FinishSettlement(s.tx, s.draft, byInput, tbl.netParams)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: a fully signed settlement did not satisfy the escrows: %v",
+		setlLog.Errorf("table %s: a fully signed settlement did not satisfy the escrows: %v",
 			tbl.terms.SID, err)
 		tbl.note(eventBlocked,
 			fmt.Sprintf("a fully signed payout did not satisfy the escrows: %v", err), "", nil)
@@ -805,14 +804,14 @@ func (tbl *table) broadcastSettlement(ctx context.Context) {
 	if err != nil {
 		// Every other seat holds the same signatures and the same
 		// transaction, so one of them will send it.
-		log.Printf("pokerplugin: table %s: could not broadcast the settlement: %v",
+		setlLog.Errorf("table %s: could not broadcast the settlement: %v",
 			tbl.terms.SID, err)
 		tbl.note(eventBlocked,
 			fmt.Sprintf("this peer could not send the payout; every other seat holds the same one: %v", err),
 			"", nil)
 		return
 	}
-	log.Printf("pokerplugin: table %s: settled in %s", tbl.terms.SID, txid)
+	setlLog.Infof("table %s: settled in %s", tbl.terms.SID, txid)
 	tbl.note(eventSettled, "the table paid out", txid, nil)
 }
 

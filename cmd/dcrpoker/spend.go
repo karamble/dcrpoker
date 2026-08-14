@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -127,7 +126,7 @@ func (s *spends) save(p *pendingSpend) {
 		return
 	}
 	if err := s.store.saveSpend(p); err != nil {
-		log.Printf("pokerplugin: could not write down a payment: %v", err)
+		coinLog.Errorf("could not write down a payment: %v", err)
 	}
 }
 
@@ -168,7 +167,7 @@ func (s *spends) resume() []*pendingSpend {
 	}
 	saved, err := s.store.loadSpends()
 	if err != nil {
-		log.Printf("pokerplugin: could not read back pending payments: %v", err)
+		coinLog.Errorf("could not read back pending payments: %v", err)
 		return nil
 	}
 	var open []*pendingSpend
@@ -201,7 +200,7 @@ func (p *plugin) awaitAnswer(ctx context.Context, req *pendingSpend) (transport.
 		if ctx.Err() != nil {
 			return transport.Spend{}, last
 		}
-		log.Printf("pokerplugin: cannot ask about the %s asked for as %s, trying again: %v",
+		coinLog.Warnf("cannot ask about the %s asked for as %s, trying again: %v",
 			req.Purpose, req.ID, err)
 		select {
 		case <-ctx.Done():
@@ -283,7 +282,7 @@ func (p *plugin) awaitSpend(ctx context.Context, req *pendingSpend, wait time.Du
 			}
 		})
 		if errors.Is(err, errSurplus) {
-			log.Printf("pokerplugin: the %s asked for as %s is spare coin at %s; "+
+			coinLog.Warnf("the %s asked for as %s is spare coin at %s; "+
 				"reclaim it by naming that outpoint", req.Purpose, req.ID, outpoint)
 		}
 		return out, err
@@ -342,7 +341,7 @@ func (p *plugin) recordSpend(req *pendingSpend, outpoint string) error {
 func (p *plugin) detach(req *pendingSpend, wait time.Duration) {
 	go func() {
 		if _, err := p.awaitSpend(context.Background(), req, wait); err != nil {
-			log.Printf("pokerplugin: the %s asked for as %s did not complete: %v",
+			coinLog.Warnf("the %s asked for as %s did not complete: %v",
 				req.Purpose, req.ID, err)
 		}
 	}()
@@ -355,7 +354,7 @@ func (p *plugin) resumeSpends() {
 		if req.Purpose == purposeBond {
 			wait = bondWait
 		}
-		log.Printf("pokerplugin: still waiting on the %s asked for as %s", req.Purpose, req.ID)
+		coinLog.Debugf("still waiting on the %s asked for as %s", req.Purpose, req.ID)
 		p.detach(req, wait)
 	}
 }

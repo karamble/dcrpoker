@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/vctt94/dcrpoker/pkg/driver"
@@ -64,7 +63,7 @@ func (t *tables) exchangeHeads(tbl *table) []outgoing {
 	}
 	att, err := tbl.play.Chain().AttestHead(seat, key)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot say where our log is: %v", tbl.terms.SID, err)
+		tablLog.Errorf("table %s: cannot say where our log is: %v", tbl.terms.SID, err)
 		return nil
 	}
 	return []outgoing{tbl.frame(schema.KindHead, schema.HeadFrom(att), wire.ClassState)}
@@ -83,7 +82,7 @@ func (tbl *table) acceptHead(body schema.Head) []outgoing {
 	}
 	att, err := body.Into()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: head: %v", tbl.terms.SID, err)
+		tablLog.Errorf("table %s: head: %v", tbl.terms.SID, err)
 		return nil
 	}
 	ours, ok := tbl.form.OurSeat()
@@ -100,12 +99,12 @@ func (tbl *table) acceptHead(body schema.Head) []outgoing {
 	}
 	want, ok := seats[att.Seat]
 	if !ok || !bytes.Equal(want, att.Signer) {
-		log.Printf("pokerplugin: table %s: a key that does not hold seat %d says where its log is",
+		tablLog.Warnf("table %s: a key that does not hold seat %d says where its log is",
 			tbl.terms.SID, att.Seat)
 		return nil
 	}
 	if err := att.Verify(); err != nil {
-		log.Printf("pokerplugin: table %s: seat %d's head: %v", tbl.terms.SID, att.Seat, err)
+		tablLog.Errorf("table %s: seat %d's head: %v", tbl.terms.SID, att.Seat, err)
 		return nil
 	}
 
@@ -132,13 +131,13 @@ func (tbl *table) acceptHead(body schema.Head) []outgoing {
 		}
 		kind, body, err := renderDriver(driver.OutAction{Entry: e}, e.Hand)
 		if err != nil {
-			log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+			tablLog.Errorf("table %s: %v", tbl.terms.SID, err)
 			return out
 		}
 		out = append(out, tbl.frame(kind, body, wire.ClassState))
 	}
 	if len(out) > 0 {
-		log.Printf("pokerplugin: table %s: seat %d is %d entries behind; sending them",
+		tablLog.Infof("table %s: seat %d is %d entries behind; sending them",
 			tbl.terms.SID, att.Seat, len(out))
 	}
 	return out
@@ -157,7 +156,7 @@ func (tbl *table) noteFork(theirs *gamelog.HeadAttestation, ourHead [32]byte, se
 	text := fmt.Sprintf("seat %d says the log at %d is %s, and ours is %s",
 		seat, seq, hex.EncodeToString(theirs.Hash[:8]), hex.EncodeToString(ourHead[:8]))
 	tbl.note(eventBlocked, text, "", &seat)
-	log.Printf("pokerplugin: table %s: %s", tbl.terms.SID, text)
+	tablLog.Infof("table %s: %s", tbl.terms.SID, text)
 	return nil
 }
 
@@ -254,12 +253,12 @@ func (t *tables) republishStalled(tbl *table, height int64) []outgoing {
 	for _, m := range held {
 		kind, body, err := renderDriver(m.Out, m.Hand)
 		if err != nil {
-			log.Printf("pokerplugin: table %s: cannot say %T again: %v", tbl.terms.SID, m.Out, err)
+			tablLog.Errorf("table %s: cannot say %T again: %v", tbl.terms.SID, m.Out, err)
 			continue
 		}
 		out = append(out, tbl.frame(kind, body, wire.ClassState))
 	}
-	log.Printf("pokerplugin: table %s: nothing owed here and nothing moving; saying our %d messages again",
+	tablLog.Infof("table %s: nothing owed here and nothing moving; saying our %d messages again",
 		tbl.terms.SID, len(out))
 	return out
 }

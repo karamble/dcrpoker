@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -101,7 +100,7 @@ func (tbl *table) harvestHands() {
 	for _, rec := range recs {
 		sig, err := tbl.signSecrets(rec.Hand.Hand, rec.Secrets)
 		if err != nil {
-			log.Printf("pokerplugin: table %s: cannot sign hand %d's secrets: %v",
+			dsptLog.Errorf("table %s: cannot sign hand %d's secrets: %v",
 				tbl.terms.SID, rec.Hand.Hand, err)
 			tbl.note(eventBlocked, fmt.Sprintf(
 				"hand %d's secrets could not be signed, and a challenge on it cannot be answered",
@@ -110,7 +109,7 @@ func (tbl *table) harvestHands() {
 		}
 		view, err := schema.HandRecordFrom(rec, mine, sig)
 		if err != nil {
-			log.Printf("pokerplugin: table %s: cannot render hand %d: %v",
+			dsptLog.Errorf("table %s: cannot render hand %d: %v",
 				tbl.terms.SID, rec.Hand.Hand, err)
 			continue
 		}
@@ -121,7 +120,7 @@ func (tbl *table) harvestHands() {
 		}
 		tbl.bundles[rec.Hand.Hand] = b
 		if err := tbl.saveBundle(rec.Hand.Hand, b); err != nil {
-			log.Printf("pokerplugin: table %s: cannot write down hand %d: %v",
+			dsptLog.Errorf("table %s: cannot write down hand %d: %v",
 				tbl.terms.SID, rec.Hand.Hand, err)
 			tbl.note(eventBlocked, fmt.Sprintf(
 				"hand %d could not be written down, and a challenge on it cannot be answered after a restart",
@@ -155,13 +154,13 @@ func (tbl *table) bundle(hand uint64) *handBundle {
 	}
 	var view schema.HandRecordView
 	if err := json.Unmarshal(blob, &view); err != nil {
-		log.Printf("pokerplugin: table %s: hand %d's record is unreadable: %v",
+		dsptLog.Errorf("table %s: hand %d's record is unreadable: %v",
 			tbl.terms.SID, hand, err)
 		return nil
 	}
 	h, own, err := view.Into()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: hand %d's record does not decode: %v",
+		dsptLog.Errorf("table %s: hand %d's record does not decode: %v",
 			tbl.terms.SID, hand, err)
 		return nil
 	}
@@ -256,7 +255,7 @@ func (tbl *table) challengeHand(hand uint64) ([]outgoing, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("pokerplugin: table %s: challenging hand %d", tbl.terms.SID, hand)
+	dsptLog.Infof("table %s: challenging hand %d", tbl.terms.SID, hand)
 	tbl.note(eventChallenged, fmt.Sprintf(
 		"hand %d is challenged; every seat owes its deck secrets", hand), "", seatp(int(mine)))
 	out := []outgoing{tbl.frame(schema.KindChallenge,
@@ -305,7 +304,7 @@ func (tbl *table) acceptChallenge(body schema.Challenge) []outgoing {
 	}
 	digest := driver.ChallengeDigest(match, hand, int(seat))
 	if err := driver.VerifySeatSig(key, digest, sig, int(seat)); err != nil {
-		log.Printf("pokerplugin: table %s: a challenge that seat %d did not sign: %v",
+		dsptLog.Warnf("table %s: a challenge that seat %d did not sign: %v",
 			tbl.terms.SID, seat, err)
 		return nil
 	}
@@ -314,20 +313,20 @@ func (tbl *table) acceptChallenge(body schema.Challenge) []outgoing {
 	}
 	for _, by := range tbl.openChal {
 		if by == seat {
-			log.Printf("pokerplugin: table %s: seat %d already has a challenge open; one at a time",
+			dsptLog.Warnf("table %s: seat %d already has a challenge open; one at a time",
 				tbl.terms.SID, seat)
 			return nil
 		}
 	}
 	if tbl.bundle(hand) == nil {
-		log.Printf("pokerplugin: table %s: hand %d challenged, and this peer holds no record of it",
+		dsptLog.Warnf("table %s: hand %d challenged, and this peer holds no record of it",
 			tbl.terms.SID, hand)
 		tbl.note(eventBlocked, fmt.Sprintf(
 			"hand %d is challenged and this peer holds no record of it", hand), "", seatp(int(seat)))
 		return nil
 	}
 	if err := tbl.recordChallenge(hand, seat); err != nil {
-		log.Printf("pokerplugin: table %s: refusing seat %d's challenge of hand %d: %v",
+		dsptLog.Warnf("table %s: refusing seat %d's challenge of hand %d: %v",
 			tbl.terms.SID, seat, hand, err)
 		return nil
 	}
@@ -421,7 +420,7 @@ func (tbl *table) acceptSecrets(body schema.Secrets) []outgoing {
 		return nil
 	}
 	if err := driver.VerifySeatSig(key, digest, sig, int(seat)); err != nil {
-		log.Printf("pokerplugin: table %s: secrets for hand %d that seat %d did not sign: %v",
+		dsptLog.Warnf("table %s: secrets for hand %d that seat %d did not sign: %v",
 			tbl.terms.SID, hand, seat, err)
 		return nil
 	}
@@ -438,7 +437,7 @@ func (tbl *table) acceptSecrets(body schema.Secrets) []outgoing {
 	if errors.As(err, &cheat) {
 		// Signed secrets that do not produce the deck the same seat also
 		// signed. That is the proof, and there is nothing left to wait for.
-		log.Printf("pokerplugin: table %s: hand %d: %v", tbl.terms.SID, hand, err)
+		dsptLog.Errorf("table %s: hand %d: %v", tbl.terms.SID, hand, err)
 		tbl.note(eventCheat, fmt.Sprintf("hand %d: seat %d %s", hand, seat, cheat.Reason),
 			"", seatp(int(seat)))
 		if tbl.cheats == nil {
@@ -449,7 +448,7 @@ func (tbl *table) acceptSecrets(body schema.Secrets) []outgoing {
 		return nil
 	}
 	if err != nil {
-		log.Printf("pokerplugin: table %s: hand %d: seat %d's reveal does not check: %v",
+		dsptLog.Warnf("table %s: hand %d: seat %d's reveal does not check: %v",
 			tbl.terms.SID, hand, seat, err)
 		return nil
 	}
@@ -460,7 +459,7 @@ func (tbl *table) acceptSecrets(body schema.Secrets) []outgoing {
 	}
 	b.view.Revealed[seat] = body
 	if err := tbl.saveBundle(hand, b); err != nil {
-		log.Printf("pokerplugin: table %s: cannot keep seat %d's reveal: %v", tbl.terms.SID, seat, err)
+		dsptLog.Errorf("table %s: cannot keep seat %d's reveal: %v", tbl.terms.SID, seat, err)
 	}
 	if tbl.play != nil {
 		tbl.play.NoteRevealed(hand, int(seat))
@@ -504,14 +503,14 @@ func (tbl *table) maybeAudit(hand uint64) {
 	case err == nil:
 		verdict = verdictClean
 		b.cards = cards
-		log.Printf("pokerplugin: table %s: hand %d recomputed clean", tbl.terms.SID, hand)
+		dsptLog.Infof("table %s: hand %d recomputed clean", tbl.terms.SID, hand)
 		tbl.note(eventAudited, fmt.Sprintf(
 			"hand %d recomputed clean from every seat's secrets; every proof told the truth", hand),
 			"", nil)
 	case errors.As(err, &cheat):
 		verdict = verdictCheat
 		seat := seatOfPub(b.hand.Pubs, cheat.By)
-		log.Printf("pokerplugin: table %s: hand %d: %v", tbl.terms.SID, hand, err)
+		dsptLog.Errorf("table %s: hand %d: %v", tbl.terms.SID, hand, err)
 		tbl.note(eventCheat, fmt.Sprintf("hand %d: %s", hand, cheat.Reason), "", seat)
 		if seat != nil {
 			if tbl.cheats == nil {
@@ -524,7 +523,7 @@ func (tbl *table) maybeAudit(hand uint64) {
 		// it. Nobody's bond can answer that, so the only answer left is that
 		// this hand is not paid out.
 		verdict = verdictWrong
-		log.Printf("pokerplugin: table %s: hand %d did not reproduce: %v", tbl.terms.SID, hand, err)
+		dsptLog.Errorf("table %s: hand %d did not reproduce: %v", tbl.terms.SID, hand, err)
 		tbl.note(eventWrong, fmt.Sprintf(
 			"hand %d did not reproduce and no seat can be named for it: %s; nothing settles on it",
 			hand, wrong.Reason), "", nil)
@@ -532,7 +531,7 @@ func (tbl *table) maybeAudit(hand uint64) {
 		// Not "the audit could not run" - it may well have run and found this
 		// peer's own record of the hand at fault, which is a different thing
 		// to say to whoever is reading it.
-		log.Printf("pokerplugin: table %s: hand %d could not be answered for: %v",
+		dsptLog.Errorf("table %s: hand %d could not be answered for: %v",
 			tbl.terms.SID, hand, err)
 		tbl.note(eventBlocked, fmt.Sprintf(
 			"hand %d could not be answered for, and nothing is held up by it: %v", hand, err),
@@ -625,11 +624,11 @@ func (tbl *table) closeChallengesAfterTake(seat uint32) {
 			}
 		}
 		if !paid {
-			log.Printf("pokerplugin: table %s: hand %d stays challenged; seat %d's bond answered for "+
+			dsptLog.Infof("table %s: hand %d stays challenged; seat %d's bond answered for "+
 				"it but %v have still not revealed", tbl.terms.SID, hand, seat, left)
 			continue
 		}
-		log.Printf("pokerplugin: table %s: hand %d's challenge closes; every seat still owing it "+
+		dsptLog.Infof("table %s: hand %d's challenge closes; every seat still owing it "+
 			"has had its bond taken", tbl.terms.SID, hand)
 		tbl.note(eventClaimed, fmt.Sprintf(
 			"hand %d was never recomputed, and every seat that refused has paid its bond for it",

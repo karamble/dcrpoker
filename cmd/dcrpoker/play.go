@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/forfeit"
@@ -106,7 +105,7 @@ func (tbl *table) startPlaying() []outgoing {
 	// hand.
 	logKey, err := forfeit.LogKeyFrom(tbl.logPriv, match)
 	if err != nil {
-		log.Printf("pokerplugin: table %s cannot start dealing: %v", tbl.terms.SID, err)
+		playLog.Errorf("table %s cannot start dealing: %v", tbl.terms.SID, err)
 		return nil
 	}
 	// What this key has already signed, from disk, so the refusal to sign one
@@ -119,7 +118,7 @@ func (tbl *table) startPlaying() []outgoing {
 	_ = tbl.save()
 	schedule, err := blindsFor(tbl.terms.BuyInAtoms)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+		playLog.Errorf("table %s: %v", tbl.terms.SID, err)
 		return nil
 	}
 	stakes := make([]int64, len(seats))
@@ -140,7 +139,7 @@ func (tbl *table) startPlaying() []outgoing {
 		Button:   0,
 	})
 	if err != nil {
-		log.Printf("pokerplugin: table %s cannot start dealing: %v", tbl.terms.SID, err)
+		playLog.Errorf("table %s cannot start dealing: %v", tbl.terms.SID, err)
 		return nil
 	}
 	tbl.play = p
@@ -152,10 +151,10 @@ func (tbl *table) startPlaying() []outgoing {
 
 	out, err := p.Start()
 	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+		playLog.Errorf("table %s: %v", tbl.terms.SID, err)
 		return nil
 	}
-	log.Printf("pokerplugin: table %s is dealing, %d seats, blinds %d/%d",
+	playLog.Infof("table %s is dealing, %d seats, blinds %d/%d",
 		tbl.terms.SID, len(seats), schedule.Levels[0].Small, schedule.Levels[0].Big)
 	return append(tbl.publish(out), tbl.drainHeld()...)
 }
@@ -228,7 +227,7 @@ func (tbl *table) publish(msgs []driver.Out) []outgoing {
 	for _, m := range msgs {
 		kind, body, err := renderDriver(m, hand)
 		if err != nil {
-			log.Printf("pokerplugin: table %s: cannot send %T: %v", tbl.terms.SID, m, err)
+			playLog.Errorf("table %s: cannot send %T: %v", tbl.terms.SID, m, err)
 			continue
 		}
 		out = append(out, tbl.frame(kind, body, wire.ClassState))
@@ -284,7 +283,7 @@ func (tbl *table) deal(msg *schema.Message) []outgoing {
 	}
 	in, err := decodeDriver(msg)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+		playLog.Errorf("table %s: %v", tbl.terms.SID, err)
 		return nil
 	}
 	if in == nil {
@@ -298,10 +297,10 @@ func (tbl *table) deal(msg *schema.Message) []outgoing {
 		// them is how the wedge this used to leave gets resolved.
 		var refused *driver.ErrShuffleRefused
 		if errors.As(err, &refused) {
-			log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+			playLog.Errorf("table %s: %v", tbl.terms.SID, err)
 			return tbl.openComplaintFrom(refused.Refusal)
 		}
-		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+		playLog.Errorf("table %s: %v", tbl.terms.SID, err)
 		return nil
 	}
 	return tbl.publish(out)

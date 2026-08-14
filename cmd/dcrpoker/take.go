@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"log"
 
 	"github.com/decred/dcrd/wire"
 
@@ -109,7 +108,7 @@ func (tbl *table) proposeTake(against uint32, outpoint string, claimed []byte, v
 		}
 		addr := tbl.payouts[seat]
 		if addr == "" {
-			log.Printf("pokerplugin: table %s: seat %d has not said where to pay it, "+
+			setlLog.Warnf("table %s: seat %d has not said where to pay it, "+
 				"so a forfeiture cannot be built", tbl.terms.SID, seat)
 			return nil
 		}
@@ -131,7 +130,7 @@ func (tbl *table) proposeTake(against uint32, outpoint string, claimed []byte, v
 		FeeAtoms:   claimFee,
 	})
 	if err != nil {
-		log.Printf("pokerplugin: table %s: cannot build a forfeiture: %v", tbl.terms.SID, err)
+		setlLog.Errorf("table %s: cannot build a forfeiture: %v", tbl.terms.SID, err)
 		return nil
 	}
 	raw, err := tx.Bytes()
@@ -141,7 +140,7 @@ func (tbl *table) proposeTake(against uint32, outpoint string, claimed []byte, v
 
 	t := &take{seat: against, claimed: claimed, tx: tx, sigs: map[string][]byte{}}
 	tbl.takes[outpoint] = t
-	log.Printf("pokerplugin: table %s: seat %d never answered, proposing to take its bond",
+	setlLog.Infof("table %s: seat %d never answered, proposing to take its bond",
 		tbl.terms.SID, against)
 
 	out := []outgoing{tbl.frame(schema.KindTake, schema.Take{
@@ -212,7 +211,7 @@ func (tbl *table) acceptTake(body schema.Take) []outgoing {
 	}
 	terms, err := escrow.ParseClaimedBond(claimed)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: a forfeiture against a script that is not a claimed bond: %v",
+		setlLog.Warnf("table %s: a forfeiture against a script that is not a claimed bond: %v",
 			tbl.terms.SID, err)
 		return nil
 	}
@@ -290,7 +289,7 @@ func (tbl *table) finishTake(ctx context.Context, chain broadcaster, outpoint st
 	}
 	sigScript, err := escrow.TakeSigScript(t.claimed, sigs)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: a fully signed forfeiture does not satisfy the claimed bond: %v",
+		setlLog.Errorf("table %s: a fully signed forfeiture does not satisfy the claimed bond: %v",
 			tbl.terms.SID, err)
 		return
 	}
@@ -302,10 +301,10 @@ func (tbl *table) finishTake(ctx context.Context, chain broadcaster, outpoint st
 	t.done = true
 	txid, err := chain.Broadcast(ctx, hex.EncodeToString(raw))
 	if err != nil {
-		log.Printf("pokerplugin: table %s: could not broadcast a forfeiture: %v", tbl.terms.SID, err)
+		setlLog.Errorf("table %s: could not broadcast a forfeiture: %v", tbl.terms.SID, err)
 		return
 	}
-	log.Printf("pokerplugin: table %s: took seat %d's unanswered bond in %s",
+	setlLog.Infof("table %s: took seat %d's unanswered bond in %s",
 		tbl.terms.SID, t.seat, txid)
 	tbl.note(eventClaimed, fmt.Sprintf("seat %d never answered, and its bond was taken", t.seat),
 		txid, seatp(int(t.seat)))

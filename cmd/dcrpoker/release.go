@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/decred/dcrd/wire"
 
@@ -102,7 +101,7 @@ func (tbl *table) proposeReleases() []outgoing {
 		}
 		tx, err := escrow.BuildAlive(d)
 		if err != nil {
-			log.Printf("pokerplugin: table %s: cannot release seat %d's bond: %v",
+			setlLog.Errorf("table %s: cannot release seat %d's bond: %v",
 				tbl.terms.SID, seat, err)
 			continue
 		}
@@ -180,7 +179,7 @@ func (tbl *table) signRelease(seat uint32, tx *wire.MsgTx, d escrow.AliveDraft) 
 	}
 	sig, err := escrow.SignBondSpend(tx, d.Bond, tbl.session)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: signing seat %d's release: %v", tbl.terms.SID, seat, err)
+		setlLog.Errorf("table %s: signing seat %d's release: %v", tbl.terms.SID, seat, err)
 		return nil
 	}
 	raw, err := tx.Bytes()
@@ -240,7 +239,7 @@ func (tbl *table) adoptRelease(ctx context.Context, body schema.Release) []outgo
 		}
 	}
 	if !known {
-		log.Printf("pokerplugin: table %s: a key that holds no seat signed a bond release",
+		setlLog.Warnf("table %s: a key that holds no seat signed a bond release",
 			tbl.terms.SID)
 		return nil
 	}
@@ -261,12 +260,12 @@ func (tbl *table) adoptRelease(ctx context.Context, body schema.Release) []outgo
 	}
 	tx := wire.NewMsgTx()
 	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
-		log.Printf("pokerplugin: table %s: seat %d's release will not decode: %v",
+		setlLog.Warnf("table %s: seat %d's release will not decode: %v",
 			tbl.terms.SID, body.Seat, err)
 		return nil
 	}
 	if err := escrow.CheckAliveDraft(tx, d); err != nil {
-		log.Printf("pokerplugin: table %s: refusing seat %d's release: %v",
+		setlLog.Warnf("table %s: refusing seat %d's release: %v",
 			tbl.terms.SID, body.Seat, err)
 		return nil
 	}
@@ -310,7 +309,7 @@ func (tbl *table) broadcastRelease(ctx context.Context, seat uint32) {
 	}
 	signed, err := escrow.FinishAlive(r.tx, r.draft.Bond, sigs, tbl.netParams)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: seat %d's release will not assemble: %v",
+		setlLog.Errorf("table %s: seat %d's release will not assemble: %v",
 			tbl.terms.SID, seat, err)
 		return
 	}
@@ -325,14 +324,14 @@ func (tbl *table) broadcastRelease(ctx context.Context, seat uint32) {
 	if err != nil {
 		// The others hold the same signatures, so somebody else's copy may
 		// well land. Worth saying and not worth stopping for.
-		log.Printf("pokerplugin: table %s: could not send seat %d's release: %v",
+		setlLog.Errorf("table %s: could not send seat %d's release: %v",
 			tbl.terms.SID, seat, err)
 		return
 	}
 	r.done = true
 	at := seat
 	tbl.note(eventSettled, "bond released", txid, &at)
-	log.Printf("pokerplugin: table %s: seat %d's bond went back in %s", tbl.terms.SID, seat, txid)
+	setlLog.Infof("table %s: seat %d's bond went back in %s", tbl.terms.SID, seat, txid)
 }
 
 // learnBondValues asks the chain what this player's own bonds hold.

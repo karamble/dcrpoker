@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"log"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
@@ -88,7 +87,7 @@ func (tbl *table) proposeClaim(params stdaddr.AddressParams) []outgoing {
 	}
 	a := tbl.accuse[at]
 	if a == nil {
-		log.Printf("pokerplugin: table %s: no agreed accusation against seat %d at %s",
+		setlLog.Warnf("table %s: no agreed accusation against seat %d at %s",
 			tbl.terms.SID, duty.Seat, at)
 		tbl.note(eventBlocked, fmt.Sprintf(
 			"seat %d has stopped, and this peer holds no agreed accusation against its bond at %s",
@@ -103,7 +102,7 @@ func (tbl *table) proposeClaim(params stdaddr.AddressParams) []outgoing {
 	for _, m := range terms.Members {
 		sig, ok := a.sigs[hex.EncodeToString(m)]
 		if !ok {
-			log.Printf("pokerplugin: table %s: the accusation against seat %d is short a signature",
+			setlLog.Warnf("table %s: the accusation against seat %d is short a signature",
 				tbl.terms.SID, duty.Seat)
 			tbl.note(eventBlocked, fmt.Sprintf(
 				"seat %d has stopped, and the agreed accusation is short a signature", duty.Seat),
@@ -114,7 +113,7 @@ func (tbl *table) proposeClaim(params stdaddr.AddressParams) []outgoing {
 	}
 	done, err := escrow.FinishAlive(a.tx, a.bond, sigs, params)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: the agreed accusation does not satisfy the bond: %v",
+		setlLog.Errorf("table %s: the agreed accusation does not satisfy the bond: %v",
 			tbl.terms.SID, err)
 		return nil
 	}
@@ -125,7 +124,7 @@ func (tbl *table) proposeClaim(params stdaddr.AddressParams) []outgoing {
 
 	c := &claim{duty: duty, tx: done, bond: a.bond, sigs: a.sigs, done: true}
 	tbl.claims[duty] = c
-	log.Printf("pokerplugin: table %s: accusing - %s", tbl.terms.SID, duty)
+	setlLog.Infof("table %s: accusing - %s", tbl.terms.SID, duty)
 	tbl.note(eventProposed, fmt.Sprintf("accused seat %d of leaving: %s", duty.Seat, duty),
 		"", seatp(duty.Seat))
 
@@ -181,7 +180,7 @@ func (tbl *table) acceptClaim(body schema.Claim, params stdaddr.AddressParams) [
 			body.Duty.Seat, body.Duty), "", seatp(body.Duty.Seat))
 		return nil
 	}
-	log.Printf("pokerplugin: table %s: accused of leaving, and answering", tbl.terms.SID)
+	setlLog.Infof("table %s: accused of leaving, and answering", tbl.terms.SID)
 	// Built here, under the lock this handler already holds; broadcast by
 	// dispatchAnswers once the delivery has released it.
 	tbl.answerClaim()
@@ -239,7 +238,7 @@ func (tbl *table) payoutFrame(addr string) []outgoing {
 	}
 	p, err := membership.SignPayout(tbl.terms, seat, addr, tbl.session)
 	if err != nil {
-		log.Printf("pokerplugin: table %s: %v", tbl.terms.SID, err)
+		setlLog.Errorf("table %s: %v", tbl.terms.SID, err)
 		return nil
 	}
 	tbl.payouts[seat] = addr
