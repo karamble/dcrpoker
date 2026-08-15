@@ -194,7 +194,7 @@ func (p *plugin) doReclaim(req *gamingpb.Reclaim) (string, error) {
 
 	case gamingpb.Reclaim_STAKE:
 		sid := strings.ToLower(strings.TrimSpace(req.GetSid()))
-		seat, dep, terms, stake, err := p.tables.ourDeposit(sid)
+		seat, dep, terms, stake, err := p.tables.ourDepositScript(sid)
 		if err != nil {
 			return "", err
 		}
@@ -224,14 +224,14 @@ func (p *plugin) doReclaim(req *gamingpb.Reclaim) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if named == "" {
-			p.tables.forgetStake(sid, seat)
-		}
+		// The record keeps citing the stake until the chain says it is gone.
+		// forgetSpentStakes clears it then; forgetting it here would leave a
+		// refund that never confirmed with nothing pointing at its output.
 		return txid, nil
 
 	case gamingpb.Reclaim_TABLE_BOND:
 		sid := strings.ToLower(strings.TrimSpace(req.GetSid()))
-		seat, bond, outpoint, err := p.tables.ourTableBond(sid)
+		_, bond, outpoint, err := p.tables.ourTableBond(sid)
 		if err != nil {
 			return "", err
 		}
@@ -250,7 +250,8 @@ func (p *plugin) doReclaim(req *gamingpb.Reclaim) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		p.tables.forgetTableBond(sid, seat)
+		// Cleared by watchBonds once the chain agrees, for the same reason as
+		// the stake above.
 		return txid, nil
 	}
 	return "", fmt.Errorf("this game does not know how to reclaim that")
@@ -329,7 +330,25 @@ func (p *plugin) gameState(ctx context.Context) *gamingpb.GameState {
 			BuyinAtoms: int64(s.BuyInAtoms),
 			Until:      s.Until,
 			Over:       s.Over,
+			Settling:   s.Settling,
 		})
+		if s.Seat == nil {
+			continue
+		}
+		if s.Stake != "" {
+			atoms, matures, spent := p.lockFacts(ctx, s.Stake, s.CSVBlocks)
+			state.Stakes = append(state.Stakes, &gamingpb.Stake{
+				Sid: s.SID, Seat: *s.Seat, Outpoint: s.Stake,
+				Address: s.DepositAddr, Atoms: atoms, MaturesAt: matures, Spent: spent,
+			})
+		}
+		if s.TableBond != "" {
+			atoms, matures, spent := p.lockFacts(ctx, s.TableBond, membership.TableBondBlocks)
+			state.TableBonds = append(state.TableBonds, &gamingpb.TableBond{
+				Sid: s.SID, Seat: *s.Seat, Outpoint: s.TableBond,
+				Address: s.TableBondAddr, Atoms: atoms, MaturesAt: matures, Spent: spent,
+			})
+		}
 	}
 
 	// The bond, described the way the interface describes it, then narrowed.

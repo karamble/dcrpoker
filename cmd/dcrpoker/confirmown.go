@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+
+	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 // Checking our own money against the chain.
@@ -161,7 +163,8 @@ func (p *plugin) forgetSpentStakes(ctx context.Context, height int64) {
 
 	p.tables.mu.Lock()
 	for sid, tbl := range p.tables.m {
-		if !tbl.finished && (tbl.play == nil || !tbl.play.Over()) {
+		if !tbl.finished && tbl.form.State() != membership.Aborted &&
+			(tbl.play == nil || !tbl.play.Over()) {
 			continue
 		}
 		if height > 0 && height <= tbl.forgetAskedAt {

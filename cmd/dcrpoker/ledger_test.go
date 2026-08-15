@@ -954,3 +954,47 @@ func playOn(t *testing.T, p *plugin, sid string) {
 		}
 	}
 }
+
+// The state report names every output this game is holding.
+//
+// The console is where a person takes coin back, and it can only offer that for
+// an outpoint it was told about. Table bonds were declared on the wire and never
+// filled in, so the only lock the console ever saw was the registration bond;
+// stakes had no field at all.
+//
+// Kills: dropping stakes or table bonds from gameState; reporting a stake with
+// no outpoint or no address.
+func TestTheStateReportNamesTheCoinItHolds(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	st := a.gameState(context.Background())
+
+	stakes := st.GetStakes()
+	if len(stakes) != 1 {
+		t.Fatalf("reported %d stakes, want the one this seat holds", len(stakes))
+	}
+	if stakes[0].GetOutpoint() == "" || stakes[0].GetAddress() == "" {
+		t.Fatalf("stake reported without somewhere to look: %+v", stakes[0])
+	}
+	if stakes[0].GetSid() != terms.SID {
+		t.Fatalf("stake is filed under %q, want %q", stakes[0].GetSid(), terms.SID)
+	}
+
+	bonds := st.GetTableBonds()
+	if len(bonds) != 1 {
+		t.Fatalf("reported %d table bonds, want the one this seat holds", len(bonds))
+	}
+	if bonds[0].GetOutpoint() == "" || bonds[0].GetAddress() == "" {
+		t.Fatalf("table bond reported without somewhere to look: %+v", bonds[0])
+	}
+
+	// A table mid-hand is still settling, so the console must not offer to
+	// take a stake out from under the payout every seat signed.
+	if len(st.GetTables()) != 1 {
+		t.Fatalf("reported %d tables, want 1", len(st.GetTables()))
+	}
+	if !st.GetTables()[0].GetSettling() {
+		t.Fatal("a table with a hand in progress does not report itself as settling")
+	}
+}

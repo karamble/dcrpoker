@@ -474,7 +474,7 @@ func TestFundingWaitsForTheTableToSettle(t *testing.T) {
 	p := h.restart(t, t.TempDir(), "tok")
 	acceptInvite(t, p, inv)
 
-	if _, _, _, _, err := p.tables.ourDeposit(terms.SID); err == nil {
+	if _, _, _, _, err := p.tables.whereToStake(terms.SID); err == nil {
 		t.Fatal("derived a deposit for a table that has not settled")
 	}
 
@@ -482,8 +482,13 @@ func TestFundingWaitsForTheTableToSettle(t *testing.T) {
 	p.tables.tick(int64(terms.Until) + 1)
 
 	// Bound, but nobody else has committed and no seating is drawn.
-	if _, _, _, _, err := p.tables.ourDeposit(terms.SID); err == nil {
+	if _, _, _, _, err := p.tables.whereToStake(terms.SID); err == nil {
 		t.Fatal("derived a deposit for a table that has not been seated")
+	}
+	// The refund accessor drops the lifecycle guards and keeps this one: with
+	// no seating there is no script to derive and no coin to have paid.
+	if _, _, _, _, err := p.tables.ourDepositScript(terms.SID); err == nil {
+		t.Fatal("derived a deposit script for a table that has no seating")
 	}
 }
 

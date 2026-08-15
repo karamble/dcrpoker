@@ -63,11 +63,135 @@ func TestATableBondComesBackOnItsOwnOnceTheLockMatures(t *testing.T) {
 		t.Fatalf("the bond at %s was not spent by its own sweep", outpoint)
 	}
 
-	// And the table stops citing coin it has spent, because a table that
-	// announced an output that is gone would be telling its peers something
-	// untrue about the chain.
-	if _, _, still, err := a.tables.ourTableBond(terms.SID); err == nil {
-		t.Fatalf("the table still says its bond is at %s after sweeping it", still)
+	// And the table goes on citing it until the chain agrees it is gone.
+	// watchBonds clears it then. Forgetting it here would leave a sweep that
+	// never confirmed with nothing pointing at its output.
+	if _, _, still, err := a.tables.ourTableBond(terms.SID); err != nil {
+		t.Fatalf("the table forgot its bond before the chain confirmed the sweep: %v", err)
+	} else if still != outpoint {
+		t.Fatalf("the table cites %s after sweeping %s", still, outpoint)
+	}
+}
+
+// A stake comes back from a table that has dealt.
+//
+// The accessor the refund reads its script through used to carry the funding
+// guards, so this exact call was answered with "has already dealt, so it takes
+// no more stake" - a sentence about paying in, to a request to take out. The
+// set it refused was the set that needs refunding.
+//
+// Kills: putting dealt/finished or Settled onto ourDepositScript; pointing the
+// Reclaim_STAKE branch back at whereToStake; dropping the maturity check.
+func TestAStakeComesBackFromATableThatHasDealt(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	seat, dep, _, stake, err := a.tables.ourDepositScript(terms.SID)
+	if err != nil {
+		t.Fatalf("a dealt table would not say where its stake is: %v", err)
+	}
+	if stake == "" || dep.RedeemScriptHex == "" {
+		t.Fatalf("seat %d has stake %q under script %q", seat, stake, dep.RedeemScriptHex)
+	}
+	// The funding side must still refuse the same table, or this is a test of
+	// a deleted guard rather than of a split one.
+	if _, _, _, _, err := a.tables.whereToStake(terms.SID); err == nil {
+		t.Fatal("the funding accessor answered for a table that has dealt")
+	}
+
+	dest := payoutAddress(t, a)
+
+	_, err = a.doReclaim(&gamingpb.Reclaim{
+		Kind: gamingpb.Reclaim_STAKE, Sid: terms.SID, DestAddr: dest,
+	})
+	if err == nil {
+		t.Fatalf("took back a stake that is short of its %d block lock", terms.CSVBlocks)
+	}
+	if !strings.Contains(err.Error(), "not spendable") {
+		t.Fatalf("the refusal should say the lock has not matured: %v", err)
+	}
+
+	// Move the chain rather than the transaction.
+	h.mu.Lock()
+	h.confs = int64(terms.CSVBlocks)
+	h.mu.Unlock()
+
+	before := len(h.relayed())
+	if _, err := a.doReclaim(&gamingpb.Reclaim{
+		Kind: gamingpb.Reclaim_STAKE, Sid: terms.SID, DestAddr: dest,
+	}); err != nil {
+		t.Fatalf("take the stake back: %v", err)
+	}
+	if got := h.relayed(); len(got) != before+1 {
+		t.Fatalf("relayed %d transactions, want one more than %d", len(got), before)
+	}
+	if !h.isSpent(stake) {
+		t.Fatalf("the stake at %s was not spent by its own refund", stake)
+	}
+}
+
+// A script that is not the one the output was paid into is caught here, before
+// anything is signed.
+//
+// The engine check inside BuildTimelockedSpend derives its pkScript from the
+// script it was handed, so it passes for a script that satisfies itself and is
+// simply the wrong one. Without this the transaction is broadcast and dcrd
+// answers "false stack entry at end of script execution", which reads as a
+// signing bug rather than as a derivation that drifted.
+//
+// Kills: deleting the comparison in reclaim, or making it advisory - the
+// relayed count catches a version that logs and broadcasts anyway.
+func TestARefundRefusesAnOutputItDoesNotDerive(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	_, bond, outpoint, err := a.tables.ourTableBond(terms.SID)
+	if err != nil {
+		t.Fatalf("this seat has no bond to reclaim: %v", err)
+	}
+	dest := payoutAddress(t, a)
+
+	h.mu.Lock()
+	h.confs = int64(membership.TableBondBlocks)
+	right := h.bonds[outpoint]
+	// A different P2SH, so the output pays something this key does not derive.
+	h.bonds[outpoint] = "a914" + strings.Repeat("11", 20) + "87"
+	h.mu.Unlock()
+
+	if right == "" || bond.ScriptHex == "" {
+		t.Fatalf("fixture has no bond script: outpoint pays %q, bond script %q", right, bond.ScriptHex)
+	}
+
+	before := len(h.relayed())
+	_, err = a.doReclaim(&gamingpb.Reclaim{
+		Kind: gamingpb.Reclaim_TABLE_BOND, Sid: terms.SID, DestAddr: dest,
+	})
+	if err == nil {
+		t.Fatal("signed a spend of an output paying a script this key does not derive")
+	}
+	if !strings.Contains(err.Error(), "not the script that output was paid into") {
+		t.Fatalf("the refusal should name the mismatch: %v", err)
+	}
+	if strings.Contains(err.Error(), "false stack entry") {
+		t.Fatalf("the refusal came from the engine rather than from the check: %v", err)
+	}
+	if got := h.relayed(); len(got) != before {
+		t.Fatalf("relayed %d transactions, want the %d it started with", len(got), before)
+	}
+
+	// The same call succeeds once the output pays what this key derives, so
+	// the refusal above came from the comparison and not from the fixture.
+	h.mu.Lock()
+	h.bonds[outpoint] = right
+	h.mu.Unlock()
+
+	if _, err := a.doReclaim(&gamingpb.Reclaim{
+		Kind: gamingpb.Reclaim_TABLE_BOND, Sid: terms.SID, DestAddr: dest,
+	}); err != nil {
+		t.Fatalf("sweep the table bond: %v", err)
+	}
+	if got := h.relayed(); len(got) != before+1 {
+		t.Fatalf("relayed %d transactions, want one more than %d", len(got), before)
 	}
 }
 

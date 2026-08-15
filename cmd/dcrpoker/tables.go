@@ -1440,24 +1440,6 @@ func (tbl *table) askAgain(height int64) []outgoing {
 	return nil
 }
 
-// forgetStake drops a seat's stake, once it has been spent somewhere else.
-//
-// It is our own stake and our own spend, so this is bookkeeping rather than a
-// decision - but it has to happen, because a table still citing an output it
-// has already spent would go on announcing a stake that is not there, and every
-// peer would go on refusing it.
-func (t *tables) forgetStake(sid string, seat uint32) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	tbl := t.m[sid]
-	if tbl == nil {
-		return
-	}
-	delete(tbl.funded, seat)
-	t.persist(tbl)
-}
-
 // resync asks every table this process is at for whatever it missed.
 //
 // This is what a gap in the stream costs: the host drops frames rather than
@@ -2062,6 +2044,18 @@ type snapshot struct {
 	// exist: it is derived from the whole membership.
 	DepositAddr string `json:"depositAddr,omitempty"`
 	Stake       string `json:"stake,omitempty"`
+
+	// TableBond is the output holding this player's bond for the table, and
+	// TableBondAddr is where it was paid. Reported for the same reason as
+	// the stake: the console cannot offer to take back an outpoint it was
+	// never told about.
+	TableBond     string `json:"tableBond,omitempty"`
+	TableBondAddr string `json:"tableBondAddr,omitempty"`
+
+	// Settling is true while a cooperative settlement is still possible in
+	// this process. A refund taken then spends an input the settlement
+	// needs, so it is reported rather than guarded against.
+	Settling bool `json:"settling,omitempty"`
 	// FundingDeadline is the height after which an unfunded table is given
 	// up on. Zero before there is anything to fund.
 	FundingDeadline uint32 `json:"fundingDeadline,omitempty"`
@@ -2202,7 +2196,16 @@ func (t *tables) snapshots() []snapshot {
 			if dep, err := tbl.deposit(seat, t.params); err == nil {
 				s.DepositAddr = dep.DepositAddr
 			}
+			// bondedAt before bonded: a bond that answered a claim was
+			// respent into an identical one, and this is where it sits now.
+			if s.TableBond = tbl.bondedAt[seat]; s.TableBond == "" {
+				s.TableBond = tbl.bonded[seat]
+			}
+			if b, err := tbl.bond(seat, t.params); err == nil {
+				s.TableBondAddr = b.Address
+			}
 		}
+		s.Settling = tbl.play != nil && !tbl.settled && !tbl.resultInDoubt()
 		if tbl.play != nil {
 			s.Dealing = true
 			s.Over = tbl.play.Over()

@@ -370,3 +370,29 @@ func paramsForNetwork(name string) (stdaddr.AddressParams, error) {
 	}
 	return nil, fmt.Errorf("unknown network %q", name)
 }
+
+// lockFacts reports what the chain says about one timelocked output.
+//
+// describeBond's shape, parameterised by the lock, so a stake and a table bond
+// can be described with their own. Silent on failure: a chain read that fails
+// leaves the outpoint reported without a maturity, which the console renders
+// as a wait it cannot size rather than as a wait of zero.
+func (p *plugin) lockFacts(ctx context.Context, outpoint string, lockBlocks uint32) (atoms, maturesAt int64, spent bool) {
+	txid, vout, err := splitOutpoint(outpoint)
+	if err != nil {
+		return 0, 0, false
+	}
+	found, err := p.bridge.Outpoint(ctx, txid, vout)
+	if err != nil {
+		return 0, 0, false
+	}
+	if !found.Found {
+		// Never confirmed or already spent, which read the same here.
+		return 0, 0, true
+	}
+	atoms = found.ValueAtoms
+	if tip, err := p.bridge.ChainTip(ctx); err == nil {
+		maturesAt = tip.Height - found.Confirmations + 1 + int64(lockBlocks)
+	}
+	return atoms, maturesAt, false
+}

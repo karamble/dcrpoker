@@ -170,6 +170,62 @@ func TestARecoveredPaymentDoesNotDisplaceTheStake(t *testing.T) {
 	}
 }
 
+// The same thing on a table that has dealt, which is where it actually bit.
+//
+// The surplus check reads the seat's recorded outpoint through an accessor
+// that used to carry the funding guards, and the call is wrapped in err == nil
+// - so on a dealt table the guard error was swallowed, the check was skipped
+// entirely, and the late payment overwrote the stake the peers had checked and
+// played a hand against. The two sides then disagree for good and no
+// settlement draft passes.
+//
+// Kills: pointing either surplus check back at the guarded accessor.
+func TestARecoveredPaymentDoesNotDisplaceAPlayedStake(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	a.tables.mu.Lock()
+	tbl := a.tables.m[terms.SID]
+	seat, _ := tbl.form.OurSeat()
+	realStake, realBond := tbl.funded[seat], tbl.bonded[seat]
+	dealt := tbl.dealt
+	a.tables.mu.Unlock()
+
+	if !dealt || realStake == "" || realBond == "" {
+		t.Fatalf("fixture is not a dealt, funded, bonded table: dealt=%v stake=%q bond=%q",
+			dealt, realStake, realBond)
+	}
+
+	dep, err := tbl.deposit(seat, testParams)
+	if err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	bond, err := tbl.bond(seat, testParams)
+	if err != nil {
+		t.Fatalf("bond: %v", err)
+	}
+
+	spare := payTo(h, dep.PkScriptHex, "07")
+	req := &pendingSpend{ID: "e", Purpose: purposeStake, SID: terms.SID, Seat: seat,
+		PkScript: dep.PkScriptHex}
+	if err := a.recordSpend(req, spare); !errors.Is(err, errSurplus) {
+		t.Fatalf("filing a second stake payment gave %v, want it refused as surplus", err)
+	}
+	if got := a.tables.m[terms.SID].funded[seat]; got != realStake {
+		t.Fatalf("the seat's stake became %s, and the hand was played against %s", got, realStake)
+	}
+
+	spareBond := payTo(h, bond.PkScriptHex, "08")
+	breq := &pendingSpend{ID: "f", Purpose: purposeTableBond, SID: terms.SID, Seat: seat,
+		PkScript: bond.PkScriptHex}
+	if err := a.recordSpend(breq, spareBond); !errors.Is(err, errSurplus) {
+		t.Fatalf("filing a second bond payment gave %v, want it refused as surplus", err)
+	}
+	if got := a.tables.m[terms.SID].bonded[seat]; got != realBond {
+		t.Fatalf("the seat's bond became %s, and the claims are built against %s", got, realBond)
+	}
+}
+
 // Forming and funding a table takes as many blocks as the terms say, and this
 // process can be restarted inside that window - by an upgrade, by a container
 // coming back. It used to come back holding a table nobody could play and

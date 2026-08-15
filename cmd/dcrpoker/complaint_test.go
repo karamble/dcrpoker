@@ -340,11 +340,23 @@ func TestADealtTableTakesNoMoreMoney(t *testing.T) {
 	tbl.bonded = map[uint32]string{}
 	a.tables.mu.Unlock()
 
-	if _, _, _, _, err := a.tables.ourDeposit(terms.SID); err == nil {
+	if len(tbl.funded) != 0 || len(tbl.bonded) != 0 {
+		t.Fatal("the fixture still holds coin, so this proves nothing about an emptied table")
+	}
+
+	if _, _, _, _, err := a.tables.whereToStake(terms.SID); err == nil {
 		t.Fatal("a dealt table offered a second deposit")
 	}
 	if _, _, _, err := a.tables.ourBond(terms.SID); err == nil {
 		t.Fatal("a dealt table offered a second bond")
+	}
+
+	// And it still says where its stake is, because taking coin out is not
+	// taking coin in. Collapsing the two accessors back into one fails here.
+	if _, dep, _, _, err := a.tables.ourDepositScript(terms.SID); err != nil {
+		t.Fatalf("a dealt table would not say where its stake is: %v", err)
+	} else if dep.RedeemScriptHex == "" {
+		t.Fatal("a dealt table answered with no redeem script")
 	}
 }
 

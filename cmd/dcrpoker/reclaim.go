@@ -77,6 +77,20 @@ func (p *plugin) reclaim(ctx context.Context, outpoint string, script []byte, ke
 			outpoint, out.Confirmations, csvBlocks, int64(csvBlocks)-out.Confirmations)
 	}
 
+	// The script has to be the one this output was paid into. The engine check
+	// inside BuildTimelockedSpend derives its pkScript from the script it was
+	// handed, so it cannot see a script that is simply the wrong one, and dcrd
+	// reports that as a stack failure long after we signed.
+	_, want, err := escrow.Address(script, p.params)
+	if err != nil {
+		return "", fmt.Errorf("derive the script's address: %w", err)
+	}
+	if got := hex.EncodeToString(want); !strings.EqualFold(got, out.PkScriptHex) {
+		return "", fmt.Errorf("%s pays %s, and this key derives %s - so this is not the script that "+
+			"output was paid into; nothing was signed and the coin is untouched",
+			outpoint, out.PkScriptHex, got)
+	}
+
 	payScript, err := payScriptFor(destAddr, p.params)
 	if err != nil {
 		return "", err

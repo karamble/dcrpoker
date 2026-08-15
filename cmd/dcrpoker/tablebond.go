@@ -363,20 +363,3 @@ func (t *tables) ourTableBond(sid string) (seat uint32, bond membership.TableBon
 	}
 	return seat, bond, outpoint, nil
 }
-
-// forgetTableBond stops a table citing a bond it has spent.
-//
-// Same discipline as forgetStake: a table still announcing an output that is
-// gone is a table telling its peers something untrue about the chain.
-func (t *tables) forgetTableBond(sid string, seat uint32) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	tbl := t.m[sid]
-	if tbl == nil {
-		return
-	}
-	delete(tbl.bonded, seat)
-	delete(tbl.bondedAt, seat)
-	t.persist(tbl)
-}

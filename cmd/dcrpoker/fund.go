@@ -212,7 +212,7 @@ func (p *plugin) handleFund(w http.ResponseWriter, r *http.Request) {
 	}
 	sid := strings.ToLower(strings.TrimSpace(req.SID))
 
-	seat, dep, terms, already, err := p.tables.ourDeposit(sid)
+	seat, dep, terms, already, err := p.tables.whereToStake(sid)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -323,7 +323,7 @@ func (p *plugin) handleDepositSet(w http.ResponseWriter, r *http.Request) {
 	}
 	sid := strings.ToLower(strings.TrimSpace(req.SID))
 
-	seat, dep, _, already, err := p.tables.ourDeposit(sid)
+	seat, dep, _, already, err := p.tables.whereToStake(sid)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -347,8 +347,27 @@ func (p *plugin) handleDepositSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"seat": seat, "outpoint": strings.TrimSpace(req.Outpoint), "funded": true})
 }
 
-// ourDeposit reports which seat this peer holds and where its stake must go.
-func (t *tables) ourDeposit(sid string) (seat uint32, dep membership.Deposit, terms membership.Terms, already string, err error) {
+// depositLocked derives this seat's deposit. Callers hold t.mu.
+//
+// One derivation for both accessors below: a second one that looked correct
+// would be the way a refund comes to sign for a script nobody was paid into.
+func (t *tables) depositLocked(tbl *table) (uint32, membership.Deposit, error) {
+	seat, ok := tbl.form.OurSeat()
+	if !ok {
+		return 0, membership.Deposit{}, fmt.Errorf("table %s has not been seated yet", tbl.terms.SID)
+	}
+	dep, err := tbl.deposit(seat, t.params)
+	if err != nil {
+		return 0, membership.Deposit{}, err
+	}
+	return seat, dep, nil
+}
+
+// whereToStake reports which seat this peer holds and where its stake must go.
+//
+// Guarded, for the funding routes: it answers only for a table that can still
+// take a buy-in. ourDepositScript is the unguarded twin the refund path uses.
+func (t *tables) whereToStake(sid string) (seat uint32, dep membership.Deposit, terms membership.Terms, already string, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -356,9 +375,12 @@ func (t *tables) ourDeposit(sid string) (seat uint32, dep membership.Deposit, te
 	if tbl == nil {
 		return 0, membership.Deposit{}, membership.Terms{}, "", fmt.Errorf("not at table %q", sid)
 	}
+	// A table that gave up at its funding deadline keeps its membership so a
+	// refund can still derive the script, so this is what stops a buy-in going
+	// into one.
 	if tbl.form.State() != membership.Settled {
 		return 0, membership.Deposit{}, membership.Terms{}, "",
-			fmt.Errorf("table %s has not settled, so it has no deposit script yet", sid)
+			fmt.Errorf("table %s has not settled, so it takes no stake", sid)
 	}
 	// A table that has dealt is past funding for good, and its funded entry
 	// is cleared once the chain pays the stake back out - so without this a
@@ -369,12 +391,32 @@ func (t *tables) ourDeposit(sid string) (seat uint32, dep membership.Deposit, te
 		return 0, membership.Deposit{}, membership.Terms{}, "",
 			fmt.Errorf("table %s has already dealt, so it takes no more stake", sid)
 	}
-	seat, ok := tbl.form.OurSeat()
-	if !ok {
-		return 0, membership.Deposit{}, membership.Terms{}, "",
-			fmt.Errorf("table %s has not been seated yet", sid)
+	seat, dep, err = t.depositLocked(tbl)
+	if err != nil {
+		return 0, membership.Deposit{}, membership.Terms{}, "", err
 	}
-	dep, err = tbl.deposit(seat, t.params)
+	return seat, dep, tbl.terms, tbl.funded[seat], nil
+}
+
+// ourDepositScript reports this seat's deposit script and the stake recorded
+// against it, for the refund path.
+//
+// Unguarded, the way ourTableBond is: deriving the script needs the seating and
+// nothing else, and a table that has dealt, finished or been abandoned is
+// exactly the one whose stake has to come back.
+//
+// The outpoint may be empty, unlike ourTableBond's. A second payment into the
+// same script is not in the funded map, so the caller can name one instead and
+// refusing here would refuse the only route to coin nobody wrote down.
+func (t *tables) ourDepositScript(sid string) (seat uint32, dep membership.Deposit, terms membership.Terms, stake string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	tbl := t.m[sid]
+	if tbl == nil {
+		return 0, membership.Deposit{}, membership.Terms{}, "", fmt.Errorf("not at table %q", sid)
+	}
+	seat, dep, err = t.depositLocked(tbl)
 	if err != nil {
 		return 0, membership.Deposit{}, membership.Terms{}, "", err
 	}

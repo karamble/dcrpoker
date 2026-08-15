@@ -308,7 +308,7 @@ var errSurplus = errors.New("this seat is already paid for, so this payment is s
 func (p *plugin) recordSpend(req *pendingSpend, outpoint string) error {
 	switch req.Purpose {
 	case purposeStake:
-		if _, _, _, already, err := p.tables.ourDeposit(req.SID); err == nil &&
+		if _, _, _, already, err := p.tables.ourDepositScript(req.SID); err == nil &&
 			already != "" && !strings.EqualFold(already, outpoint) {
 			return errSurplus
 		}
@@ -318,7 +318,11 @@ func (p *plugin) recordSpend(req *pendingSpend, outpoint string) error {
 		}
 		p.publish(p.ctx, out)
 	case purposeTableBond:
-		if _, _, already, err := p.tables.ourBond(req.SID); err == nil &&
+		// The unguarded twin, as the stake uses: whether this seat already has
+		// a different outpoint is not a question about the table's lifecycle.
+		// It reports where the bond sits now, which is what a late payment
+		// would displace.
+		if _, _, already, err := p.tables.ourTableBond(req.SID); err == nil &&
 			already != "" && !strings.EqualFold(already, outpoint) {
 			return errSurplus
 		}
