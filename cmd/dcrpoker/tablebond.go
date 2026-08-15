@@ -47,19 +47,30 @@ func (tbl *table) bond(seat uint32, params stdaddr.AddressParams) (membership.Ta
 
 // bondVerdict says why the chain did or did not agree about a bond.
 //
-// Only bondConfirming is transient: that bond is on the chain and arrives on its
-// own. The rest are faults. The zero value is bondUnknown so a seat nobody has
-// asked about never reads as a good one.
+// Two of them are transient - a bond in the mempool and one short of its
+// confirmations are both on their way and arrive on their own. The rest are
+// faults. The zero value is bondUnknown so a seat nobody has asked about never
+// reads as a good one.
 type bondVerdict int
 
 const (
 	bondUnknown     bondVerdict = iota // not asked, or the chain could not be reached
 	bondGood                           // confirmed, and pays the script this peer derived
-	bondAbsent                         // nothing at that outpoint
+	bondAbsent                         // nothing at that outpoint, in the mempool or on the chain
 	bondWrongScript                    // pays something else
 	bondUnderfunded                    // holds less than MinBondAtoms
 	bondConfirming                     // right script and amount, short of BondConfirmations
+	bondInMempool                      // broadcast and not mined yet
 )
+
+// arriving reports a bond that is on its way rather than a fault.
+//
+// The window between a bond being paid and being usable has two halves and both
+// are ordinary: the mempool one first, then the one to two confirmations deep.
+// Only the first was seen at the table that produced this, and only the second
+// was handled - a bond in the mempool is not found by Outpoint at all, which is
+// indistinguishable from one nobody ever posted unless somebody asks.
+func (v bondVerdict) arriving() bool { return v == bondConfirming || v == bondInMempool }
 
 // checkTableBond asks the chain whether a seat's bond is really there.
 //
@@ -150,21 +161,29 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 	}
 
 	value, verdict, err := checkTableBond(ctx, t.chain, bn.Outpoint, want.PkScriptHex)
-	t.noteBondVerdict(d.SID, bn.Seat, verdict)
 	if err != nil {
+		// A person is owed the difference between "waiting" and "never
+		// arrived", and so does everything below: Outpoint answers about
+		// confirmed coin only, so a bond still in the mempool is not found
+		// there and reads exactly like one nobody posted.
+		w := look(ctx, t.chain, bn.Outpoint, int64(escrow.BondConfirmations))
+		if verdict == bondAbsent && w.Where == "mempool" {
+			verdict = bondInMempool
+		}
+		t.noteBondVerdict(d.SID, bn.Seat, verdict)
+		t.noteWaiting(d.SID, bn.Seat, true, w)
+
 		// A bond needs two confirmations, so the first telling is always
-		// refused. That one arrives on its own and is not a fault, so it is
-		// said quietly; the rest are faults and are not.
-		if verdict == bondConfirming {
+		// refused. A bond on its way is not a fault and is said quietly; the
+		// rest are faults and are not.
+		if verdict.arriving() {
 			coinLog.Debugf("table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
 		} else {
 			coinLog.Errorf("table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
 		}
-		// A person is owed the difference between "waiting" and "never arrived".
-		t.noteWaiting(d.SID, bn.Seat, true,
-			look(ctx, t.chain, bn.Outpoint, int64(escrow.BondConfirmations)))
 		return nil
 	}
+	t.noteBondVerdict(d.SID, bn.Seat, verdict)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

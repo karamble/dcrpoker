@@ -202,9 +202,10 @@ func (tbl *table) bondLadder(seat uint32) (*rungs, error) {
 	origin := tbl.bonded[seat]
 	if origin == "" {
 		// bonded is only written once the chain agrees, so an empty entry
-		// covers a bond that was never posted and one that is still
-		// confirming. The second arrives on its own and is not a fault.
-		if tbl.bondVerdicts[seat] == bondConfirming {
+		// covers a bond that was never posted and one that is still on its
+		// way, in the mempool or short of its confirmations. The second
+		// arrives on its own and is not a fault.
+		if tbl.bondVerdicts[seat].arriving() {
 			return nil, fmt.Errorf("seat %d: %w", seat, errBondConfirming)
 		}
 		return nil, fmt.Errorf("seat %d has no bond on the chain", seat)

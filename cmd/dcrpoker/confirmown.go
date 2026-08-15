@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 
+	"github.com/vctt94/dcrpoker/pkg/escrow"
 	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
@@ -100,9 +101,18 @@ func (p *plugin) confirmOurPayments(ctx context.Context, height int64) {
 		}
 		if a.bond != "" {
 			value, verdict, err := checkTableBond(ctx, p.tables.chain, a.bond, a.bondPk)
+			if verdict == bondAbsent {
+				// Our own bond, which this peer broadcast itself: not found
+				// by the confirmed lookup covers both the mempool and a
+				// broadcast that never landed.
+				if w := look(ctx, p.tables.chain, a.bond,
+					int64(escrow.BondConfirmations)); w.Where == "mempool" {
+					verdict = bondInMempool
+				}
+			}
 			p.tables.noteBondVerdict(a.sid, a.seat, verdict)
 			switch {
-			case err != nil && verdict == bondConfirming:
+			case err != nil && verdict.arriving():
 				chanLog.Debugf("table %s: our own bond: %v", a.sid, err)
 			case err != nil:
 				chanLog.Errorf("table %s: our own bond: %v", a.sid, err)

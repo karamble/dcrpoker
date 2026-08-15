@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vctt94/dcrpoker/pkg/escrow"
 	"github.com/vctt94/dcrpoker/pkg/membership"
@@ -79,6 +80,66 @@ func TestAConfirmingBondIsNotAMissingOne(t *testing.T) {
 		t.Fatalf("a bond deep enough was refused: %v", err)
 	} else if v != bondGood {
 		t.Fatalf("a bond deep enough is %v, and it should be good", v)
+	}
+}
+
+// A bond in the mempool is on its way, not missing.
+//
+// The window has two halves and this is the first and longer one. Outpoint
+// answers about confirmed coin only, so a broadcast bond is not found there at
+// all - identical, to that lookup, to one nobody ever posted. Seen live: the
+// confirmations half was handled and this half went on producing every ERR and
+// WRN the fix was written to stop.
+func TestABondInTheMempoolIsNotAMissingOne(t *testing.T) {
+	h, a, b, terms := seatedPair(t)
+
+	seat, bond, _, err := b.tables.ourBond(terms.SID)
+	if err != nil {
+		t.Fatalf("our bond: %v", err)
+	}
+
+	// Broadcast and not mined: the confirmed lookup misses it, the mempool
+	// lookup finds it.
+	outpoint := fmt.Sprintf("%s:0", strings.Repeat("73", 32))
+	h.mu.Lock()
+	h.unmined[outpoint] = bond.PkScriptHex
+	h.mu.Unlock()
+
+	out, err := b.recordOwnBond(terms.SID, seat, outpoint)
+	if err != nil {
+		t.Fatalf("record bond: %v", err)
+	}
+	b.publish(context.Background(), out)
+
+	deadline := time.Now().Add(20 * time.Second)
+	var got bondVerdict
+	for time.Now().Before(deadline) {
+		a.tables.mu.Lock()
+		if tbl := a.tables.m[terms.SID]; tbl != nil {
+			got = tbl.bondVerdicts[seat]
+		}
+		a.tables.mu.Unlock()
+		if got != bondUnknown {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got == bondUnknown {
+		t.Fatal("the announcement never reached the other seat, so nothing here was tested")
+	}
+	if got == bondAbsent {
+		t.Fatal("a bond sitting in the mempool reads as one nobody posted")
+	}
+	if !got.arriving() {
+		t.Fatalf("a bond in the mempool is %v, and it should be on its way", got)
+	}
+
+	// And the accusation path says so rather than calling the seat unbonded.
+	a.tables.mu.Lock()
+	defer a.tables.mu.Unlock()
+	tbl := a.tables.m[terms.SID]
+	if _, err := tbl.bondLadder(seat); !errors.Is(err, errBondConfirming) {
+		t.Fatalf("a bond in the mempool reads as %q", err)
 	}
 }
 
