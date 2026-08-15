@@ -96,6 +96,11 @@ export function Status({
       return 'Dealing — each seat publishes what the others need to read their own cards.'
     if (hand.phase === 'betting') {
       if ((hand.hole ?? []).length < 2) return 'Waiting for your cards.'
+      const shy = (hand.opening ?? []).filter((o) => !o.open)
+      if (shy.length > 0) {
+        const short = shy.reduce((n, o) => n + (o.needed - o.arrived), 0)
+        return `Opening the board — ${short} more share${short === 1 ? '' : 's'} to read it here.`
+      }
       if (hand.ours)
         return hand.toCall > 0 ? `Your turn — ${dcr(hand.toCall)} to call.` : 'Your turn.'
       if (hand.toAct >= 0) return `Waiting for ${who(hand.toAct)}.`

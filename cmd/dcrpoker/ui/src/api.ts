@@ -110,6 +110,13 @@ export type Chair = {
 
 export type Shuffle = { seat: number; state: 'ours' | 'verified' | 'awaited' }
 
+/** One community card of the current street, and how far this peer is from
+ *  reading it. A board card opens only once every seat's decryption share has
+ *  arrived, so two players differ for as long as the last one is in flight.
+ *  `board` reports only the run of cards that have opened, so on its own it
+ *  cannot tell a street that has not turned from one still opening. */
+export type Opening = { index: number; arrived: number; needed: number; open: boolean }
+
 export type Award = { seat: number; atoms: number }
 
 /** Chair is one seat's position in the hand being played, which is not the
@@ -131,6 +138,7 @@ export type HandView = {
   hole?: string[]
   shown?: Shown[]
   board?: string[]
+  opening?: Opening[]
   pot: number
   chairs?: Chair[]
   stacks: number[]

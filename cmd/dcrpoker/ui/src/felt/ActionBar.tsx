@@ -15,10 +15,12 @@ import { play } from '../sound/engine'
 //
 // The guards, each learned at a live table: nothing is offered while the cards
 // are still coming; nothing before this seat can read its own hand, since the
-// phase can reach betting a moment before our cards open; and an all-in names
-// the seat's whole stack, because the reducer refuses one that leaves anything
-// behind - it used to send zero, which is not a smaller bet but an impossible
-// one.
+// phase can reach betting a moment before our cards open; nothing before this
+// street's board has opened, for the same reason and with more at stake, since
+// a seat asked to check or raise against cards it cannot see is being asked to
+// play blind; and an all-in names the seat's whole stack, because the reducer
+// refuses one that leaves anything behind - it used to send zero, which is not
+// a smaller bet but an impossible one.
 
 const labels: Record<string, string> = {
   check: 'Check',
@@ -43,12 +45,18 @@ export function ActionBar({ hand }: { hand?: HandView }) {
     setRefused(undefined)
   }, [hand?.hand, hand?.street, hand?.toAct, floor])
 
+  // Every community card of this street has to be readable here first. The
+  // plugin reports the slots of the street it is on, so an empty list is a
+  // street with no board rather than a board that has not arrived.
+  const boardOpen = (hand?.opening ?? []).every((o) => o.open)
+
   const ready =
     hand &&
     !hand.done &&
     hand.phase === 'betting' &&
     hand.ours &&
-    (hand.hole ?? []).length >= 2
+    (hand.hole ?? []).length >= 2 &&
+    boardOpen
 
   const legal = ready ? (hand.legal ?? []) : []
   const needsAmount = legal.includes('bet') || legal.includes('raise')

@@ -88,6 +88,11 @@ export function Table({
   })
 
   const board = hand?.board ?? []
+  // A dealt card this peer has not opened yet. Keyed by place on the board, so
+  // a slot the plugin did not report simply has none and draws as a gap.
+  const openingAt = new Map(
+    (hand?.opening ?? []).filter((o) => !o.open).map((o) => [o.index, o]),
+  )
   const shownBy = new Map((hand?.shown ?? []).map((s) => [s.seat, s.cards]))
 
   const cardsFor = (seat: number, isOurs: boolean): (string | undefined)[] => {
@@ -114,7 +119,13 @@ export function Table({
         </div>
         <div className="board">
           {[0, 1, 2, 3, 4].map((i) => (
-            <PlayingCard key={i} card={board[i]} index={i} entered={board[i] !== undefined} />
+            <PlayingCard
+              key={i}
+              card={board[i]}
+              index={i}
+              entered={board[i] !== undefined}
+              opening={openingAt.get(i)}
+            />
           ))}
         </div>
       </div>
