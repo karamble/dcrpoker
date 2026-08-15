@@ -11,6 +11,7 @@ import (
 
 	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/escrow"
+	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
 	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/membership"
 )
@@ -999,17 +1000,17 @@ func TestTheStateReportNamesTheCoinItHolds(t *testing.T) {
 	}
 }
 
-// A stake whose refund is in the mempool is not offered again.
+// A stake this process has already broadcast a spend of is not offered again.
 //
-// The confirmed lookup still shows the output, because a mempool spend does not
-// remove it from the utxo set - so without asking the unconfirmed view, a
-// reclaim broadcast a moment ago reads as coin free to reclaim, and the second
-// attempt is a double spend.
+// dcrd's gettxout ignores mempool spends even with includemempool set, so the
+// node still reports the output as coin sitting there. Asked twice, the second
+// answer is a double spend - which is what happened on mainnet before this.
+// What this process itself sent is the one answer it can rely on.
 //
-// Kills: dropping the unconfirmed lookup from lockFacts, or reporting a spend
-// in flight as spent, which would file the coin as gone while it can still be
-// evicted.
-func TestAStakeBeingSpentIsNotOfferedAgain(t *testing.T) {
+// Kills: reporting spending from a node lookup instead of from our own record;
+// dropping the noteSweeping call in reclaim; failing to clear it once the chain
+// takes the output.
+func TestAStakeBeingSweptIsNotOfferedAgain(t *testing.T) {
 	h := newHub(t)
 	a, _, _ := dealingTable(t, h)
 
@@ -1023,20 +1024,63 @@ func TestAStakeBeingSpentIsNotOfferedAgain(t *testing.T) {
 	}
 	stake := before[0].GetOutpoint()
 
-	// The chain still holds it; the mempool is already spending it.
+	// What reclaim records the moment a broadcast is accepted. The node view
+	// is deliberately left alone: it still holds the output, exactly as dcrd
+	// does while the spend sits in the mempool.
+	a.noteSweeping(stake)
+
+	mid := a.gameState(context.Background()).GetStakes()
+	if len(mid) != 1 {
+		t.Fatalf("a stake being swept stopped being reported (%d left); the outpoint "+
+			"must stay listed until the spend confirms", len(mid))
+	}
+	if !mid[0].GetSpending() {
+		t.Fatal("a stake this process has broadcast a spend of does not report spending")
+	}
+	if mid[0].GetSpent() {
+		t.Fatal("a broadcast that has not confirmed was reported as spent; it can still be evicted")
+	}
+
+	// Once a block carries it, spent takes over and the note is dropped.
 	h.mu.Lock()
-	h.pending[stake] = true
+	h.spent[stake] = true
 	h.mu.Unlock()
 
 	after := a.gameState(context.Background()).GetStakes()
-	if len(after) != 1 {
-		t.Fatalf("a stake being spent stopped being reported (%d left); the outpoint "+
-			"must stay visible until the spend confirms", len(after))
+	if len(after) != 1 || !after[0].GetSpent() {
+		t.Fatalf("a confirmed spend is not reported as spent: %+v", after)
 	}
-	if !after[0].GetSpending() {
-		t.Fatal("a stake with a spend in the mempool does not report spending")
+	if after[0].GetSpending() {
+		t.Fatal("the sweep note outlived the output it was about")
 	}
-	if after[0].GetSpent() {
-		t.Fatal("a spend in the mempool was reported as spent; it can still be evicted")
+	if a.isSweeping(stake) {
+		t.Fatal("the sweep note was not cleared once the chain took the output")
+	}
+}
+
+// And reclaim actually records it, or the reporting above is wired to nothing.
+func TestReclaimRecordsWhatItBroadcast(t *testing.T) {
+	h := newHub(t)
+	a, _, terms := dealingTable(t, h)
+
+	_, _, _, stake, err := a.tables.ourDepositScript(terms.SID)
+	if err != nil || stake == "" {
+		t.Fatalf("no stake to reclaim: %q %v", stake, err)
+	}
+	if a.isSweeping(stake) {
+		t.Fatal("nothing has been broadcast yet")
+	}
+
+	h.mu.Lock()
+	h.confs = int64(terms.CSVBlocks)
+	h.mu.Unlock()
+
+	if _, err := a.doReclaim(&gamingpb.Reclaim{
+		Kind: gamingpb.Reclaim_STAKE, Sid: terms.SID, DestAddr: payoutAddress(t, a),
+	}); err != nil {
+		t.Fatalf("take the stake back: %v", err)
+	}
+	if !a.isSweeping(stake) {
+		t.Fatal("a broadcast reclaim was not recorded, so the console would offer it again")
 	}
 }

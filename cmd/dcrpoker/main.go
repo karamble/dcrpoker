@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -250,6 +251,16 @@ type plugin struct {
 	// spends is every payment asked for and not yet accounted for, kept so
 	// a caller need not hold a request open while a person decides.
 	spends *spends
+	// sweeping is every outpoint this process has broadcast a spend of and
+	// not yet seen leave the chain.
+	//
+	// The node cannot answer this: dcrd's gettxout ignores mempool spends
+	// even with includemempool set, so an output whose reclaim is already
+	// broadcast still reads as coin sitting there. Asked twice, the second
+	// answer is a double spend. What this process did is the one thing it
+	// can always say.
+	sweepMu  sync.Mutex
+	sweeping map[string]bool
 }
 
 func newPlugin(ctx context.Context, bridgeCfg transport.BridgeConfig, id *identity, st *store, params stdaddr.AddressParams) (*plugin, error) {

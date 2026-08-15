@@ -122,5 +122,41 @@ func (p *plugin) reclaim(ctx context.Context, outpoint string, script []byte, ke
 	if err != nil {
 		return "", fmt.Errorf("serialise: %w", err)
 	}
-	return p.bridge.Broadcast(ctx, hex.EncodeToString(raw))
+	txhex, err := p.bridge.Broadcast(ctx, hex.EncodeToString(raw))
+	if err != nil {
+		return "", err
+	}
+	p.noteSweeping(outpoint)
+	return txhex, nil
+}
+
+// noteSweeping records that this process broadcast a spend of an outpoint.
+//
+// dcrd's gettxout ignores mempool spends even with includemempool set, so an
+// output whose reclaim is already broadcast still reads as unspent coin. Until
+// a block carries it away, this is the only reliable answer to "is one already
+// on its way", and it is the difference between offering a refund once and
+// offering it twice.
+func (p *plugin) noteSweeping(outpoint string) {
+	p.sweepMu.Lock()
+	defer p.sweepMu.Unlock()
+	if p.sweeping == nil {
+		p.sweeping = make(map[string]bool)
+	}
+	p.sweeping[outpoint] = true
+}
+
+// isSweeping reports whether this process has a spend of the outpoint out.
+func (p *plugin) isSweeping(outpoint string) bool {
+	p.sweepMu.Lock()
+	defer p.sweepMu.Unlock()
+	return p.sweeping[outpoint]
+}
+
+// doneSweeping forgets an outpoint the chain has stopped holding, so the map
+// does not grow for the life of the process.
+func (p *plugin) doneSweeping(outpoint string) {
+	p.sweepMu.Lock()
+	defer p.sweepMu.Unlock()
+	delete(p.sweeping, outpoint)
 }

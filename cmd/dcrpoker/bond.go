@@ -160,6 +160,7 @@ func (p *plugin) describeBond(ctx context.Context, outpoint string, out map[stri
 		// Never confirmed, or already spent. Both mean the same thing to
 		// a caller: there is nothing locked here to wait for.
 		out["spent"] = true
+		p.doneSweeping(outpoint)
 		return
 	}
 
@@ -171,7 +172,7 @@ func (p *plugin) describeBond(ctx context.Context, outpoint string, out map[stri
 		// a person actually wants: the output's own height plus the lock.
 		out["maturesAt"] = tip.Height - found.Confirmations + 1 + int64(escrow.MinBondBlocks)
 	}
-	if seen, err := p.bridge.UnconfirmedOutpoint(ctx, txid, vout); err == nil && !seen.Found {
+	if p.isSweeping(outpoint) {
 		out["spending"] = true
 	}
 	if left := int64(escrow.MinBondBlocks) - found.Confirmations; left > 0 {
@@ -390,18 +391,18 @@ func (p *plugin) lockFacts(ctx context.Context, outpoint string, lockBlocks uint
 		return 0, 0, false, false
 	}
 	if !found.Found {
-		// Never confirmed or already spent, which read the same here.
+		// Never confirmed or already spent, which read the same here. The
+		// chain has taken it, so anything this process remembers is stale.
+		p.doneSweeping(outpoint)
 		return 0, 0, true, false
 	}
 	atoms = found.ValueAtoms
 	if tip, err := p.bridge.ChainTip(ctx); err == nil {
 		maturesAt = tip.Height - found.Confirmations + 1 + int64(lockBlocks)
 	}
-	// Confirmed says the coin is there; the mempool may already be spending
-	// it. Without asking, a reclaim broadcast a moment ago reads as coin free
-	// to reclaim again, and the second attempt is a double spend.
-	if seen, err := p.bridge.UnconfirmedOutpoint(ctx, txid, vout); err == nil && !seen.Found {
-		spending = true
-	}
-	return atoms, maturesAt, false, spending
+	// The node cannot answer this: dcrd's gettxout ignores mempool spends
+	// even with includemempool set, so an output whose reclaim is already
+	// broadcast still reads as coin sitting there. What this process itself
+	// sent is the answer it can rely on.
+	return atoms, maturesAt, false, p.isSweeping(outpoint)
 }
