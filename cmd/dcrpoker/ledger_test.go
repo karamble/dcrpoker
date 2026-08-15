@@ -998,3 +998,45 @@ func TestTheStateReportNamesTheCoinItHolds(t *testing.T) {
 		t.Fatal("a table with a hand in progress does not report itself as settling")
 	}
 }
+
+// A stake whose refund is in the mempool is not offered again.
+//
+// The confirmed lookup still shows the output, because a mempool spend does not
+// remove it from the utxo set - so without asking the unconfirmed view, a
+// reclaim broadcast a moment ago reads as coin free to reclaim, and the second
+// attempt is a double spend.
+//
+// Kills: dropping the unconfirmed lookup from lockFacts, or reporting a spend
+// in flight as spent, which would file the coin as gone while it can still be
+// evicted.
+func TestAStakeBeingSpentIsNotOfferedAgain(t *testing.T) {
+	h := newHub(t)
+	a, _, _ := dealingTable(t, h)
+
+	before := a.gameState(context.Background()).GetStakes()
+	if len(before) != 1 {
+		t.Fatalf("reported %d stakes, want 1", len(before))
+	}
+	if before[0].GetSpending() || before[0].GetSpent() {
+		t.Fatalf("an untouched stake reports spending=%v spent=%v",
+			before[0].GetSpending(), before[0].GetSpent())
+	}
+	stake := before[0].GetOutpoint()
+
+	// The chain still holds it; the mempool is already spending it.
+	h.mu.Lock()
+	h.pending[stake] = true
+	h.mu.Unlock()
+
+	after := a.gameState(context.Background()).GetStakes()
+	if len(after) != 1 {
+		t.Fatalf("a stake being spent stopped being reported (%d left); the outpoint "+
+			"must stay visible until the spend confirms", len(after))
+	}
+	if !after[0].GetSpending() {
+		t.Fatal("a stake with a spend in the mempool does not report spending")
+	}
+	if after[0].GetSpent() {
+		t.Fatal("a spend in the mempool was reported as spent; it can still be evicted")
+	}
+}

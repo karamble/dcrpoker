@@ -336,17 +336,17 @@ func (p *plugin) gameState(ctx context.Context) *gamingpb.GameState {
 			continue
 		}
 		if s.Stake != "" {
-			atoms, matures, spent := p.lockFacts(ctx, s.Stake, s.CSVBlocks)
+			atoms, matures, spent, spending := p.lockFacts(ctx, s.Stake, s.CSVBlocks)
 			state.Stakes = append(state.Stakes, &gamingpb.Stake{
-				Sid: s.SID, Seat: *s.Seat, Outpoint: s.Stake,
-				Address: s.DepositAddr, Atoms: atoms, MaturesAt: matures, Spent: spent,
+				Sid: s.SID, Seat: *s.Seat, Outpoint: s.Stake, Address: s.DepositAddr,
+				Atoms: atoms, MaturesAt: matures, Spent: spent, Spending: spending,
 			})
 		}
 		if s.TableBond != "" {
-			atoms, matures, spent := p.lockFacts(ctx, s.TableBond, membership.TableBondBlocks)
+			atoms, matures, spent, spending := p.lockFacts(ctx, s.TableBond, membership.TableBondBlocks)
 			state.TableBonds = append(state.TableBonds, &gamingpb.TableBond{
-				Sid: s.SID, Seat: *s.Seat, Outpoint: s.TableBond,
-				Address: s.TableBondAddr, Atoms: atoms, MaturesAt: matures, Spent: spent,
+				Sid: s.SID, Seat: *s.Seat, Outpoint: s.TableBond, Address: s.TableBondAddr,
+				Atoms: atoms, MaturesAt: matures, Spent: spent, Spending: spending,
 			})
 		}
 	}
@@ -378,6 +378,7 @@ func (p *plugin) gameState(ctx context.Context) *gamingpb.GameState {
 		bond.Atoms, _ = facts["atoms"].(int64)
 		bond.MaturesAt, _ = facts["maturesAt"].(int64)
 		bond.Spent, _ = facts["spent"].(bool)
+		bond.Spending, _ = facts["spending"].(bool)
 		if why, ok := facts["chainErr"].(string); ok {
 			state.ChainErr = why
 		}

@@ -17,7 +17,7 @@ import (
 // Updating it is a deliberate act on both sides at once. If this test fails,
 // the question is not "what is the new hash" but "which repo changed the wire,
 // and has the other one been given the same change".
-const contractSHA256 = "b6c13c6b2dba35628f9206d4ac57f2cc026fb528deb8c7ce38b6d81c984bda70"
+const contractSHA256 = "98681ea0d77a2a3f4e50f0ba58e641d7dd7e422809558b280e976193b843d485"
 
 func TestTheWireContractMatchesTheBridge(t *testing.T) {
 	raw, err := os.ReadFile("gaming_bridge.proto")
