@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 
-	"github.com/vctt94/dcrpoker/pkg/escrow"
 	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
@@ -93,22 +92,30 @@ func (p *plugin) confirmOurPayments(ctx context.Context, height int64) {
 		var bondValue int64
 
 		if a.stake != "" {
-			if err := checkStake(ctx, p.tables.chain, a.stake, a.stakePk, a.buyIn); err != nil {
-				chanLog.Errorf("table %s: our own stake: %v", a.sid, err)
-			} else {
+			found, err := checkStake(ctx, p.tables.chain, a.stake, a.stakePk, a.buyIn)
+			switch {
+			case err == nil:
 				stakeSeen = true
+			case found:
+				// On the chain and short of its confirmations: ordinary, and
+				// no second question needed to know it.
+				chanLog.Debugf("table %s: our own stake: %v", a.sid, err)
+			case inMempool(ctx, p.tables.chain, a.stake):
+				// Broadcast from here and not mined yet, which is where our
+				// own money spends its first minutes.
+				chanLog.Debugf("table %s: our own stake: %v", a.sid, err)
+			default:
+				chanLog.Errorf("table %s: our own stake: %v", a.sid, err)
 			}
 		}
 		if a.bond != "" {
 			value, verdict, err := checkTableBond(ctx, p.tables.chain, a.bond, a.bondPk)
-			if verdict == bondAbsent {
+			if verdict == bondAbsent && inMempool(ctx, p.tables.chain, a.bond) {
 				// Our own bond, which this peer broadcast itself: not found
 				// by the confirmed lookup covers both the mempool and a
-				// broadcast that never landed.
-				if w := look(ctx, p.tables.chain, a.bond,
-					int64(escrow.BondConfirmations)); w.Where == "mempool" {
-					verdict = bondInMempool
-				}
+				// broadcast that never landed. Asked only here, so a bond
+				// merely short of its confirmations costs no extra question.
+				verdict = bondInMempool
 			}
 			p.tables.noteBondVerdict(a.sid, a.seat, verdict)
 			switch {

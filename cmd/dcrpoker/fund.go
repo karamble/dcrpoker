@@ -64,29 +64,34 @@ func (tbl *table) deposit(seat uint32, params stdaddr.AddressParams) (membership
 // Confirmed only. An unconfirmed output can still be replaced, and this is the
 // question of whether to play a hand against somebody's money - so the answer
 // has to be one that cannot be withdrawn while the hand is under way.
-func checkStake(ctx context.Context, chain *transport.Bridge, outpoint, wantPkScript string, buyIn uint64) error {
+// Reports whether the confirmed lookup found the output at all, because that
+// is the one distinction a caller cannot recover from the error: not-found
+// covers a broadcast still in the mempool as well as one nobody ever made, and
+// only the caller knows whether it is worth a second question to tell them
+// apart.
+func checkStake(ctx context.Context, chain *transport.Bridge, outpoint, wantPkScript string, buyIn uint64) (bool, error) {
 	txid, vout, err := splitOutpoint(outpoint)
 	if err != nil {
-		return err
+		return false, err
 	}
 	out, err := chain.Outpoint(ctx, txid, vout)
 	if err != nil {
-		return fmt.Errorf("could not check the stake: %w", err)
+		return false, fmt.Errorf("could not check the stake: %w", err)
 	}
 	switch {
 	case !out.Found:
 		// Never existed, already spent, or not yet confirmed - the same
 		// answer to the only question being asked.
-		return fmt.Errorf("%s holds no coin anyone can see", outpoint)
+		return false, fmt.Errorf("%s holds no coin anyone can see", outpoint)
 	case !strings.EqualFold(out.PkScriptHex, wantPkScript):
-		return fmt.Errorf("%s does not pay this seat's deposit script", outpoint)
+		return true, fmt.Errorf("%s does not pay this seat's deposit script", outpoint)
 	case out.ValueAtoms < int64(buyIn):
-		return fmt.Errorf("%s holds %d atoms, and the buy-in is %d", outpoint, out.ValueAtoms, buyIn)
+		return true, fmt.Errorf("%s holds %d atoms, and the buy-in is %d", outpoint, out.ValueAtoms, buyIn)
 	case out.Confirmations < int64(escrow.StakeConfirmations):
-		return fmt.Errorf("%s has %d confirmations, and a stake needs %d",
+		return true, fmt.Errorf("%s has %d confirmations, and a stake needs %d",
 			outpoint, out.Confirmations, escrow.StakeConfirmations)
 	}
-	return nil
+	return true, nil
 }
 
 // acceptFunding records another seat's stake, once the chain agrees it is there.
@@ -145,12 +150,17 @@ func (t *tables) acceptFunding(ctx context.Context, d transport.Delivery) []outg
 		return nil
 	}
 
-	if err := checkStake(ctx, t.chain, fn.Outpoint, want.PkScriptHex, terms.BuyInAtoms); err != nil {
-		coinLog.Errorf("table %s: seat %d: %v", d.SID, fn.Seat, err)
+	if _, err := checkStake(ctx, t.chain, fn.Outpoint, want.PkScriptHex, terms.BuyInAtoms); err != nil {
 		// Refused, which is usually only "not yet". Say which, so the wait
-		// is legible as a wait rather than as an absence.
-		t.noteWaiting(d.SID, fn.Seat, false,
-			look(ctx, t.chain, fn.Outpoint, int64(escrow.StakeConfirmations)))
+		// is legible as a wait rather than as an absence - to the interface,
+		// and in the log, which said the same alarming thing either way.
+		w := look(ctx, t.chain, fn.Outpoint, int64(escrow.StakeConfirmations))
+		t.noteWaiting(d.SID, fn.Seat, false, w)
+		if w.arriving() {
+			coinLog.Debugf("table %s: seat %d: %v", d.SID, fn.Seat, err)
+		} else {
+			coinLog.Errorf("table %s: seat %d: %v", d.SID, fn.Seat, err)
+		}
 		return nil
 	}
 
@@ -510,6 +520,34 @@ func look(ctx context.Context, chain *transport.Bridge, outpoint string, needs i
 		w.Where = "mempool"
 	}
 	return w
+}
+
+// arriving reports an announced output that is on its way rather than one
+// nobody can find.
+//
+// Both halves of the wait are ordinary: sitting in the mempool, and confirmed
+// but short of what is required. Only absent is a fault. A stake needs no
+// verdict of its own the way a bond does - nothing decides on this, because no
+// accusation is built against a stake - so the question is asked here, where
+// the answer is already being fetched for the interface.
+func (w *waiting) arriving() bool { return w != nil && w.Where != "absent" }
+
+// inMempool reports an output that has been broadcast and not mined.
+//
+// One question rather than look's two, and asked only when the confirmed
+// lookup has already come back empty - which is what prompts it. Our own
+// payments are asked about once a block on purpose, and a second question per
+// poll would undo that.
+//
+// Display only, as look is: the mempool decides nothing here, it only picks
+// which sentence is true.
+func inMempool(ctx context.Context, chain *transport.Bridge, outpoint string) bool {
+	txid, vout, err := splitOutpoint(outpoint)
+	if err != nil || chain == nil {
+		return false
+	}
+	out, err := chain.UnconfirmedOutpoint(ctx, txid, vout)
+	return err == nil && out.Found
 }
 
 // noteBondVerdict records what the chain last said about a seat's bond.
