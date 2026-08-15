@@ -894,6 +894,48 @@ func (d *Driver) Board() []deck.Card {
 	return out
 }
 
+// BoardSlot is how far one community card has got towards being readable here.
+type BoardSlot struct {
+	// Slot is the deck position, so a caller can say which card this is.
+	// Board() reports a prefix and stops at the first unopened card, so a
+	// position cannot be recovered from its length.
+	Slot int
+	// Arrived and Needed are decryption shares. The card opens on the last.
+	Arrived int
+	Needed  int
+	// Open is whether this peer has read it.
+	Open bool
+}
+
+// BoardProgress reports each community card of the street this hand is on, and
+// how far this peer is from reading it.
+//
+// A board card opens only once every seat's share has arrived, and they arrive
+// at different moments at different peers, so one peer showing the river before
+// another is ordinary. Without this the wait is indistinguishable from a street
+// that has not turned, which is a correct protocol state that reads as a
+// stopped table.
+func (d *Driver) BoardProgress() []BoardSlot {
+	if d.state == nil {
+		return nil
+	}
+	slots, err := d.layout.BoardAt(d.state.Street)
+	if err != nil {
+		return nil
+	}
+	out := make([]BoardSlot, 0, len(slots))
+	for _, slot := range slots {
+		b := BoardSlot{Slot: slot, Needed: d.layout.Seats}
+		if o := d.openings[slot]; o != nil {
+			b.Needed = o.Needed()
+			b.Arrived = b.Needed - o.Missing()
+		}
+		_, b.Open = d.cards[slot]
+		out = append(out, b)
+	}
+	return out
+}
+
 // Settle works out the money, once everything needed is readable.
 //
 // It returns an error rather than a guess while anything is still missing: a

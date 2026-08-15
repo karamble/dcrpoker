@@ -112,6 +112,15 @@ type handView struct {
 	Hole  []string `json:"hole,omitempty"`
 	Board []string `json:"board,omitempty"`
 
+	// Opening is each community card of this street and how many decryption
+	// shares it still waits on here. Board reports only the run of cards that
+	// have opened, so on its own it cannot say whether a street has turned.
+	//
+	// Every peer collects its own shares, so two of them differ for as long as
+	// the last share is in flight. That is the design working, and this is what
+	// lets a player be told so rather than shown a table that looks stopped.
+	Opening []openingView `json:"opening,omitempty"`
+
 	// Shown is every seat whose cards have opened here, which for anybody but
 	// this player means a showdown they contested. A seat that folded is
 	// absent, and absent because its cards were never published rather than
@@ -190,6 +199,18 @@ type chair struct {
 type shuffleView struct {
 	Seat  uint32 `json:"seat"`
 	State string `json:"state"`
+}
+
+// openingView is one community card and how far this peer is from reading it.
+//
+// Index is the card's place on the board, 0 to 4, rather than the deck slot the
+// driver counts in: the deck position depends on the seat count and means
+// nothing to somebody looking at a table.
+type openingView struct {
+	Index   int  `json:"index"`
+	Arrived int  `json:"arrived"`
+	Needed  int  `json:"needed"`
+	Open    bool `json:"open"`
 }
 
 // The states a shuffle can be in, from this peer's own point of view.
@@ -326,6 +347,11 @@ func (t *tables) HandView(sid string) (*handView, error) {
 	}
 	for _, c := range h.Board() {
 		v.Board = append(v.Board, c.String())
+	}
+	for i, b := range h.BoardProgress() {
+		v.Opening = append(v.Opening, openingView{
+			Index: i, Arrived: b.Arrived, Needed: b.Needed, Open: b.Open,
+		})
 	}
 	if st.Done {
 		if awards, err := tbl.play.Hand().Settle(); err == nil {

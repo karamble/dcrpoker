@@ -333,6 +333,10 @@ func (o *Opening) Add(pub kyber.Point, s *Share) error {
 // Missing reports how many shares are still outstanding.
 func (o *Opening) Missing() int { return len(o.need) - len(o.have) }
 
+// Needed reports how many shares this card opens on, which is fixed when the
+// Opening is made and never changes.
+func (o *Opening) Needed() int { return len(o.need) }
+
 // Card opens the card, or explains why it cannot.
 //
 // An incomplete Opening is an error and never a card. Subtracting a partial sum
