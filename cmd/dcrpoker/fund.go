@@ -512,6 +512,16 @@ func look(ctx context.Context, chain *transport.Bridge, outpoint string, needs i
 	return w
 }
 
+// noteBondVerdict records what the chain last said about a seat's bond.
+func (t *tables) noteBondVerdict(sid string, seat uint32, v bondVerdict) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if tbl := t.m[sid]; tbl != nil {
+		tbl.bondVerdicts[seat] = v
+	}
+}
+
 // noteWaiting records what a seat announced and why it is not accepted yet.
 func (t *tables) noteWaiting(sid string, seat uint32, bond bool, w *waiting) {
 	t.mu.Lock()

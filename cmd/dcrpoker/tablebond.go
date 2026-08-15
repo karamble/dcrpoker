@@ -45,6 +45,22 @@ func (tbl *table) bond(seat uint32, params stdaddr.AddressParams) (membership.Ta
 	return membership.TableBond{}, fmt.Errorf("this table has no seat %d", seat)
 }
 
+// bondVerdict says why the chain did or did not agree about a bond.
+//
+// Only bondConfirming is transient: that bond is on the chain and arrives on its
+// own. The rest are faults. The zero value is bondUnknown so a seat nobody has
+// asked about never reads as a good one.
+type bondVerdict int
+
+const (
+	bondUnknown     bondVerdict = iota // not asked, or the chain could not be reached
+	bondGood                           // confirmed, and pays the script this peer derived
+	bondAbsent                         // nothing at that outpoint
+	bondWrongScript                    // pays something else
+	bondUnderfunded                    // holds less than MinBondAtoms
+	bondConfirming                     // right script and amount, short of BondConfirmations
+)
+
 // checkTableBond asks the chain whether a seat's bond is really there.
 //
 // Confirmed, and paying the script this peer derived itself from the roster it
@@ -52,29 +68,33 @@ func (tbl *table) bond(seat uint32, params stdaddr.AddressParams) (membership.Ta
 // claim looks exactly like a real one from the outside, and the difference is
 // the entire point of having it.
 // Returns what the output holds, because releasing this bond later needs the
-// amount and this is the one place that has already looked it up.
-func checkTableBond(ctx context.Context, chain *transport.Bridge, outpoint, wantPkScript string) (int64, error) {
+// amount and this is the one place that has already looked it up, and a verdict,
+// because a caller with only the error cannot tell a bond that is arriving from
+// one that was never posted.
+// Every verdict is read from Outpoint, which is confirmed coin only, so a caller
+// may decide on one.
+func checkTableBond(ctx context.Context, chain *transport.Bridge, outpoint, wantPkScript string) (int64, bondVerdict, error) {
 	txid, vout, err := splitOutpoint(outpoint)
 	if err != nil {
-		return 0, err
+		return 0, bondUnknown, err
 	}
 	out, err := chain.Outpoint(ctx, txid, vout)
 	if err != nil {
-		return 0, fmt.Errorf("could not check the bond: %w", err)
+		return 0, bondUnknown, fmt.Errorf("could not check the bond: %w", err)
 	}
 	switch {
 	case !out.Found:
-		return 0, fmt.Errorf("%s holds no coin anyone can see", outpoint)
+		return 0, bondAbsent, fmt.Errorf("%s holds no coin anyone can see", outpoint)
 	case !strings.EqualFold(out.PkScriptHex, wantPkScript):
-		return 0, fmt.Errorf("%s does not pay this seat's bond script", outpoint)
+		return 0, bondWrongScript, fmt.Errorf("%s does not pay this seat's bond script", outpoint)
 	case out.ValueAtoms < int64(escrow.MinBondAtoms):
-		return 0, fmt.Errorf("%s holds %d atoms, and a bond is at least %d",
+		return 0, bondUnderfunded, fmt.Errorf("%s holds %d atoms, and a bond is at least %d",
 			outpoint, out.ValueAtoms, escrow.MinBondAtoms)
 	case out.Confirmations < int64(escrow.BondConfirmations):
-		return 0, fmt.Errorf("%s has %d confirmations, and a bond needs %d",
+		return 0, bondConfirming, fmt.Errorf("%s has %d confirmations, and a bond needs %d",
 			outpoint, out.Confirmations, escrow.BondConfirmations)
 	}
-	return out.ValueAtoms, nil
+	return out.ValueAtoms, bondGood, nil
 }
 
 // acceptBond records another seat's bond, once the chain agrees it is there.
@@ -129,12 +149,18 @@ func (t *tables) acceptBond(ctx context.Context, d transport.Delivery) []outgoin
 		return nil
 	}
 
-	value, err := checkTableBond(ctx, t.chain, bn.Outpoint, want.PkScriptHex)
+	value, verdict, err := checkTableBond(ctx, t.chain, bn.Outpoint, want.PkScriptHex)
+	t.noteBondVerdict(d.SID, bn.Seat, verdict)
 	if err != nil {
-		coinLog.Errorf("table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
 		// A bond needs two confirmations, so the first telling is always
-		// refused and a person is owed the difference between "waiting" and
-		// "never arrived".
+		// refused. That one arrives on its own and is not a fault, so it is
+		// said quietly; the rest are faults and are not.
+		if verdict == bondConfirming {
+			coinLog.Debugf("table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
+		} else {
+			coinLog.Errorf("table %s: seat %d's bond: %v", d.SID, bn.Seat, err)
+		}
+		// A person is owed the difference between "waiting" and "never arrived".
 		t.noteWaiting(d.SID, bn.Seat, true,
 			look(ctx, t.chain, bn.Outpoint, int64(escrow.BondConfirmations)))
 		return nil

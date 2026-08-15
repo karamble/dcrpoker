@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/decred/dcrd/chaincfg/chainhash"
@@ -31,6 +32,11 @@ import (
 
 // settleFee is left for the miner out of a table's final balance.
 const settleFee int64 = 20_000
+
+// errBondConfirming is a seat whose bond is on the chain and short of its
+// confirmations. It resolves on its own, so a path that meets it waits rather
+// than treating the seat as unbonded.
+var errBondConfirming = errors.New("this seat's bond is on the chain and waiting for its confirmations")
 
 // presignAccusations agrees every accusation the table may need, in advance.
 //
@@ -73,10 +79,16 @@ func (tbl *table) presignAccusations() []outgoing {
 	for seat := range seats {
 		chain, bond, err := tbl.accuseChain(seat)
 		if err != nil {
-			// Usually a seat whose bond is not on the chain yet, which
-			// gets its turn when it is. Said out loud regardless: a table
-			// with no accusations agreed has no answer to somebody who
-			// stops, and that is not something to discover later.
+			// A bond still gathering confirmations gets its turn when it
+			// has them, so it is said quietly. Anything else is said out
+			// loud: a table with no accusations agreed has no answer to
+			// somebody who stops, and that is not something to discover
+			// later.
+			if errors.Is(err, errBondConfirming) {
+				setlLog.Debugf("table %s: accusations against seat %d wait for its bond: %v",
+					tbl.terms.SID, seat, err)
+				continue
+			}
 			setlLog.Warnf("table %s: no accusations agreed against seat %d: %v",
 				tbl.terms.SID, seat, err)
 			continue
@@ -189,6 +201,12 @@ type rungs struct {
 func (tbl *table) bondLadder(seat uint32) (*rungs, error) {
 	origin := tbl.bonded[seat]
 	if origin == "" {
+		// bonded is only written once the chain agrees, so an empty entry
+		// covers a bond that was never posted and one that is still
+		// confirming. The second arrives on its own and is not a fault.
+		if tbl.bondVerdicts[seat] == bondConfirming {
+			return nil, fmt.Errorf("seat %d: %w", seat, errBondConfirming)
+		}
 		return nil, fmt.Errorf("seat %d has no bond on the chain", seat)
 	}
 	b, err := tbl.bond(seat, tbl.netParams)

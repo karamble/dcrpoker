@@ -99,10 +99,14 @@ func (p *plugin) confirmOurPayments(ctx context.Context, height int64) {
 			}
 		}
 		if a.bond != "" {
-			value, err := checkTableBond(ctx, p.tables.chain, a.bond, a.bondPk)
-			if err != nil {
+			value, verdict, err := checkTableBond(ctx, p.tables.chain, a.bond, a.bondPk)
+			p.tables.noteBondVerdict(a.sid, a.seat, verdict)
+			switch {
+			case err != nil && verdict == bondConfirming:
+				chanLog.Debugf("table %s: our own bond: %v", a.sid, err)
+			case err != nil:
 				chanLog.Errorf("table %s: our own bond: %v", a.sid, err)
-			} else {
+			default:
 				bondSeen, bondValue = true, value
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -210,6 +211,12 @@ type table struct {
 	// decides anything. See waiting.
 	stakeWaiting map[uint32]*waiting
 	bondWaiting  map[uint32]*waiting
+
+	// bondVerdicts is what the chain last said about each seat's bond, from
+	// checkTableBond. Unlike bondWaiting it is read from confirmed coin only,
+	// so a path with no chain handle can decide on it - which is how a bond
+	// that is still confirming is told apart from one that was never posted.
+	bondVerdicts map[uint32]bondVerdict
 
 	// announcedAt is the height this table last said where our stake is, so
 	// it is repeated once a block rather than once a poll.
@@ -660,8 +667,9 @@ func (t *tables) join(inv schema.Invite, gcID string, id *identity) ([]outgoing,
 	tbl := &table{terms: terms, gcID: gcID, form: form, st: t.store,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
-		uids:     map[uint32]string{},
-		releases: map[uint32]*release{}, bondValue: map[uint32]int64{},
+		bondVerdicts: map[uint32]bondVerdict{},
+		uids:         map[uint32]string{},
+		releases:     map[uint32]*release{}, bondValue: map[uint32]int64{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		accuse: map[string]*accusation{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain, logPriv: creds.Log}
@@ -1053,8 +1061,9 @@ func (t *tables) receipt(rec *record, id *identity) (*table, error) {
 	tbl := &table{terms: terms, gcID: rec.GCID, form: form, st: t.store,
 		funded: map[uint32]string{}, bonded: map[uint32]string{},
 		stakeWaiting: map[uint32]*waiting{}, bondWaiting: map[uint32]*waiting{},
-		uids:     map[uint32]string{},
-		releases: map[uint32]*release{}, bondValue: map[uint32]int64{},
+		bondVerdicts: map[uint32]bondVerdict{},
+		uids:         map[uint32]string{},
+		releases:     map[uint32]*release{}, bondValue: map[uint32]int64{},
 		payouts: map[uint32]string{}, claims: map[driver.Duty]*claim{},
 		accuse: map[string]*accusation{}, bondedAt: map[uint32]string{},
 		session: creds.Session, netParams: t.params, chain: t.chain,
@@ -1555,6 +1564,15 @@ func (t *tables) deliver(ctx context.Context, d transport.Delivery) []outgoing {
 	if err != nil {
 		// A message that does not check is exactly what the signatures
 		// are for. It changes nothing and is not worth failing over.
+		//
+		// A seat announces its own bond the moment it broadcasts and
+		// accuses on it from the next tick, so its accusations arrive here
+		// before this peer has two confirmations for that bond. Expected,
+		// and not an error.
+		if errors.Is(err, errBondConfirming) {
+			tablLog.Debugf("table %s: %v", d.SID, err)
+			return nil
+		}
 		tablLog.Errorf("table %s: %v", d.SID, err)
 		return nil
 	}
