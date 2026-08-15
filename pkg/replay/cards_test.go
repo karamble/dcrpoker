@@ -127,17 +127,30 @@ func TestTheBoardComesOutOneStreetAtATime(t *testing.T) {
 
 // Side pots, which is where a short stack quietly wins money nobody put in if
 // the arithmetic is wrong.
+// An empty-eligible pot is a settlement that errors on every peer forever with
+// escrowed money behind it, and an uncapped pot is an overpayment every peer
+// signs. Both come from the same place: chips above the largest live
+// commitment, which no remaining hand can win. Those go back to whoever paid
+// them, and everything below stays exactly where poker puts it.
+//
+// Kills: computing the cap over all seats instead of the live ones; a cap
+// taken as the minimum; refunds that go negative for live seats, get
+// compacted, or land on the wrong seat; merging two adjacent pots with the
+// same eligible seats; keeping levels above the cap; deleting the excess
+// instead of refunding it; refunding a folder that sits exactly at the cap.
 func TestSidePotsAreBuiltFromWhatWasCommitted(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		committed []int64
-		folded    []bool
-		want      []Pot
+	cases := []struct {
+		name        string
+		committed   []int64
+		folded      []bool
+		want        []Pot
+		wantRefunds []int64
 	}{{
-		name:      "one pot when everybody covered",
-		committed: []int64{100, 100, 100},
-		folded:    []bool{false, false, false},
-		want:      []Pot{{Atoms: 300, Eligible: []int{0, 1, 2}}},
+		name:        "one pot when everybody covered",
+		committed:   []int64{100, 100, 100},
+		folded:      []bool{false, false, false},
+		want:        []Pot{{Atoms: 300, Eligible: []int{0, 1, 2}}},
+		wantRefunds: []int64{0, 0, 0},
 	}, {
 		name:      "a short all-in makes a side pot",
 		committed: []int64{50, 200, 200},
@@ -146,6 +159,7 @@ func TestSidePotsAreBuiltFromWhatWasCommitted(t *testing.T) {
 			{Atoms: 150, Eligible: []int{0, 1, 2}},
 			{Atoms: 300, Eligible: []int{1, 2}},
 		},
+		wantRefunds: []int64{0, 0, 0},
 	}, {
 		name:      "a folder's chips stay in but win nothing",
 		committed: []int64{100, 100, 40},
@@ -154,6 +168,7 @@ func TestSidePotsAreBuiltFromWhatWasCommitted(t *testing.T) {
 			{Atoms: 120, Eligible: []int{0, 1}},
 			{Atoms: 120, Eligible: []int{0, 1}},
 		},
+		wantRefunds: []int64{0, 0, 0},
 	}, {
 		name:      "two short stacks make two side pots",
 		committed: []int64{30, 80, 200, 200},
@@ -163,14 +178,67 @@ func TestSidePotsAreBuiltFromWhatWasCommitted(t *testing.T) {
 			{Atoms: 150, Eligible: []int{1, 2, 3}},
 			{Atoms: 240, Eligible: []int{2, 3}},
 		},
-	}} {
+		wantRefunds: []int64{0, 0, 0, 0},
+	}, {
+		name:        "a pot nobody could win is capped away and refunded",
+		committed:   []int64{100, 100, 220, 220},
+		folded:      []bool{false, false, true, true},
+		want:        []Pot{{Atoms: 400, Eligible: []int{0, 1}}},
+		wantRefunds: []int64{0, 0, 120, 120},
+	}, {
+		name:        "a lone survivor's cap sends the folders' excess back",
+		committed:   []int64{100, 100, 220, 220},
+		folded:      []bool{true, false, true, true},
+		want:        []Pot{{Atoms: 400, Eligible: []int{1}}},
+		wantRefunds: []int64{0, 0, 120, 120},
+	}, {
+		name:        "a folder exactly at the live cap gets nothing back",
+		committed:   []int64{120, 120, 120},
+		folded:      []bool{false, true, false},
+		want:        []Pot{{Atoms: 360, Eligible: []int{0, 2}}},
+		wantRefunds: []int64{0, 0, 0},
+	}, {
+		name:      "live all-ins at two levels with folders above both",
+		committed: []int64{50, 100, 300, 300, 200},
+		folded:    []bool{false, false, true, true, false},
+		want: []Pot{
+			{Atoms: 250, Eligible: []int{0, 1, 4}},
+			{Atoms: 200, Eligible: []int{1, 4}},
+			{Atoms: 300, Eligible: []int{4}},
+		},
+		wantRefunds: []int64{0, 0, 100, 100, 0},
+	}, {
+		name:      "a capped folder joins the live level rather than a new one",
+		committed: []int64{100, 150, 400},
+		folded:    []bool{false, false, true},
+		want: []Pot{
+			{Atoms: 300, Eligible: []int{0, 1}},
+			{Atoms: 100, Eligible: []int{1}},
+		},
+		wantRefunds: []int64{0, 0, 250},
+	}, {
+		name:        "a heads-up fold with nothing above the cap changes nothing",
+		committed:   []int64{20, 20},
+		folded:      []bool{false, true},
+		want:        []Pot{{Atoms: 40, Eligible: []int{0}}},
+		wantRefunds: []int64{0, 0},
+	}}
+	// No all-seats-folded case, on purpose: legal play cannot produce one -
+	// the hand ends the moment a single contesting seat remains - and pinning
+	// a cap over nobody would freeze behaviour nothing needs.
+
+	var refunded, layered int
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Pots(tc.committed, tc.folded)
+			got, refunds, err := Pots(tc.committed, tc.folded)
 			if err != nil {
 				t.Fatalf("pots: %v", err)
 			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("built %d pots, want %d: %+v", len(got), len(tc.want), got)
+			}
+			if len(refunds) != len(tc.committed) {
+				t.Fatalf("returned %d refunds for %d seats", len(refunds), len(tc.committed))
 			}
 			var total, wantTotal int64
 			for i := range got {
@@ -189,13 +257,34 @@ func TestSidePotsAreBuiltFromWhatWasCommitted(t *testing.T) {
 				}
 				total += got[i].Atoms
 			}
+			for seat, r := range refunds {
+				if r != tc.wantRefunds[seat] {
+					t.Fatalf("seat %d refunded %d, want %d", seat, r, tc.wantRefunds[seat])
+				}
+				total += r
+			}
 			for _, c := range tc.committed {
 				wantTotal += c
 			}
 			if total != wantTotal {
-				t.Fatalf("the pots hold %d of the %d committed", total, wantTotal)
+				t.Fatalf("pots and refunds hold %d of the %d committed", total, wantTotal)
 			}
 		})
+		for _, r := range tc.wantRefunds {
+			if r > 0 {
+				refunded++
+				break
+			}
+		}
+		if len(tc.want) > 1 {
+			layered++
+		}
+	}
+	if refunded < 3 {
+		t.Fatalf("only %d cases refund anything; the refund column is decoration", refunded)
+	}
+	if layered < 3 {
+		t.Fatalf("only %d cases ever layered a pot", layered)
 	}
 }
 
@@ -391,5 +480,338 @@ func TestAShortStackWinsOnlyWhatItCouldMatch(t *testing.T) {
 	}
 	if paid[2] != 0 {
 		t.Fatalf("the queens took %d, want nothing", paid[2])
+	}
+}
+
+// tableOf is table with the stacks and blinds a case needs, because the shapes
+// that reach the cap depend on who can afford what.
+func tableOf(stacks []int64, small, big int64) *Table {
+	t := &Table{
+		Match:    "9bbccbcc99e2421852775868835efd6926eab532fb3286f1051f79f7572bb9b9",
+		Schedule: Schedule{Levels: []Blinds{{Small: small, Big: big}}},
+	}
+	for i := range stacks {
+		t.Seats = append(t.Seats, string(rune('a'+i)))
+		t.Stacks = append(t.Stacks, stacks[i])
+	}
+	return t
+}
+
+// applyAll folds entries into a started hand one at a time, so a test can
+// stand between two of them and check what the table looked like.
+func applyAll(t *testing.T, s *State, entries []gamelog.Entry) *State {
+	t.Helper()
+	var err error
+	for i := range entries {
+		s, err = Apply(s, &entries[i])
+		if err != nil {
+			t.Fatalf("entry %d (%s by seat %d) was refused: %v",
+				i+1, entries[i].Action, entries[i].Seat, err)
+		}
+	}
+	return s
+}
+
+// openFold is a fold made when checking was free. It is legal - a fold carries
+// no facing-a-bet condition and the interface offers it on every turn - and
+// asserting that here is the point: these are the moves that build the shapes
+// this file's cap exists for, and a harness that smuggled them past the rules
+// would prove nothing.
+func openFold(t *testing.T, s *State, seat uint32, seq uint64) *State {
+	t.Helper()
+	if s.Bet != 0 {
+		t.Fatalf("seat %d is meant to fold with nothing to call, but the bet is %d", seat, s.Bet)
+	}
+	next, err := Apply(s, ptr(act(seq, s.Street, seat, gamelog.ActionFold, 0)))
+	if err != nil {
+		t.Fatalf("an open fold by seat %d was refused: %v", seat, err)
+	}
+	return next
+}
+
+// The hand that paid a lone survivor 640 where 400 was winnable. Two seats
+// matched each other above a short all-in and then folded when checking was
+// free; the old arithmetic summed every pot for the survivor without asking
+// who was eligible, and every peer signed the overpayment.
+//
+// Kills: the winner path summing raw pots; refunds dropped or credited to the
+// winner on that path; the cap computed over folded seats; open folds being
+// outlawed instead of the arithmetic fixed.
+func TestASoleSurvivorIsPaidOnlyWhatItCouldWin(t *testing.T) {
+	s, err := StartHand(tableOf([]int64{1000, 100, 1000, 1000}, 50, 100), 1, 2, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	s = applyAll(t, s, []gamelog.Entry{
+		act(1, gamelog.StreetPreFlop, 1, gamelog.ActionAllIn, 100),
+		act(2, gamelog.StreetPreFlop, 2, gamelog.ActionRaise, 220),
+		act(3, gamelog.StreetPreFlop, 3, gamelog.ActionCall, 0),
+		act(4, gamelog.StreetPreFlop, 0, gamelog.ActionFold, 0),
+	})
+	if s.Street != gamelog.StreetFlop {
+		t.Fatalf("the hand is on %s, and the folds below are meant to be open ones on the flop", s.Street)
+	}
+	s = openFold(t, s, 3, 5)
+	s = openFold(t, s, 2, 6)
+
+	if !s.Done {
+		t.Fatal("the hand is not over")
+	}
+	if w := s.Winner(); w != 1 {
+		t.Fatalf("seat %d survived, want the all-in at seat 1", w)
+	}
+	got := s.Committed()
+	for seat, want := range []int64{100, 100, 220, 220} {
+		if got[seat] != want {
+			t.Fatalf("seat %d committed %d, want %d - this is not the shape under test", seat, got[seat], want)
+		}
+	}
+
+	awards, err := Settle(s, nil)
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	want := []Award{{Seat: 1, Atoms: 400}, {Seat: 2, Atoms: 120}, {Seat: 3, Atoms: 120}}
+	if len(awards) != len(want) {
+		t.Fatalf("paid %v, want %v", awards, want)
+	}
+	for i := range want {
+		if awards[i] != want[i] {
+			t.Fatalf("paid %v, want %v - the lone survivor's entitlement stops at 400", awards, want)
+		}
+	}
+}
+
+// The hand that wedged a table forever. Two live all-ins at 100, two seats
+// folded at 220: the old arithmetic built a 240-atom pot with nobody eligible
+// and answered "a pot of 240 has nobody to win it" on every peer, every time,
+// with the escrowed money stuck behind it.
+//
+// Kills: an empty-eligible pot reaching Settle; refunds dropped on the
+// showdown path; the excess deleted instead of refunded.
+func TestAHandWhoseEveryPotClaimantFoldedStillSettles(t *testing.T) {
+	s, err := StartHand(tableOf([]int64{100, 100, 1000, 1000}, 50, 100), 1, 2, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !s.Seats[0].AllIn || s.Seats[0].Folded {
+		t.Fatal("the big blind is meant to be all-in on its post")
+	}
+	s = applyAll(t, s, []gamelog.Entry{
+		act(1, gamelog.StreetPreFlop, 1, gamelog.ActionAllIn, 100),
+		act(2, gamelog.StreetPreFlop, 2, gamelog.ActionRaise, 220),
+		act(3, gamelog.StreetPreFlop, 3, gamelog.ActionCall, 0),
+	})
+	if s.Street != gamelog.StreetFlop {
+		t.Fatalf("the hand is on %s, want the flop", s.Street)
+	}
+	s = openFold(t, s, 3, 4)
+	s = openFold(t, s, 2, 5)
+
+	if !s.Done {
+		t.Fatal("the hand is not over")
+	}
+	if w := s.Winner(); w != -1 {
+		t.Fatalf("seat %d won outright, but this hand is meant to reach a showdown", w)
+	}
+
+	sd := &Showdown{
+		Holes: map[int][2]deck.Card{
+			0: {card(t, "As"), card(t, "Ah")},
+			1: {card(t, "Ks"), card(t, "Kh")},
+		},
+		Board: [5]deck.Card{card(t, "2c"), card(t, "7d"), card(t, "9s"), card(t, "Jc"), card(t, "4h")},
+	}
+	awards, err := Settle(s, sd)
+	if err != nil {
+		t.Fatalf("the hand that wedged the table still cannot be settled: %v", err)
+	}
+	want := []Award{{Seat: 0, Atoms: 400}, {Seat: 2, Atoms: 120}, {Seat: 3, Atoms: 120}}
+	if len(awards) != len(want) {
+		t.Fatalf("paid %v, want %v", awards, want)
+	}
+	for i := range want {
+		if awards[i] != want[i] {
+			t.Fatalf("paid %v, want %v", awards, want)
+		}
+	}
+}
+
+// Two live all-ins at different heights, with the folders above both: the
+// middle all-in wins the pot only it can reach while losing the one below,
+// and the folders take back only what nobody could call.
+//
+// Kills: a cap taken as the lowest live commitment; a sole-eligible pot
+// mishandled; refunds computed per pot instead of per seat.
+func TestFoldersAboveTwoLiveAllInLevelsAreRefundedTheDifference(t *testing.T) {
+	s, err := StartHand(tableOf([]int64{50, 100, 1000, 1000}, 50, 100), 1, 2, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	s = applyAll(t, s, []gamelog.Entry{
+		act(1, gamelog.StreetPreFlop, 1, gamelog.ActionAllIn, 100),
+		act(2, gamelog.StreetPreFlop, 2, gamelog.ActionRaise, 300),
+		act(3, gamelog.StreetPreFlop, 3, gamelog.ActionCall, 0),
+	})
+	s = openFold(t, s, 3, 4)
+	s = openFold(t, s, 2, 5)
+
+	got := s.Committed()
+	for seat, want := range []int64{50, 100, 300, 300} {
+		if got[seat] != want {
+			t.Fatalf("seat %d committed %d, want %d", seat, got[seat], want)
+		}
+	}
+	sd := &Showdown{
+		Holes: map[int][2]deck.Card{
+			0: {card(t, "As"), card(t, "Ah")},
+			1: {card(t, "Ks"), card(t, "Kh")},
+		},
+		Board: [5]deck.Card{card(t, "2c"), card(t, "7d"), card(t, "9s"), card(t, "Jc"), card(t, "4h")},
+	}
+	awards, err := Settle(s, sd)
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	want := []Award{{Seat: 0, Atoms: 200}, {Seat: 1, Atoms: 150}, {Seat: 2, Atoms: 200}, {Seat: 3, Atoms: 200}}
+	if len(awards) != len(want) {
+		t.Fatalf("paid %v, want %v", awards, want)
+	}
+	for i := range want {
+		if awards[i] != want[i] {
+			t.Fatalf("paid %v, want %v - the kings take the pot only they reach while the aces take the one below", awards, want)
+		}
+	}
+}
+
+// An odd pot, a tie, and a refund in one settlement: the odd chip still goes
+// to the earliest eligible seat, undisturbed by the refunds riding alongside.
+// The 21-atom big blind is the cheapest way to make a pot that does not
+// divide.
+//
+// Kills: the remainder rule disturbed by refund bookkeeping; refunds handed to
+// the folder below the cap; nondeterministic award assembly.
+func TestATiedOddPotAndARefundShareOneSettlement(t *testing.T) {
+	s, err := StartHand(tableOf([]int64{1000, 1000, 1000, 75, 75}, 10, 21), 1, 0, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	s = applyAll(t, s, []gamelog.Entry{
+		act(1, gamelog.StreetPreFlop, 3, gamelog.ActionAllIn, 75),
+		act(2, gamelog.StreetPreFlop, 4, gamelog.ActionAllIn, 75),
+		act(3, gamelog.StreetPreFlop, 0, gamelog.ActionRaise, 220),
+		act(4, gamelog.StreetPreFlop, 1, gamelog.ActionCall, 0),
+		act(5, gamelog.StreetPreFlop, 2, gamelog.ActionFold, 0),
+	})
+	s = openFold(t, s, 1, 6)
+	s = openFold(t, s, 0, 7)
+
+	got := s.Committed()
+	for seat, want := range []int64{220, 220, 21, 75, 75} {
+		if got[seat] != want {
+			t.Fatalf("seat %d committed %d, want %d", seat, got[seat], want)
+		}
+	}
+	// A board everybody plays, so the two all-ins tie.
+	sd := &Showdown{
+		Holes: map[int][2]deck.Card{
+			3: {card(t, "2c"), card(t, "3d")},
+			4: {card(t, "2h"), card(t, "3s")},
+		},
+		Board: [5]deck.Card{card(t, "As"), card(t, "Ks"), card(t, "Qs"), card(t, "Js"), card(t, "Ts")},
+	}
+	awards, err := Settle(s, sd)
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	want := []Award{{Seat: 0, Atoms: 145}, {Seat: 1, Atoms: 145}, {Seat: 3, Atoms: 161}, {Seat: 4, Atoms: 160}}
+	if len(awards) != len(want) {
+		t.Fatalf("paid %v, want %v", awards, want)
+	}
+	for i := range want {
+		if awards[i] != want[i] {
+			t.Fatalf("paid %v, want %v - the odd chip belongs to the earliest eligible seat", awards, want)
+		}
+	}
+}
+
+// A refund is owed even when there is no pot at all. No legal hand reaches
+// this - the blinds guarantee the survivor committed something, so the pots
+// hold at least that - but Settle is exported and consensus-critical, and its
+// old early return answered "nothing to pay" while a refund sat unpaid.
+//
+// Kills: refunds folded in after the empty-pot early return.
+func TestARefundIsPaidEvenWhenEveryPotIsEmpty(t *testing.T) {
+	s := &State{Done: true, Seats: []Seat{{}, {Folded: true, Total: 50}}}
+	if w := s.Winner(); w != 0 {
+		t.Fatalf("seat %d survived, want seat 0 - the state stopped modelling the edge", w)
+	}
+	awards, err := Settle(s, nil)
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if len(awards) != 1 || awards[0] != (Award{Seat: 1, Atoms: 50}) {
+		t.Fatalf("paid %v, want the folder's 50 back - an empty pot list ate a refund", awards)
+	}
+}
+
+// A hand can be over before anybody acts - both blinds all-in on their posts -
+// and then collect never runs, so the pot counter still reads zero while the
+// commitments do not. Anything balanced against the pot counter calls this
+// conserved hand a theft.
+//
+// Kills: settlement arithmetic reading s.Pot instead of the commitments.
+func TestAHandOverAtTheBlindsSettlesFromCommitmentsNotThePot(t *testing.T) {
+	s, err := StartHand(tableOf([]int64{10, 1000}, 10, 20), 1, 0, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !s.Done || s.ToAct != -1 {
+		t.Fatal("the blinds were meant to end this hand on their own")
+	}
+	if s.Pot != 0 {
+		t.Fatalf("the pot reads %d; this edge is about collect never running", s.Pot)
+	}
+	var total int64
+	for _, c := range s.Committed() {
+		total += c
+	}
+	if total != 30 {
+		t.Fatalf("committed %d, want the two blinds' 30", total)
+	}
+	if w := s.Winner(); w != -1 {
+		t.Fatalf("seat %d won outright, but both blinds are still in", w)
+	}
+
+	sd := &Showdown{
+		Holes: map[int][2]deck.Card{
+			0: {card(t, "As"), card(t, "Ah")},
+			1: {card(t, "Ks"), card(t, "Kh")},
+		},
+		Board: [5]deck.Card{card(t, "2c"), card(t, "7d"), card(t, "9s"), card(t, "Jc"), card(t, "4h")},
+	}
+	awards, err := Settle(s, sd)
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	want := []Award{{Seat: 0, Atoms: 20}, {Seat: 1, Atoms: 10}}
+	if len(awards) != len(want) {
+		t.Fatalf("paid %v, want %v", awards, want)
+	}
+	for i := range want {
+		if awards[i] != want[i] {
+			t.Fatalf("paid %v, want %v", awards, want)
+		}
+	}
+}
+
+// Pots is exported and adds chips up; input it cannot balance has to be
+// refused, not folded into an answer that quietly breaks conservation.
+func TestPotsRefusesWhatItCannotBalance(t *testing.T) {
+	if _, _, err := Pots([]int64{10, 20}, []bool{false}); err == nil {
+		t.Fatal("mismatched seat counts were accepted")
+	}
+	if _, _, err := Pots([]int64{10, -5}, []bool{false, false}); err == nil {
+		t.Fatal("a negative contribution was accepted")
 	}
 }

@@ -150,24 +150,72 @@ type Pot struct {
 	Eligible []int
 }
 
-// Pots divides what was committed into a main pot and any side pots.
+// Pots divides what was committed into a main pot and any side pots, and
+// reports alongside them what must simply go back: a refund per seat, zero
+// wherever nothing does.
 //
 // A side pot exists whenever somebody is all-in for less than the others are
 // betting: they can win only what they could have matched, and the rest is
 // contested by the players still able to cover it. Getting this wrong is how a
 // short stack ends up winning money nobody put in.
 //
+// Nothing is contestable past the largest amount anybody still in the hand put
+// in. A folded seat can be left above that line - folding is legal at any
+// turn, so the seats that matched a bet can all fold later while somebody
+// shorter stays all-in below it - and chips no live hand ever matched are
+// chips no live hand may win. The excess goes back to the seat it came from,
+// because the alternative is a pot nobody is eligible for: money that either
+// sticks the hand forever or is handed to a winner who never covered it.
+// Capping every contribution at that line keeps each pot built here a pot
+// somebody can win, and pots plus refunds always add up to exactly what was
+// committed.
+//
 // Computed from per-seat totals rather than tracked as chips move, which is
 // what makes it a function of the log and not of the order events arrived in.
-func Pots(committed []int64, folded []bool) ([]Pot, error) {
+func Pots(committed []int64, folded []bool) ([]Pot, []int64, error) {
 	if len(committed) != len(folded) {
-		return nil, fmt.Errorf("%d contributions but %d seats", len(committed), len(folded))
+		return nil, nil, fmt.Errorf("%d contributions but %d seats", len(committed), len(folded))
 	}
+	for seat, c := range committed {
+		// A negative contribution has no meaning, and letting one through
+		// would quietly break the promise that pots and refunds add back
+		// up to what was put in.
+		if c < 0 {
+			return nil, nil, fmt.Errorf("seat %d committed %d, which is not an amount", seat, c)
+		}
+	}
+
+	// The most anybody still in the hand has put in. No pot may reach past
+	// this: a chip above it was never matched by a hand that can still win.
+	// With nobody left unfolded there is nothing contestable at all and
+	// everything goes back - no played hand reaches that state, but this is
+	// an exported function and it must not invent a winner for one.
+	var limit int64
+	for seat, c := range committed {
+		if !folded[seat] && c > limit {
+			limit = c
+		}
+	}
+
+	// Cap each contribution at that line and set the rest aside. Only a
+	// folded seat can sit above the largest live commitment, so a refund is
+	// always a folder taking back what nobody could call. capped is a copy
+	// because committed belongs to the caller.
+	capped := make([]int64, len(committed))
+	refunds := make([]int64, len(committed))
+	for seat, c := range committed {
+		capped[seat] = c
+		if c > limit {
+			capped[seat] = limit
+			refunds[seat] = c - limit
+		}
+	}
+
 	// The distinct levels people put in, smallest first. Each one closes a
 	// pot: everybody who reached it contributed that much to it.
-	levels := make([]int64, 0, len(committed))
-	seen := make(map[int64]bool, len(committed))
-	for _, c := range committed {
+	levels := make([]int64, 0, len(capped))
+	seen := make(map[int64]bool, len(capped))
+	for _, c := range capped {
 		if c > 0 && !seen[c] {
 			seen[c] = true
 			levels = append(levels, c)
@@ -181,7 +229,7 @@ func Pots(committed []int64, folded []bool) ([]Pot, error) {
 	)
 	for _, level := range levels {
 		p := Pot{}
-		for seat, c := range committed {
+		for seat, c := range capped {
 			take := level - prev
 			if c < level {
 				take = c - prev
@@ -201,7 +249,7 @@ func Pots(committed []int64, folded []bool) ([]Pot, error) {
 			pots = append(pots, p)
 		}
 	}
-	return pots, nil
+	return pots, refunds, nil
 }
 
 // Showdown is everything needed to decide a hand that ran to the end.
@@ -213,7 +261,9 @@ type Showdown struct {
 	Board [5]deck.Card
 }
 
-// Award is what one seat is paid.
+// Award is what one seat is paid. Usually that is a pot won, but a refund of
+// chips nobody could contest is paid the same way - a seat that folded can
+// appear here without having won anything.
 //
 // Tagged because this crosses the wire to whatever is looking at the table, and
 // every other field a caller reads there is lower case. An exported Go name is
@@ -231,6 +281,11 @@ type Award struct {
 // an abandoned hand without opening a card. Otherwise the pots are contested
 // and the cards decide.
 //
+// Chips that could not be contested are paid back as awards like any other: a
+// folded seat that committed more than any remaining hand matched gets the
+// excess returned, on either kind of ending. That is what keeps the money paid
+// out equal to the money put in no matter how the hand went.
+//
 // Ties split. A pot that does not divide evenly leaves a remainder, and it goes
 // to the earliest eligible seat rather than to whoever the arithmetic happened
 // to favour - any rule would do so long as every peer applies the same one, and
@@ -246,21 +301,37 @@ func Settle(s *State, sd *Showdown) ([]Award, error) {
 	for i := range s.Seats {
 		folded[i] = s.Seats[i].Folded
 	}
-	pots, err := Pots(s.Committed(), folded)
+	pots, refunds, err := Pots(s.Committed(), folded)
 	if err != nil {
 		return nil, err
 	}
 
-	// Everybody folded but one: no cards, no showdown, no reveal.
-	if w := s.Winner(); w >= 0 {
-		var total int64
-		for _, p := range pots {
-			total += p.Atoms
+	// Refunds are owed whichever way the hand ended, so they seed the payout
+	// before the two endings split.
+	paid := make(map[int]int64, len(s.Seats))
+	for seat, r := range refunds {
+		if r > 0 {
+			paid[seat] += r
 		}
-		if total == 0 {
+	}
+
+	// Everybody folded but one: no cards, no showdown, no reveal. The
+	// survivor takes every pot; anything past what they could win has
+	// already gone home above.
+	if w := s.Winner(); w >= 0 {
+		for _, p := range pots {
+			paid[w] += p.Atoms
+		}
+		if len(paid) == 0 {
 			return nil, nil
 		}
-		return []Award{{Seat: w, Atoms: total}}, nil
+		out := make([]Award, 0, len(paid))
+		for seat := range s.Seats {
+			if paid[seat] > 0 {
+				out = append(out, Award{Seat: seat, Atoms: paid[seat]})
+			}
+		}
+		return out, nil
 	}
 
 	if sd == nil {
@@ -304,7 +375,6 @@ func Settle(s *State, sd *Showdown) ([]Award, error) {
 		}
 	}
 
-	paid := make(map[int]int64, len(s.Seats))
 	for _, p := range pots {
 		winners := bestOf(p.Eligible, strength)
 		if len(winners) == 0 {
