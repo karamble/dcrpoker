@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
-	"github.com/decred/dcrd/dcrec/secp256k1/v4/schnorr"
 )
 
 // LogKey is a per-match key whose only job is signing the log.
@@ -136,76 +134,6 @@ func (k *LogKey) Sign(d Domain, seq uint64, hash []byte) ([]byte, error) {
 // messages at one position are two signatures and no disclosure.
 func (k *LogKey) SignCommitted(d Domain, seq uint64, hash []byte) ([]byte, error) {
 	return SignCommitted(k.priv, Position{Match: k.match, Domain: d, Seq: seq}, hash)
-}
-
-var bindTag = []byte("dcrpoker/forfeit/bind/v1")
-
-// bindDigest is what a session key signs to adopt a log key.
-func bindDigest(match string, logPub *secp256k1.PublicKey) [32]byte {
-	h := blake256.New()
-	h.Write(bindTag)
-	writeField(h, []byte(match))
-	writeField(h, logPub.SerializeCompressed())
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out
-}
-
-// Bind ties a log key to the session key that holds the player's money.
-//
-// Without this the log key is an anonymous key that signed some entries, and a
-// forfeited bond could not be shown to belong to the player who cheated. With
-// it, the roster records that this session - the one named in the escrow, the
-// one that paid the stake - adopted this log key for this match, and the
-// binding is a signature rather than an assertion.
-//
-// The match is inside the digest so a binding cannot be lifted to another
-// table, where the same log key would be expected to be fresh.
-func Bind(session *secp256k1.PrivateKey, match string, logPub *secp256k1.PublicKey) ([]byte, error) {
-	if session == nil {
-		return nil, fmt.Errorf("no session key")
-	}
-	if logPub == nil {
-		return nil, fmt.Errorf("no log key to bind")
-	}
-	if match == "" {
-		return nil, fmt.Errorf("a binding needs a match")
-	}
-	if session.PubKey().IsEqual(logPub) {
-		return nil, fmt.Errorf("the log key is the session key, which would put the stake at risk of forfeiture")
-	}
-	d := bindDigest(match, logPub)
-	sig, err := schnorr.Sign(session, d[:])
-	if err != nil {
-		return nil, fmt.Errorf("sign binding: %w", err)
-	}
-	return sig.Serialize(), nil
-}
-
-// VerifyBinding checks that a session key really did adopt this log key.
-//
-// Run on every peer's binding before the first hand. A log key nobody has bound
-// is a key with no money behind it, and entries signed by one prove nothing
-// worth proving.
-func VerifyBinding(sessionPub, logPub *secp256k1.PublicKey, match string, sig []byte) error {
-	if sessionPub == nil || logPub == nil {
-		return fmt.Errorf("a binding needs both keys")
-	}
-	if sessionPub.IsEqual(logPub) {
-		return fmt.Errorf("the log key is the session key, which would put the stake at risk of forfeiture")
-	}
-	if len(sig) != SigLen {
-		return fmt.Errorf("binding signature is %d bytes, want %d", len(sig), SigLen)
-	}
-	parsed, err := schnorr.ParseSignature(sig)
-	if err != nil {
-		return fmt.Errorf("parse binding: %w", err)
-	}
-	d := bindDigest(match, logPub)
-	if !parsed.Verify(d[:], sessionPub) {
-		return fmt.Errorf("the session key did not adopt this log key for this match")
-	}
-	return nil
 }
 
 // ForfeitKey is the public key a bond's punishment branch pays to.
