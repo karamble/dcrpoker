@@ -4,12 +4,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/forfeit"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
-	"github.com/vctt94/dcrpoker/pkg/forfeit"
 	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 // The dispute over a refused shuffle, end to end.

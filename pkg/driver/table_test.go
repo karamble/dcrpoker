@@ -3,8 +3,8 @@ package driver
 import (
 	"testing"
 
-	"github.com/vctt94/dcrpoker/pkg/forfeit"
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/karamble/dcrgaming-sdk/pkg/forfeit"
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 	"github.com/vctt94/dcrpoker/pkg/replay"
 )
 

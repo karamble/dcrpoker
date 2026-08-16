@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/transport"
 )
 
 // Asking for money without waiting on the answer.

@@ -6,8 +6,8 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 	"github.com/vctt94/dcrpoker/pkg/deck"
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 // checkDown plays the hand in progress to a showdown, everybody checking or

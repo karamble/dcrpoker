@@ -3,7 +3,7 @@ package driver
 import (
 	"testing"
 
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 )
 
 // deliverHoldingSharesFrom runs the queue down, dropping only the shares one

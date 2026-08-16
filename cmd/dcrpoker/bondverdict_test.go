@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vctt94/dcrpoker/pkg/escrow"
-	"github.com/vctt94/dcrpoker/pkg/membership"
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 )
 
 // seatedPair brings two peers to a drawn seating, which is as far as every test

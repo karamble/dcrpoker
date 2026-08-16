@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/vctt94/dcrpoker/pkg/forfeit"
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/forfeit"
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
 )
 
 const watchMatch = "table1|sess1"

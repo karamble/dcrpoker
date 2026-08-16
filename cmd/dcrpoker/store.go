@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
 )
 
 // record is what has to survive this process restarting.

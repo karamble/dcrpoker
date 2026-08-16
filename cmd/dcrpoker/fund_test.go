@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vctt94/dcrpoker/pkg/escrow"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/membership"
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 )
 
 // A refund is only a refund once the lock has matured, and no script engine can

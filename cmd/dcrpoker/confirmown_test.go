@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vctt94/dcrpoker/pkg/membership"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 )
 
 // A seat holds itself to the rule it holds everybody else to.

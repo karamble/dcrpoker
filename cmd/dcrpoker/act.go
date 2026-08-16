@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 	"github.com/vctt94/dcrpoker/pkg/driver"
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
 	"github.com/vctt94/dcrpoker/pkg/replay"
 )
 

@@ -13,8 +13,8 @@ import (
 	"github.com/decred/dcrd/crypto/blake256"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
-	"github.com/vctt94/dcrpoker/pkg/escrow"
-	"github.com/vctt94/dcrpoker/pkg/membership"
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 )
 
 // identity is the only thing this process keeps between runs.

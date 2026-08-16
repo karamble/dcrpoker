@@ -10,11 +10,11 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 // challengeOf is one table's view of a challenge, or nil.

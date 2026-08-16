@@ -15,13 +15,13 @@ import (
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/transport"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/wire"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 	"github.com/vctt94/dcrpoker/pkg/chainwatch"
 	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
-	"github.com/vctt94/dcrpoker/pkg/gaming/wire"
-	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 // table is one table this process is at.

@@ -10,7 +10,7 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
-	"github.com/vctt94/dcrpoker/pkg/escrow"
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
 )
 
 // Taking our own coin back out.

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 	"github.com/vctt94/dcrpoker/pkg/driver"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 // The tests here are all one lesson, learned by paying a real 0.01 DCR stake

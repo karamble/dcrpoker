@@ -21,12 +21,12 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	dcrwire "github.com/decred/dcrd/wire"
-	"github.com/vctt94/dcrpoker/pkg/escrow"
-	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
-	"github.com/vctt94/dcrpoker/pkg/gaming/wire"
-	"github.com/vctt94/dcrpoker/pkg/membership"
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/gamingpb"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/transport"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/wire"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 )
 
 const testGC = "aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66"

@@ -11,11 +11,11 @@ import (
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 
-	"github.com/vctt94/dcrpoker/pkg/escrow"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
-	"github.com/vctt94/dcrpoker/pkg/gaming/wire"
-	"github.com/vctt94/dcrpoker/pkg/membership"
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/transport"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/wire"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 )
 
 // The bond a table can take, as opposed to the one that buys a seat.

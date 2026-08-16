@@ -5,9 +5,9 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 )
 
 const dealMatch = "9bbccbcc99e2421852775868835efd6926eab532fb3286f1051f79f7572bb9b9"

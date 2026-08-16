@@ -3,7 +3,7 @@ package driver
 import (
 	"testing"
 
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 )
 
 // The attack this exists to stop, written down.

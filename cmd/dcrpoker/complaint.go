@@ -6,12 +6,12 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/forfeit"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	gwire "github.com/karamble/dcrgaming-sdk/pkg/gaming/wire"
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
-	"github.com/vctt94/dcrpoker/pkg/forfeit"
 	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	gwire "github.com/vctt94/dcrpoker/pkg/gaming/wire"
 )
 
 // Disputing a shuffle.

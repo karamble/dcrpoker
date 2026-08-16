@@ -7,7 +7,7 @@ import (
 
 	dcrwire "github.com/decred/dcrd/wire"
 
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
 )
 
 // A hand, end to end, between two real peers with a wire between them.

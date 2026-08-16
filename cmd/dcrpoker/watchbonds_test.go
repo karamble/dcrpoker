@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/vctt94/dcrpoker/pkg/escrow"
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
 )
 
 // ladderOf is the deterministic ladder for one seat, plus the pieces a test

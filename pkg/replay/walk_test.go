@@ -8,8 +8,8 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 	"github.com/vctt94/dcrpoker/pkg/deck"
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 // walkHands is how many random hands the settlement walk plays. The default

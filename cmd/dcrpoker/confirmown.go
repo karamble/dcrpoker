@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 
-	"github.com/vctt94/dcrpoker/pkg/membership"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 )
 
 // Checking our own money against the chain.

@@ -3,8 +3,8 @@ package replay
 import (
 	"testing"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 	"github.com/vctt94/dcrpoker/pkg/deck"
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
 // card names a deck card the way a person would: "As", "Th", "2c".

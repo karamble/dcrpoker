@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/transport"
 )
 
 const testToken = "tok"

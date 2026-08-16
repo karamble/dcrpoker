@@ -30,11 +30,11 @@ import (
 	"time"
 
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/transport"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 	"github.com/vctt94/dcrpoker/internal/config"
 	dcrlog "github.com/vctt94/dcrpoker/internal/log"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
-	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 func main() {

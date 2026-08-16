@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/driver"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 )
 
 // A hand that can never finish does not strand the table's money.

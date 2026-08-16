@@ -34,7 +34,7 @@ package replay
 import (
 	"fmt"
 
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 )
 
 // Blinds is one level of a blind schedule.

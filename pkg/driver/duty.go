@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
 )
 
 // What a seat owes, and why a claim has to name it.

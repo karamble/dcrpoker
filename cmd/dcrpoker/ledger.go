@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
 	"github.com/vctt94/dcrpoker/pkg/driver"
-	"github.com/vctt94/dcrpoker/pkg/escrow"
 )
 
 // Where the money is, and what happened to it.

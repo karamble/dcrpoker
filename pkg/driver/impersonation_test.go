@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/forfeit"
 	"github.com/vctt94/dcrpoker/pkg/deck"
-	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 // Sitting in somebody else's chair.
@@ -292,7 +292,7 @@ func TestACardKeyWithoutPossessionIsRefused(t *testing.T) {
 	// carry seat 1's own signature over exactly what they send, so the only
 	// thing wrong is possession.
 	for name, badPop := range map[string][]byte{
-		"no possession proof":        nil,
+		"no possession proof":          nil,
 		"a corrupted possession proof": append(append([]byte{}, pop[:len(pop)-1]...), pop[len(pop)-1]^1),
 	} {
 		digest, err := cardKeyDigest(testMatch, 1, 1, kp.Public, badPop)

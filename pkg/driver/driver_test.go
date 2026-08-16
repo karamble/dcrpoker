@@ -5,9 +5,9 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/forfeit"
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 	"github.com/vctt94/dcrpoker/pkg/deck"
-	"github.com/vctt94/dcrpoker/pkg/forfeit"
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
 	"github.com/vctt94/dcrpoker/pkg/replay"
 )
 

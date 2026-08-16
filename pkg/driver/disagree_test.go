@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/forfeit"
 	"github.com/vctt94/dcrpoker/pkg/deck"
-	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 // A shuffle that arrives and does not verify leaves each seat owing the other.
@@ -223,11 +223,21 @@ func TestDisputeDigestsSeparateTheirFields(t *testing.T) {
 	}
 	other := [32]byte{1}
 	for name, variant := range map[string]func() ([32]byte, error){
-		"another hand":  func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 2, 0, uint32(ref.Round), ref.Input, refused) },
-		"another seat":  func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 1, 1, uint32(ref.Round), ref.Input, refused) },
-		"another round": func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round)+1, ref.Input, refused) },
-		"another input": func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round), ref.Deck, refused) },
-		"another frame": func() ([32]byte, error) { return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round), ref.Input, other) },
+		"another hand": func() ([32]byte, error) {
+			return ShuffleComplaintDigest(testMatch, 2, 0, uint32(ref.Round), ref.Input, refused)
+		},
+		"another seat": func() ([32]byte, error) {
+			return ShuffleComplaintDigest(testMatch, 1, 1, uint32(ref.Round), ref.Input, refused)
+		},
+		"another round": func() ([32]byte, error) {
+			return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round)+1, ref.Input, refused)
+		},
+		"another input": func() ([32]byte, error) {
+			return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round), ref.Deck, refused)
+		},
+		"another frame": func() ([32]byte, error) {
+			return ShuffleComplaintDigest(testMatch, 1, 0, uint32(ref.Round), ref.Input, other)
+		},
 	} {
 		got, err := variant()
 		if err != nil {

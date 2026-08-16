@@ -110,6 +110,7 @@ type ComplaintView struct {
 	Complaint ShuffleComplaint `json:"complaint"`
 	Verdict   string           `json:"verdict,omitempty"`
 }
+
 // Exported encoding helpers, for the plugin's stored dispute state: the view
 // is the single at-rest form, and the plugin decodes it with the same readers
 // the wire uses rather than growing a second copy of them.

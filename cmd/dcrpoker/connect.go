@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/gamingpb"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/transport"
 	"github.com/vctt94/dcrpoker/internal/config"
-	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
 )
 
 // How this game finds its bridge, and how it is told the first time.

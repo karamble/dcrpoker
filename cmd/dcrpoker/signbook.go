@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/vctt94/dcrpoker/pkg/forfeit"
+	"github.com/karamble/dcrgaming-sdk/pkg/forfeit"
 )
 
 // What this seat has already put its name to, kept on disk.

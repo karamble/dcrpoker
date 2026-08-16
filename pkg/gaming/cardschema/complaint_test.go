@@ -6,8 +6,8 @@ import (
 
 	"go.dedis.ch/kyber/v4"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/deck"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 )
 
 // disputed builds a real two-seat shuffle worth disputing: the input, the

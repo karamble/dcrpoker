@@ -10,11 +10,11 @@ import (
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/wire"
 
+	"github.com/karamble/dcrgaming-sdk/pkg/escrow"
+	"github.com/karamble/dcrgaming-sdk/pkg/gaming/schema"
+	gwire "github.com/karamble/dcrgaming-sdk/pkg/gaming/wire"
+	"github.com/karamble/dcrgaming-sdk/pkg/membership"
 	"github.com/vctt94/dcrpoker/pkg/driver"
-	"github.com/vctt94/dcrpoker/pkg/escrow"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
-	gwire "github.com/vctt94/dcrpoker/pkg/gaming/wire"
-	"github.com/vctt94/dcrpoker/pkg/membership"
 )
 
 // The two transactions that were designed and never assembled.

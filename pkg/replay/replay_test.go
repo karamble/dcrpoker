@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/karamble/dcrgaming-sdk/pkg/gamelog"
 )
 
 // A reducer earns its keep by being boring: the same log always gives the same
