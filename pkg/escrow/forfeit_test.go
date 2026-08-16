@@ -1,10 +1,12 @@
 package escrow
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/txscript/v4"
+	"github.com/vctt94/dcrpoker/pkg/forfeit"
 )
 
 // These drive the real consensus engine, because a script that looks right is
@@ -17,13 +19,18 @@ import (
 
 const testBondLock = MinBondBlocks
 
-// sumKeys builds a forfeit key the way pkg/forfeit does: the owner's log key
-// plus one opponent's punishment key, so that neither can sign for it alone.
-func sumKeys(t *testing.T, a, b *secp256k1.PrivateKey) (*secp256k1.PrivateKey, []byte) {
+// twoPartyKey builds a key with a known secret that neither of two named
+// parties can produce alone, which is all a script test needs. It is
+// deliberately not the rule a real branch key is built with - see
+// pkg/forfeit.ForfeitKey - so that nothing in this file can quietly become a
+// second copy of that rule and drift from it while both keep passing. The one
+// test that does tie the two together is below.
+func twoPartyKey(t *testing.T, a, b *secp256k1.PrivateKey) (*secp256k1.PrivateKey, []byte) {
 	t.Helper()
-	d := new(secp256k1.ModNScalar).Set(&a.Key).Add(&b.Key)
+	two := new(secp256k1.ModNScalar).SetInt(2)
+	d := new(secp256k1.ModNScalar).Mul2(two, &b.Key).Add(&a.Key)
 	if d.IsZero() {
-		t.Fatal("keys summed to zero")
+		t.Fatal("keys weighted to zero")
 	}
 	priv := secp256k1.NewPrivateKey(d)
 	return priv, priv.PubKey().SerializeCompressed()
@@ -35,7 +42,7 @@ type bondSetup struct {
 	ownerPub []byte
 	log      *secp256k1.PrivateKey   // the key that leaks if the owner equivocates
 	punish   []*secp256k1.PrivateKey // one per opponent
-	spend    []*secp256k1.PrivateKey // log+punish, what each branch needs
+	spend    []*secp256k1.PrivateKey // what each branch needs, via twoPartyKey
 	forfeit  [][]byte
 	script   []byte
 }
@@ -46,7 +53,7 @@ func postBond(t *testing.T, n int) *bondSetup {
 	s := &bondSetup{owner: privs[0], ownerPub: pubs[0], log: privs[1]}
 	for i := range n {
 		p := privs[2+i]
-		spend, pub := sumKeys(t, s.log, p)
+		spend, pub := twoPartyKey(t, s.log, p)
 		s.punish = append(s.punish, p)
 		s.spend = append(s.spend, spend)
 		s.forfeit = append(s.forfeit, pub)
@@ -90,7 +97,7 @@ func TestTheBondCannotBeReclaimedEarly(t *testing.T) {
 }
 
 // The punishment: once the owner's log key is public, the opponent it was
-// summed with takes the bond, with no timelock to wait for.
+// combined with takes the bond, with no timelock to wait for.
 func TestAWrongedOpponentTakesTheBondImmediately(t *testing.T) {
 	for _, n := range []int{1, 2, 5} {
 		s := postBond(t, n)
@@ -175,7 +182,7 @@ func TestOnePunishmentBranchDoesNotOpenAnother(t *testing.T) {
 func TestABystanderCannotTakeAForfeitedBond(t *testing.T) {
 	s := postBond(t, 2)
 	outsiders, _ := memberKeys(t, 1)
-	theirs, _ := sumKeys(t, s.log, outsiders[0])
+	theirs, _ := twoPartyKey(t, s.log, outsiders[0])
 
 	for i := range s.forfeit {
 		tx := spendTx(t, 0)
@@ -187,6 +194,88 @@ func TestABystanderCannotTakeAForfeitedBond(t *testing.T) {
 		if err := execute(t, s.script, tx, csvFlags); err == nil {
 			t.Fatalf("a bystander took the bond through branch %d", i)
 		}
+	}
+}
+
+// The one test that ties the two packages together. Everything else in this
+// file is about the script and holds for any key nobody can sign for alone;
+// this one is about the key the script is really built from.
+func TestARealForfeitKeySpendsAPunishmentBranch(t *testing.T) {
+	privs, pubs := memberKeys(t, 3)
+	ownerPub := pubs[0]
+	logPriv, punisher := privs[1], privs[2]
+
+	br := forfeit.Branch{
+		Match: "9bbccbcc99e2421852775868835efd6926eab532fb3286f1051f79f7572bb9b9",
+		Seat:  pubs[2],
+	}
+	fPub, err := forfeit.ForfeitKey(br, logPriv.PubKey(), punisher.PubKey())
+	if err != nil {
+		t.Fatalf("build the branch key: %v", err)
+	}
+	fKey := fPub.SerializeCompressed()
+
+	// The two rules must stay apart, pinned one against the other. If the real
+	// key ever matched this file's test-only rule, or collapsed back to the
+	// plain sum, every test here would move in step with a regression there
+	// and neither side would notice.
+	if _, testRule := twoPartyKey(t, logPriv, punisher); bytes.Equal(fKey, testRule) {
+		t.Fatal("the real branch key matches this file's test-only rule")
+	}
+	plainSum := new(secp256k1.ModNScalar).Set(&logPriv.Key).Add(&punisher.Key)
+	if bytes.Equal(fKey, secp256k1.NewPrivateKey(plainSum).PubKey().SerializeCompressed()) {
+		t.Fatal("the real branch key is the plain sum of its halves, which a chosen punishment key cancels")
+	}
+
+	script, err := ForfeitableBondScript(ownerPub, [][]byte{fKey}, testBondLock)
+	if err != nil {
+		t.Fatalf("build bond: %v", err)
+	}
+	terms, err := ParseForfeitableBond(script)
+	if err != nil {
+		t.Fatalf("parse bond: %v", err)
+	}
+	index, err := ForfeitIndex(terms, fKey)
+	if err != nil {
+		t.Fatalf("the bond has no branch for the key it was built with: %v", err)
+	}
+
+	spend, err := forfeit.ForfeitPrivKey(br, logPriv, punisher)
+	if err != nil {
+		t.Fatalf("derive the spending key: %v", err)
+	}
+	tx := spendTx(t, 0)
+	sig, err := ForfeitSigScript(script, signInput(t, spend, script, tx), index)
+	if err != nil {
+		t.Fatalf("sigscript: %v", err)
+	}
+	tx.TxIn[0].SignatureScript = sig
+	if err := execute(t, script, tx, csvFlags); err != nil {
+		t.Fatalf("a real forfeit key could not take the bond it was built into: %v", err)
+	}
+
+	// A branch rebuilt wrongly at recovery time derives a key that is in no
+	// script, and it fails where the docs promise: found by nothing, signing
+	// for nothing.
+	wrong := forfeit.Branch{
+		Match: "3f0c7a1e55d9b84406e2c1fd7ab399215c6e80d4488f13ba0dd5e97c22461af8",
+		Seat:  pubs[2],
+	}
+	wrongSpend, err := forfeit.ForfeitPrivKey(wrong, logPriv, punisher)
+	if err != nil {
+		t.Fatalf("derive from the wrong branch: %v", err)
+	}
+	if _, err := ForfeitIndex(terms, wrongSpend.PubKey().SerializeCompressed()); err == nil {
+		t.Fatal("a key derived from the wrong branch was found in the bond")
+	}
+	tx = spendTx(t, 0)
+	sig, err = ForfeitSigScript(script, signInput(t, wrongSpend, script, tx), index)
+	if err != nil {
+		t.Fatalf("sigscript: %v", err)
+	}
+	tx.TxIn[0].SignatureScript = sig
+	if err := execute(t, script, tx, csvFlags); err == nil {
+		t.Fatal("a key derived from the wrong branch took the bond")
 	}
 }
 
