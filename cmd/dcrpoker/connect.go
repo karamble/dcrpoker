@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/vctt94/dcrpoker/internal/config"
+	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
+	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
 )
 
@@ -44,6 +46,20 @@ const (
 	bridgeCertFile   = "bridge.cert"
 )
 
+// stampGameIdentity fills in what Hello introduces this game as; Dial refuses
+// a config that never passed through here.
+func stampGameIdentity(cfg *transport.BridgeConfig) {
+	cfg.GameID = schema.Game
+	cfg.GameVer = schema.Version
+	cfg.ClientVersion = "dcrpoker"
+	cfg.Capabilities = []gamingpb.Capability{
+		gamingpb.Capability_CAP_ACCEPT_INVITE,
+		gamingpb.Capability_CAP_RECLAIM,
+		gamingpb.Capability_CAP_SET_PAYOUT,
+		gamingpb.Capability_CAP_SET_NAMES,
+	}
+}
+
 // loadBridge finds the bridge: named in the configuration, or written down by
 // an earlier run, or asked for now.
 //
@@ -57,12 +73,18 @@ const (
 // terminal can be refused rather than left hanging on a read that never returns.
 func loadBridge(cfg *config.Config, in io.Reader, out io.Writer, interactive bool) (transport.BridgeConfig, error) {
 	if cfg.Bridge.Configured() {
-		return readBridgeFiles(cfg.Bridge)
+		bc, err := readBridgeFiles(cfg.Bridge)
+		if err != nil {
+			return transport.BridgeConfig{}, err
+		}
+		stampGameIdentity(&bc)
+		return bc, nil
 	}
 
 	stored, err := readBridgeConfig(cfg.DataDir)
 	switch {
 	case err == nil:
+		stampGameIdentity(&stored)
 		return stored, nil
 	case !os.IsNotExist(err):
 		return transport.BridgeConfig{}, err
@@ -227,6 +249,9 @@ you saved them to below.
 		network = "mainnet"
 	}
 
+	// Stamped here rather than only on loadBridge's return, because the
+	// connection is proven before loadBridge ever gets this config back.
+	stampGameIdentity(&cfg)
 	fmt.Fprintf(out, "\nConnecting to %s...\n", cfg.Addr)
 	if err := proveItWorks(cfg, network); err != nil {
 		return transport.BridgeConfig{}, fmt.Errorf(

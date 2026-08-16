@@ -106,17 +106,53 @@ func dialFake(t *testing.T, f *fakeBridge, onGap func([]string)) *Bridge {
 	t.Cleanup(srv.Stop)
 
 	c, err := Dial(context.Background(), BridgeConfig{
-		Addr:       lis.Addr().String(),
-		ClientCert: clientCert,
-		ClientKey:  clientKey,
-		BridgeCert: serverCert,
-		OnGap:      onGap,
+		Addr:          lis.Addr().String(),
+		ClientCert:    clientCert,
+		ClientKey:     clientKey,
+		BridgeCert:    serverCert,
+		GameID:        "poker",
+		GameVer:       5,
+		ClientVersion: "dcrpoker",
+		OnGap:         onGap,
 	})
 	if err != nil {
 		t.Fatalf("dial the bridge: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+// Dial refuses a config that never introduced its game. The identity fields
+// are optional struct fields the compiler cannot miss for a caller, so the
+// refusal is what turns a forgotten stamp into a loud failure.
+func TestDialRefusesAnUnstampedIdentity(t *testing.T) {
+	serverCert, _ := selfSigned(t, "bridge")
+	clientCert, clientKey := selfSigned(t, "poker")
+	base := BridgeConfig{
+		Addr:          "127.0.0.1:1",
+		ClientCert:    clientCert,
+		ClientKey:     clientKey,
+		BridgeCert:    serverCert,
+		GameID:        "poker",
+		GameVer:       5,
+		ClientVersion: "dcrpoker",
+	}
+	if c, err := Dial(context.Background(), base); err != nil {
+		t.Fatalf("the fully stamped config should dial: %v", err)
+	} else {
+		_ = c.Close()
+	}
+	for name, breakIt := range map[string]func(*BridgeConfig){
+		"no game id":        func(c *BridgeConfig) { c.GameID = "" },
+		"no game version":   func(c *BridgeConfig) { c.GameVer = 0 },
+		"no client version": func(c *BridgeConfig) { c.ClientVersion = "" },
+	} {
+		cfg := base
+		breakIt(&cfg)
+		if _, err := Dial(context.Background(), cfg); err == nil {
+			t.Errorf("%s should be refused", name)
+		}
+	}
 }
 
 // This game never states which game it is.

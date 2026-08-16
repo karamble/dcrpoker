@@ -23,9 +23,9 @@ func testPlugin(t *testing.T) *plugin {
 		t.Fatalf("identity: %v", err)
 	}
 	cert, key := hubCert(t, "poker")
-	p, err := newPlugin(context.Background(), transport.BridgeConfig{
-		Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: key, BridgeCert: cert,
-	}, id, newStore(dir), testParams)
+	bc := transport.BridgeConfig{Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: key, BridgeCert: cert}
+	stampGameIdentity(&bc)
+	p, err := newPlugin(context.Background(), bc, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -73,17 +73,17 @@ func TestPluginRequiresBridgeAndToken(t *testing.T) {
 		t.Fatalf("identity: %v", err)
 	}
 	cert, key := hubCert(t, "poker")
-	if _, err := newPlugin(context.Background(), transport.BridgeConfig{
-		ClientCert: cert, ClientKey: key, BridgeCert: cert,
-	}, id, newStore(dir), testParams); err == nil {
+	noAddr := transport.BridgeConfig{ClientCert: cert, ClientKey: key, BridgeCert: cert}
+	stampGameIdentity(&noAddr)
+	if _, err := newPlugin(context.Background(), noAddr, id, newStore(dir), testParams); err == nil {
 		t.Fatal("a plugin with no bridge address should not start")
 	}
 	// A credential that does not load is the commonest way this goes wrong:
 	// the operator copied one of the three blocks short. It has to be refused
 	// here, where the message can say so, rather than at the first call.
-	if _, err := newPlugin(context.Background(), transport.BridgeConfig{
-		Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: []byte("not a key"), BridgeCert: cert,
-	}, id, newStore(dir), testParams); err == nil {
+	badKey := transport.BridgeConfig{Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: []byte("not a key"), BridgeCert: cert}
+	stampGameIdentity(&badKey)
+	if _, err := newPlugin(context.Background(), badKey, id, newStore(dir), testParams); err == nil {
 		t.Fatal("a plugin whose credential does not load should not start")
 	}
 }

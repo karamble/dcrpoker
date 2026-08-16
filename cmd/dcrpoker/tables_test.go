@@ -289,9 +289,9 @@ func (h *hub) join(t *testing.T, name string) *plugin {
 	// A seat costs a bond, so a peer with none can join nothing.
 	h.bond(t, id, fmt.Sprintf("%02x", len(h.peers)+1))
 	cert, key := hubCert(t, name)
-	p, err := newPlugin(context.Background(), transport.BridgeConfig{
-		Addr: h.addr, ClientCert: cert, ClientKey: key, BridgeCert: h.cert,
-	}, id, newStore(dir), testParams)
+	bc := transport.BridgeConfig{Addr: h.addr, ClientCert: cert, ClientKey: key, BridgeCert: h.cert}
+	stampGameIdentity(&bc)
+	p, err := newPlugin(context.Background(), bc, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -654,9 +654,9 @@ func (h *hub) restart(t *testing.T, dir, token string) *plugin {
 		h.bond(t, id, "aa")
 	}
 	cert, key := hubCert(t, token)
-	p, err := newPlugin(context.Background(), transport.BridgeConfig{
-		Addr: h.addr, ClientCert: cert, ClientKey: key, BridgeCert: h.cert,
-	}, id, newStore(dir), testParams)
+	bc := transport.BridgeConfig{Addr: h.addr, ClientCert: cert, ClientKey: key, BridgeCert: h.cert}
+	stampGameIdentity(&bc)
+	p, err := newPlugin(context.Background(), bc, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}
@@ -1290,9 +1290,9 @@ func TestThisPlayerCannotJoinWithoutItsOwnBond(t *testing.T) {
 		t.Fatalf("identity: %v", err)
 	}
 	cert, key := hubCert(t, "tok")
-	p, err := newPlugin(context.Background(), transport.BridgeConfig{
-		Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: key, BridgeCert: cert,
-	}, id, newStore(dir), testParams)
+	bc := transport.BridgeConfig{Addr: "127.0.0.1:1", ClientCert: cert, ClientKey: key, BridgeCert: cert}
+	stampGameIdentity(&bc)
+	p, err := newPlugin(context.Background(), bc, id, newStore(dir), testParams)
 	if err != nil {
 		t.Fatalf("new plugin: %v", err)
 	}

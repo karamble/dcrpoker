@@ -18,7 +18,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/vctt94/dcrpoker/pkg/gaming/gamingpb"
-	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 )
 
 // The host, over gRPC and mutual TLS.
@@ -49,6 +48,13 @@ type BridgeConfig struct {
 	// carried these bytes here themselves. That makes them a stronger
 	// statement about which bridge this is than any CA could make.
 	BridgeCert []byte
+
+	// GameID, GameVer and ClientVersion are what Hello introduces this game
+	// as; the bridge checks them rather than believing them.
+	GameID        string
+	GameVer       int32
+	ClientVersion string
+	Capabilities  []gamingpb.Capability
 
 	// Log, if set, records connection trouble. Nothing here is fatal, so
 	// without it a game reconnecting in a loop does so silently.
@@ -94,6 +100,15 @@ const requestBuffer = 32
 func Dial(ctx context.Context, cfg BridgeConfig) (*Bridge, error) {
 	if strings.TrimSpace(cfg.Addr) == "" {
 		return nil, errors.New("a bridge address is needed")
+	}
+	if cfg.GameID == "" {
+		return nil, errors.New("a game id is needed to introduce this game")
+	}
+	if cfg.GameVer <= 0 {
+		return nil, errors.New("a game protocol version is needed to introduce this game")
+	}
+	if cfg.ClientVersion == "" {
+		return nil, errors.New("a client version is needed to introduce this game")
 	}
 	tlsCfg, err := clientTLS(cfg)
 	if err != nil {
@@ -195,15 +210,10 @@ func (c *Bridge) Network() string { return c.network }
 // real money into them, so a mismatch here has to stop the program.
 func (c *Bridge) Hello(ctx context.Context, network string) (*gamingpb.HelloReply, error) {
 	reply, err := c.rpc.Hello(ctx, &gamingpb.HelloRequest{
-		GameId:              schema.Game,
-		GameProtocolVersion: schema.Version,
-		ClientVersion:       clientVersion,
-		Capabilities: []gamingpb.Capability{
-			gamingpb.Capability_CAP_ACCEPT_INVITE,
-			gamingpb.Capability_CAP_RECLAIM,
-			gamingpb.Capability_CAP_SET_PAYOUT,
-			gamingpb.Capability_CAP_SET_NAMES,
-		},
+		GameId:              c.cfg.GameID,
+		GameProtocolVersion: uint32(c.cfg.GameVer),
+		ClientVersion:       c.cfg.ClientVersion,
+		Capabilities:        c.cfg.Capabilities,
 	})
 	if err != nil {
 		return nil, hostErr("introduce this game", err)
@@ -216,9 +226,6 @@ func (c *Bridge) Hello(ctx context.Context, network string) (*gamingpb.HelloRepl
 	c.game, c.network = reply.GetGame(), reply.GetNetwork()
 	return reply, nil
 }
-
-// clientVersion is what the console shows beside a connected game.
-const clientVersion = "dcrpoker"
 
 // hostErr turns a gRPC status into something a person reading a log can act on.
 //
