@@ -52,8 +52,9 @@ Logs go to the terminal and to `<appdata>/logs/<network>/dcrpoker.log`.
   are looking at from being able to take their money.
 - `docs/dev.md` - building and testing.
 
-The packages read best in this order: `pkg/deck` (the mental poker), `pkg/forfeit`
-(why cheating publishes your key), `pkg/escrow` (the money), then `pkg/replay` and
+The packages read best in this order: `pkg/deck` (the mental poker), then
+`pkg/forfeit` (why cheating publishes your key) and `pkg/escrow` (the money), both
+now living at `github.com/karamble/dcrgaming-sdk`, then `pkg/replay` and
 `pkg/driver` (a hand as a reducer over its own signed log). Package comments carry
 the reasoning, and they are long deliberately.
 
