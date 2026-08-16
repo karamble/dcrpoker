@@ -7,6 +7,7 @@ import (
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/membership"
 )
@@ -57,7 +58,7 @@ func freshLogKey(t *testing.T, p *plugin, sid string) *forfeit.LogKey {
 // shuffle, and delivers to the seat-1 peer a copy of seat 0's real hand-two
 // shuffle with its proof corrupted - signed, because the test holds seat 0's
 // key. Returns the peers in seat order and the outgoing complaint.
-func wedgeHandTwo(t *testing.T, h *hub, a, b *plugin, sid string) (seat0, seat1 *plugin, complaint schema.ShuffleComplaint) {
+func wedgeHandTwo(t *testing.T, h *hub, a, b *plugin, sid string) (seat0, seat1 *plugin, complaint cardschema.ShuffleComplaint) {
 	t.Helper()
 	h.drop(schema.KindShuffle, 64)
 	playHand(t, h, sid, checkOrCall, a, b)
@@ -103,15 +104,15 @@ func wedgeHandTwo(t *testing.T, h *hub, a, b *plugin, sid string) (seat0, seat1 
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	body, err := schema.ShuffleFrom(driver.OutShuffle{Seat: 0, Deck: step.Deck, Proof: bad, Sig: sig}, 2)
+	body, err := cardschema.ShuffleFrom(driver.OutShuffle{Seat: 0, Deck: step.Deck, Proof: bad, Sig: sig}, 2)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 
 	out := deliverKind(t, seat1, terms, schema.KindShuffle, body)
-	var c *schema.ShuffleComplaint
+	var c *cardschema.ShuffleComplaint
 	for _, o := range out {
-		if v, ok := o.body.(schema.ShuffleComplaint); ok {
+		if v, ok := o.body.(cardschema.ShuffleComplaint); ok {
 			c = &v
 		}
 	}
@@ -211,7 +212,7 @@ func TestAFalseComplaintNamesTheComplainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	body, err := schema.ShuffleComplaintFrom(1, 0, 1, 0, input, real.Deck, real.Proof, real.Sig, sig)
+	body, err := cardschema.ShuffleComplaintFrom(1, 0, 1, 0, input, real.Deck, real.Proof, real.Sig, sig)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

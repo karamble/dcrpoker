@@ -13,6 +13,7 @@ import (
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	gwire "github.com/vctt94/dcrpoker/pkg/gaming/wire"
 	"github.com/vctt94/dcrpoker/pkg/replay"
@@ -73,7 +74,7 @@ const (
 type handBundle struct {
 	hand     *deck.Hand
 	own      *deck.Secrets
-	view     *schema.HandRecordView
+	view     *cardschema.HandRecordView
 	revealed map[uint32]*deck.Secrets
 	// cards is the audited hand, set only by a clean audit.
 	cards []deck.Card
@@ -107,7 +108,7 @@ func (tbl *table) harvestHands() {
 				rec.Hand.Hand), "", nil)
 			continue
 		}
-		view, err := schema.HandRecordFrom(rec, mine, sig)
+		view, err := cardschema.HandRecordFrom(rec, mine, sig)
 		if err != nil {
 			dsptLog.Errorf("table %s: cannot render hand %d: %v",
 				tbl.terms.SID, rec.Hand.Hand, err)
@@ -152,7 +153,7 @@ func (tbl *table) bundle(hand uint64) *handBundle {
 	if err != nil || blob == nil {
 		return nil
 	}
-	var view schema.HandRecordView
+	var view cardschema.HandRecordView
 	if err := json.Unmarshal(blob, &view); err != nil {
 		dsptLog.Errorf("table %s: hand %d's record is unreadable: %v",
 			tbl.terms.SID, hand, err)
@@ -259,7 +260,7 @@ func (tbl *table) challengeHand(hand uint64) ([]outgoing, error) {
 	tbl.note(eventChallenged, fmt.Sprintf(
 		"hand %d is challenged; every seat owes its deck secrets", hand), "", seatp(int(mine)))
 	out := []outgoing{tbl.frame(schema.KindChallenge,
-		schema.ChallengeFrom(mine, hand, sig), gwire.ClassDispute)}
+		cardschema.ChallengeFrom(mine, hand, sig), gwire.ClassDispute)}
 	return append(out, tbl.answerChallenges()...), nil
 }
 
@@ -285,7 +286,7 @@ func (tbl *table) recordChallenge(hand uint64, by uint32) error {
 }
 
 // acceptChallenge is somebody demanding a hand this peer played be recomputed.
-func (tbl *table) acceptChallenge(body schema.Challenge) []outgoing {
+func (tbl *table) acceptChallenge(body cardschema.Challenge) []outgoing {
 	seat, hand, sig, err := body.Into()
 	if err != nil {
 		return nil
@@ -387,14 +388,14 @@ func (tbl *table) repeatChallenges() []outgoing {
 			continue
 		}
 		out = append(out, tbl.frame(schema.KindChallenge,
-			schema.ChallengeFrom(mine, hand, sig), gwire.ClassDispute))
+			cardschema.ChallengeFrom(mine, hand, sig), gwire.ClassDispute))
 	}
 	return out
 }
 
 // acceptSecrets takes one seat's reveal, refuses what does not check, and runs
 // the audit when the set completes.
-func (tbl *table) acceptSecrets(body schema.Secrets) []outgoing {
+func (tbl *table) acceptSecrets(body cardschema.Secrets) []outgoing {
 	seat, hand, sec, sig, err := body.Into()
 	if err != nil {
 		return nil
@@ -455,7 +456,7 @@ func (tbl *table) acceptSecrets(body schema.Secrets) []outgoing {
 
 	b.revealed[seat] = sec
 	if b.view.Revealed == nil {
-		b.view.Revealed = map[uint32]schema.Secrets{}
+		b.view.Revealed = map[uint32]cardschema.Secrets{}
 	}
 	b.view.Revealed[seat] = body
 	if err := tbl.saveBundle(hand, b); err != nil {

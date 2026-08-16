@@ -12,6 +12,7 @@ import (
 
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
+	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/membership"
 )
@@ -344,13 +345,13 @@ func TestSecretsAnswerFromDiskAfterARestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the live peer could not challenge: %v", err)
 	}
-	var chal *schema.Challenge
-	var bSecrets *schema.Secrets
+	var chal *cardschema.Challenge
+	var bSecrets *cardschema.Secrets
 	for _, o := range chalOut {
 		switch body := o.body.(type) {
-		case schema.Challenge:
+		case cardschema.Challenge:
 			chal = &body
-		case schema.Secrets:
+		case cardschema.Secrets:
 			bSecrets = &body
 		}
 	}
@@ -359,9 +360,9 @@ func TestSecretsAnswerFromDiskAfterARestart(t *testing.T) {
 	}
 
 	out := deliverKind(t, back, terms, schema.KindChallenge, *chal)
-	var backSecrets *schema.Secrets
+	var backSecrets *cardschema.Secrets
 	for _, o := range out {
-		if body, ok := o.body.(schema.Secrets); ok {
+		if body, ok := o.body.(cardschema.Secrets); ok {
 			backSecrets = &body
 		}
 	}
@@ -487,7 +488,7 @@ func TestTakingOneBondDoesNotLaunderTheOtherRefusers(t *testing.T) {
 	atbl.bundles = map[uint64]*handBundle{1: {
 		hand:     &deck.Hand{Match: "m", Hand: 1, Pubs: make([]kyber.Point, len(seats))},
 		revealed: map[uint32]*deck.Secrets{},
-		view:     &schema.HandRecordView{Own: &schema.Secrets{}},
+		view:     &cardschema.HandRecordView{Own: &cardschema.Secrets{}},
 	}}
 	atbl.openChal = map[uint64]uint32{1: mine}
 

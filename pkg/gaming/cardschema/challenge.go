@@ -1,4 +1,4 @@
-package schema
+package cardschema
 
 import (
 	"encoding/hex"

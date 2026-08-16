@@ -17,6 +17,7 @@ import (
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/vctt94/dcrpoker/pkg/chainwatch"
 	"github.com/vctt94/dcrpoker/pkg/driver"
+	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/transport"
 	"github.com/vctt94/dcrpoker/pkg/gaming/wire"
@@ -766,7 +767,7 @@ func (tbl *table) resume(rec *record) error {
 	if tbl.st != nil {
 		if blobs, err := tbl.st.loadComplaints(tbl.terms.SID); err == nil {
 			for hand, blob := range blobs {
-				var view schema.ComplaintView
+				var view cardschema.ComplaintView
 				if err := json.Unmarshal(blob, &view); err != nil {
 					continue
 				}
@@ -1709,21 +1710,21 @@ func (tbl *table) apply(msg *schema.Message) ([]outgoing, error) {
 		return tbl.acceptClaim(body, tbl.netParams), nil
 
 	case schema.KindChallenge:
-		var body schema.Challenge
+		var body cardschema.Challenge
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}
 		return tbl.acceptChallenge(body), nil
 
 	case schema.KindSecrets:
-		var body schema.Secrets
+		var body cardschema.Secrets
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}
 		return tbl.acceptSecrets(body), nil
 
 	case schema.KindShuffleComplaint:
-		var body schema.ShuffleComplaint
+		var body cardschema.ShuffleComplaint
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}

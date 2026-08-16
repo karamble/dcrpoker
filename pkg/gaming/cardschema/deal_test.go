@@ -1,4 +1,4 @@
-package schema
+package cardschema
 
 import (
 	"testing"
@@ -7,6 +7,7 @@ import (
 
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
+	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 )
 
 const dealMatch = "9bbccbcc99e2421852775868835efd6926eab532fb3286f1051f79f7572bb9b9"
@@ -38,17 +39,17 @@ func TestAShuffleSurvivesTheWireAndStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	blob, err := Encode(KindShuffle, dealMatch, body)
+	blob, err := schema.Encode(schema.KindShuffle, dealMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 	t.Logf("a shuffle is %d bytes on the wire", len(blob))
 
-	msg, err := Decode(blob)
+	msg, err := schema.Decode(blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if msg.Kind != KindShuffle {
+	if msg.Kind != schema.KindShuffle {
 		t.Fatalf("decoded kind %q", msg.Kind)
 	}
 	var wire Shuffle
@@ -97,13 +98,13 @@ func TestAShareSurvivesTheWireAndStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	blob, err := Encode(KindShare, dealMatch, body)
+	blob, err := schema.Encode(schema.KindShare, dealMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 	t.Logf("a share is %d bytes on the wire", len(blob))
 
-	msg, err := Decode(blob)
+	msg, err := schema.Decode(blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -141,11 +142,11 @@ func TestACardKeySurvivesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	blob, err := Encode(KindCardKey, dealMatch, body)
+	blob, err := schema.Encode(schema.KindCardKey, dealMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := Decode(blob)
+	msg, err := schema.Decode(blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

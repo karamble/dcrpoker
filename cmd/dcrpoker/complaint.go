@@ -9,6 +9,7 @@ import (
 	"github.com/vctt94/dcrpoker/pkg/deck"
 	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/forfeit"
+	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	gwire "github.com/vctt94/dcrpoker/pkg/gaming/wire"
 )
@@ -52,7 +53,7 @@ const (
 
 // complaintCase is one dispute: the persisted evidence and its decoded parts.
 type complaintCase struct {
-	view *schema.ComplaintView
+	view *cardschema.ComplaintView
 
 	pubs         []kyber.Point
 	steps        []deck.Step
@@ -62,7 +63,7 @@ type complaintCase struct {
 }
 
 // decodeComplaintCase rebuilds the working state from the stored view.
-func decodeComplaintCase(view *schema.ComplaintView) (*complaintCase, error) {
+func decodeComplaintCase(view *cardschema.ComplaintView) (*complaintCase, error) {
 	c := &complaintCase{view: view}
 	for i, ph := range view.Pubs {
 		p, err := readComplaintPoint(ph)
@@ -179,14 +180,14 @@ func (tbl *table) openComplaintFrom(r *driver.ShuffleRefusal) []outgoing {
 		dsptLog.Errorf("table %s: cannot sign the complaint: %v", tbl.terms.SID, err)
 		return nil
 	}
-	body, err := schema.ShuffleComplaintFrom(mine, uint32(r.Seat), hand, uint32(r.Round),
+	body, err := cardschema.ShuffleComplaintFrom(mine, uint32(r.Seat), hand, uint32(r.Round),
 		r.Input, r.Deck, r.Proof, r.Sig, sig)
 	if err != nil {
 		dsptLog.Errorf("table %s: cannot render the complaint: %v", tbl.terms.SID, err)
 		return nil
 	}
 
-	view := &schema.ComplaintView{Match: match, Hand: hand, Round: uint32(r.Round),
+	view := &cardschema.ComplaintView{Match: match, Hand: hand, Round: uint32(r.Round),
 		By: mine, Complaint: body}
 	for _, p := range h.Keys() {
 		ph, err := complaintPointHex(p)
@@ -217,7 +218,7 @@ func (tbl *table) openComplaintFrom(r *driver.ShuffleRefusal) []outgoing {
 // acceptComplaint is somebody disputing a shuffle - most often one this peer
 // sent. The verdict is reached here, from this peer's own signed history and
 // the complaint alone.
-func (tbl *table) acceptComplaint(body schema.ShuffleComplaint) []outgoing {
+func (tbl *table) acceptComplaint(body cardschema.ShuffleComplaint) []outgoing {
 	input, refused, refusedProof, refusedSig, sig, err := body.Into()
 	if err != nil {
 		return nil
@@ -282,7 +283,7 @@ func (tbl *table) acceptComplaint(body schema.ShuffleComplaint) []outgoing {
 			"", seatp(int(body.Seat)))
 		return nil
 	}
-	view := &schema.ComplaintView{Match: match, Hand: body.Hand, Round: body.Round,
+	view := &cardschema.ComplaintView{Match: match, Hand: body.Hand, Round: body.Round,
 		By: body.Seat, Complaint: body}
 	for _, p := range pubs {
 		ph, err := complaintPointHex(p)
@@ -437,11 +438,11 @@ func complaintPointHex(p kyber.Point) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return schema.B64(b), nil
+	return cardschema.B64(b), nil
 }
 
 func readComplaintPoint(s string) (kyber.Point, error) {
-	b, err := schema.UnB64(s, "point")
+	b, err := cardschema.UnB64(s, "point")
 	if err != nil {
 		return nil, err
 	}
@@ -452,24 +453,24 @@ func readComplaintPoint(s string) (kyber.Point, error) {
 	return p, nil
 }
 
-func complaintStepView(st deck.Step) (schema.StepView, error) {
-	db, err := schema.DeckBytes(st.Deck)
+func complaintStepView(st deck.Step) (cardschema.StepView, error) {
+	db, err := cardschema.DeckBytes(st.Deck)
 	if err != nil {
-		return schema.StepView{}, err
+		return cardschema.StepView{}, err
 	}
-	return schema.StepView{Deck: schema.B64(db), Proof: schema.B64(st.Proof)}, nil
+	return cardschema.StepView{Deck: cardschema.B64(db), Proof: cardschema.B64(st.Proof)}, nil
 }
 
-func readComplaintStep(sv schema.StepView) (deck.Deck, []byte, error) {
-	raw, err := schema.UnB64(sv.Deck, "deck")
+func readComplaintStep(sv cardschema.StepView) (deck.Deck, []byte, error) {
+	raw, err := cardschema.UnB64(sv.Deck, "deck")
 	if err != nil {
 		return nil, nil, err
 	}
-	d, err := schema.ReadDeck(raw)
+	d, err := cardschema.ReadDeck(raw)
 	if err != nil {
 		return nil, nil, err
 	}
-	prf, err := schema.UnB64(sv.Proof, "proof")
+	prf, err := cardschema.UnB64(sv.Proof, "proof")
 	if err != nil {
 		return nil, nil, err
 	}

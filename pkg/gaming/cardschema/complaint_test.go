@@ -1,4 +1,4 @@
-package schema
+package cardschema
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"go.dedis.ch/kyber/v4"
 
 	"github.com/vctt94/dcrpoker/pkg/deck"
+	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 )
 
 // disputed builds a real two-seat shuffle worth disputing: the input, the
@@ -36,11 +37,11 @@ func TestAShuffleComplaintSurvivesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	blob, err := Encode(KindShuffleComplaint, dealMatch, body)
+	blob, err := schema.Encode(schema.KindShuffleComplaint, dealMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := Decode(blob)
+	msg, err := schema.Decode(blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

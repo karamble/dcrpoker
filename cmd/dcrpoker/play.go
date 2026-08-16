@@ -8,6 +8,7 @@ import (
 	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/forfeit"
 	"github.com/vctt94/dcrpoker/pkg/gamelog"
+	"github.com/vctt94/dcrpoker/pkg/gaming/cardschema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/schema"
 	"github.com/vctt94/dcrpoker/pkg/gaming/wire"
 	"github.com/vctt94/dcrpoker/pkg/replay"
@@ -250,13 +251,13 @@ func (tbl *table) playingHand() uint64 {
 func renderDriver(m driver.Out, hand uint64) (schema.Kind, any, error) {
 	switch v := m.(type) {
 	case driver.OutCardKey:
-		body, err := schema.CardKeyFrom(v)
+		body, err := cardschema.CardKeyFrom(v)
 		return schema.KindCardKey, body, err
 	case driver.OutShuffle:
-		body, err := schema.ShuffleFrom(v, hand)
+		body, err := cardschema.ShuffleFrom(v, hand)
 		return schema.KindShuffle, body, err
 	case driver.OutShare:
-		body, err := schema.ShareFrom(v, hand)
+		body, err := cardschema.ShareFrom(v, hand)
 		return schema.KindShare, body, err
 	case driver.OutAction:
 		return schema.KindAction, schema.Action{Entry: v.Entry.Transcript()}, nil
@@ -309,7 +310,7 @@ func (tbl *table) deal(msg *schema.Message) []outgoing {
 func decodeDriver(msg *schema.Message) (driver.In, error) {
 	switch msg.Kind {
 	case schema.KindCardKey:
-		var body schema.CardKey
+		var body cardschema.CardKey
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}
@@ -317,7 +318,7 @@ func decodeDriver(msg *schema.Message) (driver.In, error) {
 		return in, err
 
 	case schema.KindShuffle:
-		var body schema.Shuffle
+		var body cardschema.Shuffle
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}
@@ -325,7 +326,7 @@ func decodeDriver(msg *schema.Message) (driver.In, error) {
 		return in, err
 
 	case schema.KindShare:
-		var body schema.Share
+		var body cardschema.Share
 		if err := msg.Into(&body); err != nil {
 			return nil, err
 		}
