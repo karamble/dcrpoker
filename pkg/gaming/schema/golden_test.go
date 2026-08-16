@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"testing"
-
-	"github.com/vctt94/dcrpoker/pkg/driver"
 )
 
 // The vectors below are assembled from literals, never from the code under
@@ -49,7 +47,7 @@ func TestTheClaimJsonShapeIsPinned(t *testing.T) {
 
 	claim := Claim{
 		Seat:         2,
-		Duty:         driver.Duty{Seat: 2, Kind: driver.DutyShare, Hand: 6, At: 11},
+		Duty:         Duty{Seat: 2, Kind: DutyShare, Hand: 6, At: 11},
 		BondOutpoint: "f1e2d3c4b5a697880f1e2d3c4b5a69788796a5b4c3d2e1f08796a5b4c3d2e1f0:0",
 		BondScript:   "76a914",
 		Tx:           "010203",

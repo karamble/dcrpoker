@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/vctt94/dcrpoker/pkg/driver"
 	"github.com/vctt94/dcrpoker/pkg/gamelog"
 )
 
@@ -95,7 +94,7 @@ type Claim struct {
 	// position within it. A co-signer that reads a different obligation from
 	// its own log refuses, including when it is merely behind - refusing
 	// under uncertainty costs a retry, signing under it costs a bond.
-	Duty driver.Duty `json:"duty"`
+	Duty Duty `json:"duty"`
 	// Bond is the outpoint holding that seat's table bond, and the script
 	// it is locked behind. The script travels because it is what says which
 	// roster can take the coin, and a peer must check it names them before
