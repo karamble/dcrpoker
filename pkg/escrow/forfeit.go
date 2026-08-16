@@ -33,17 +33,24 @@ const MaxForfeitKeys = 8
 // was wronged dies here.
 //
 // So the deciding happens off-chain, in arithmetic, before anything is
-// broadcast. Each forfeit key is the sum of the owner's log key and one
-// opponent's punishment key (see pkg/forfeit). Neither party can produce a
-// signature for that sum alone: the owner is missing the opponent's half, and
-// the opponent is missing the owner's. The owner's half becomes public exactly
-// when they sign two different things at one position in the log - which is
-// what equivocation *is* - and at that moment the opponent, and only the
-// opponent, holds both halves.
+// broadcast. Each forfeit key weights the owner's log key and one opponent's
+// punishment key by coefficients derived from both keys and from the branch
+// they belong to - a plain sum would let the opponent announce a key that
+// cancels the owner's half, and the reason is written down at
+// pkg/forfeit.ForfeitKey. Neither party can produce a signature for the result
+// alone: the owner is missing the opponent's half, and the opponent is missing
+// the owner's. The owner's half becomes public exactly when they sign two
+// different things at one position in the log - which is what equivocation *is*
+// - and at that moment the opponent holds both halves.
 //
-// The result is a punishment nobody adjudicates. There is no quorum to collude,
-// no proof to evaluate, and nothing for an honest player to defend against: a
-// bond can only be taken by someone the owner personally handed the key to.
+// The result is a punishment nobody adjudicates: no quorum to collude and no
+// proof to evaluate. What it does not establish is that a bond is safe. This
+// builder is handed a branch set and takes it as given, so an owner that states
+// its own script can name one more branch keyed to a point it alone holds, and
+// every peer's ForfeitIndex will still find its own branch and say yes.
+// Punishment branches carry no timelock, so that extra branch reclaims the bond
+// the block after it confirms. Rebuilding the branch set from the settled
+// roster is a precondition of using any of this, not an improvement on it.
 //
 // The timelock has to outlast the window in which cheating could still be
 // discovered, or an owner could equivocate and then simply reclaim the bond
@@ -234,6 +241,12 @@ func ParseForfeitableBond(bond []byte) (*ForfeitableBondTerms, error) {
 // Returns an error rather than a sentinel when the key is absent, because "your
 // key is not in this bond" is the finding that must stop a game from starting,
 // and it is too important to be signalled by a -1 somebody forgets to check.
+//
+// Finding your own branch is not the same as the bond being sound. Nothing here
+// relates the branch set to the roster, so a bond can carry an extra branch its
+// owner can spend at once alongside the honest ones and still answer this
+// question correctly. Rebuild the set from the roster before trusting a bond
+// you did not derive yourself.
 func ForfeitIndex(terms *ForfeitableBondTerms, key []byte) (int, error) {
 	if terms == nil {
 		return 0, fmt.Errorf("no bond")

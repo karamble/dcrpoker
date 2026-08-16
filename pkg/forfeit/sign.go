@@ -37,9 +37,10 @@
 // is emphatically *not* the session key: that one is named in the escrow script
 // and holds the player's stake, so leaking it would let any passing observer
 // take the stake rather than letting the wronged player take the bond. The
-// penalty has to be bounded and it has to be directed. A log key is bound to a
-// session key by signature, so the roster knows whose it is, and forfeiting it
-// costs exactly one bond.
+// penalty has to be bounded and it has to be directed. A log key is announced
+// in the join, which is signed by the session key over a digest that covers it,
+// so the roster knows whose it is and no separate binding can go missing.
+// Forfeiting it costs exactly one bond.
 package forfeit
 
 import (
