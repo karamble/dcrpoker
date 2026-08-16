@@ -829,3 +829,95 @@ func TestEquivocationHandsTheBondToTheWrongedPlayer(t *testing.T) {
 		t.Fatal("a bystander could spend the punishment branch")
 	}
 }
+
+// The nonce preimages, pinned byte by byte from literals. Nothing here comes
+// from running the code under test, so a derivation change cannot regenerate
+// these vectors to match itself - it can only fail here. The stakes are not a
+// broken signature but a disabled punishment: Recover only fires when two
+// signatures at one position share r, so a seat signing under an old and a new
+// derivation at the same position would equivocate unpunished.
+func TestTheNoncePreimageLayoutIsPinned(t *testing.T) {
+	const keyHex = "6c81d5a9f3072b4e88c1d02e5f9a3b76014d8c2ea9b5f7301e6d4a8c2f5b9d13"
+	keyBytes, err := hex.DecodeString(keyHex)
+	if err != nil || len(keyBytes) != 32 {
+		t.Fatalf("the literal %q is not a 32-byte scalar", keyHex)
+	}
+	priv := privFromHex(t, keyHex)
+
+	// The layout: tag raw with no length prefix, then the key, the match and
+	// the domain each be32-length-prefixed, the sequence as a raw big-endian
+	// uint64, the derivation counter last as a raw big-endian uint32.
+	pre := make([]byte, 0, 150)
+	pre = append(pre, "dcrpoker/forfeit/nonce/v1"...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x20) // be32(32), the key's length
+	pre = append(pre, keyBytes...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x40) // be32(64), the match's length
+	pre = append(pre, match...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x05) // be32(5), the domain's length
+	pre = append(pre, "entry"...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07) // be64(7), the sequence
+	pre = append(pre, 0x00, 0x00, 0x00, 0x00)                         // be32(0), the first derivation attempt
+	if len(pre) != 150 {
+		t.Fatalf("the pinned preimage is %d bytes, want 150, so this test's own assembly is wrong", len(pre))
+	}
+
+	sum := blake256.Sum256(pre)
+	var want secp256k1.ModNScalar
+	if overflow := want.SetBytes(&sum); overflow != 0 || want.IsZero() {
+		t.Fatal("the pinned preimage hashes past the curve order, so this vector never exercises the first derivation attempt; pick new literals")
+	}
+
+	got, err := nonce(priv, Position{Match: match, Domain: DomainEntry, Seq: 7})
+	if err != nil {
+		t.Fatalf("nonce: %v", err)
+	}
+	if !got.Equals(&want) {
+		t.Fatal("the nonce does not match its pinned preimage, so the derivation has moved and equivocation across the change goes unpunished")
+	}
+}
+
+func TestTheCommittedNoncePreimageLayoutIsPinned(t *testing.T) {
+	const keyHex = "6c81d5a9f3072b4e88c1d02e5f9a3b76014d8c2ea9b5f7301e6d4a8c2f5b9d13"
+	const hashHex = "9e2f4c6a815d3b70e4f8a2c95d1b6380f7e3a9c14b6d28f05a9c3e17d4b86f20"
+	keyBytes, err := hex.DecodeString(keyHex)
+	if err != nil || len(keyBytes) != 32 {
+		t.Fatalf("the literal %q is not a 32-byte scalar", keyHex)
+	}
+	msgHash, err := hex.DecodeString(hashHex)
+	if err != nil || len(msgHash) != 32 {
+		t.Fatalf("the literal %q is not a 32-byte hash", hashHex)
+	}
+	priv := privFromHex(t, keyHex)
+
+	// The committed layout is the position layout with its own tag and the
+	// message hash inserted, be32-length-prefixed, between sequence and counter.
+	pre := make([]byte, 0, 198)
+	pre = append(pre, "dcrpoker/forfeit/nonce-committed/v1"...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x20) // be32(32), the key's length
+	pre = append(pre, keyBytes...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x40) // be32(64), the match's length
+	pre = append(pre, match...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x07) // be32(7), the domain's length
+	pre = append(pre, "shuffle"...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03) // be64(3), the sequence
+	pre = append(pre, 0x00, 0x00, 0x00, 0x20)                         // be32(32), the message hash's length
+	pre = append(pre, msgHash...)
+	pre = append(pre, 0x00, 0x00, 0x00, 0x00) // be32(0), the first derivation attempt
+	if len(pre) != 198 {
+		t.Fatalf("the pinned preimage is %d bytes, want 198, so this test's own assembly is wrong", len(pre))
+	}
+
+	sum := blake256.Sum256(pre)
+	var want secp256k1.ModNScalar
+	if overflow := want.SetBytes(&sum); overflow != 0 || want.IsZero() {
+		t.Fatal("the pinned preimage hashes past the curve order, so this vector never exercises the first derivation attempt; pick new literals")
+	}
+
+	got, err := committedNonce(priv, Position{Match: match, Domain: DomainShuffle, Seq: 3}, msgHash)
+	if err != nil {
+		t.Fatalf("committed nonce: %v", err)
+	}
+	if !got.Equals(&want) {
+		t.Fatal("the committed nonce does not match its pinned preimage, so the derivation has moved and equivocation across the change goes unpunished")
+	}
+}
