@@ -82,6 +82,9 @@ func NewRouter(cfg Config) (*Router, error) {
 	if cfg.Game == "" {
 		return nil, fmt.Errorf("router must name the game it routes")
 	}
+	if cfg.GameVer <= 0 {
+		return nil, fmt.Errorf("router must name the game version it speaks")
+	}
 	if cfg.Sender == nil {
 		return nil, fmt.Errorf("router has no way to send")
 	}
@@ -130,7 +133,7 @@ func (r *Router) HandleGCMessage(gcID, sender, text string, now time.Time) {
 		return // still waiting on chunks
 	}
 
-	msg, err := schema.Decode(payload)
+	msg, err := schema.Decode(r.cfg.GameVer, payload)
 	if err != nil {
 		r.debugf("undecodable message from %s: %v", sender, err)
 		return

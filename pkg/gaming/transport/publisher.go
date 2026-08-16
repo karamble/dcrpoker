@@ -26,6 +26,9 @@ func NewPublisher(game string, gameVer int, sender GCSender) (*Publisher, error)
 	if game == "" {
 		return nil, fmt.Errorf("publisher must name the game it sends as")
 	}
+	if gameVer <= 0 {
+		return nil, fmt.Errorf("publisher must name the game version it sends as")
+	}
 	if sender == nil {
 		return nil, fmt.Errorf("publisher has no way to send")
 	}
@@ -40,7 +43,12 @@ func NewPublisher(game string, gameVer int, sender GCSender) (*Publisher, error)
 // for players who are offline, and an offline player is exactly who a dispute
 // concerns.
 func (p *Publisher) Send(ctx context.Context, gcID, sid, matchID string, kind schema.Kind, body any, class wire.Class) error {
-	payload, err := schema.Encode(kind, matchID, body)
+	// Checked here as well as in NewPublisher: the fields are exported, so a
+	// bare literal never went through the constructor.
+	if p.GameVer <= 0 {
+		return fmt.Errorf("publisher has no game version to stamp")
+	}
+	payload, err := schema.Encode(p.GameVer, kind, matchID, body)
 	if err != nil {
 		return err
 	}

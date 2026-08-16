@@ -324,8 +324,9 @@ type Dispute struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// Encode wraps a body as a message ready to be framed.
-func Encode(kind Kind, matchID string, body any) ([]byte, error) {
+// Encode wraps a body as a message ready to be framed, stamped with the
+// caller's game protocol version.
+func Encode(version int, kind Kind, matchID string, body any) ([]byte, error) {
 	if matchID == "" {
 		return nil, fmt.Errorf("message must name its match")
 	}
@@ -333,19 +334,20 @@ func Encode(kind Kind, matchID string, body any) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode %s body: %w", kind, err)
 	}
-	return json.Marshal(Message{V: Version, Kind: kind, Match: matchID, Body: raw})
+	return json.Marshal(Message{V: version, Kind: kind, Match: matchID, Body: raw})
 }
 
-// Decode reads a message. The body is left raw so a caller can dispatch on
-// Kind and unmarshal only what it understands - a message for a kind this build
-// has never heard of has to be skippable, not fatal.
-func Decode(blob []byte) (*Message, error) {
+// Decode reads a message, refusing any not stamped with the caller's version.
+// The body is left raw so a caller can dispatch on Kind and unmarshal only what
+// it understands - a message for a kind this build has never heard of has to be
+// skippable, not fatal.
+func Decode(version int, blob []byte) (*Message, error) {
 	var m Message
 	if err := json.Unmarshal(blob, &m); err != nil {
 		return nil, fmt.Errorf("decode message: %w", err)
 	}
-	if m.V != Version {
-		return nil, fmt.Errorf("message is schema version %d, this build speaks %d", m.V, Version)
+	if m.V != version {
+		return nil, fmt.Errorf("message is schema version %d, this build speaks %d", m.V, version)
 	}
 	if m.Match == "" {
 		return nil, fmt.Errorf("message names no match")

@@ -42,11 +42,11 @@ func TestActionRoundTrips(t *testing.T) {
 		t.Fatalf("read transcript: %v", err)
 	}
 
-	msg, err := Encode(KindAction, testMatch, Action{Entry: tr.Entries[0]})
+	msg, err := Encode(Version, KindAction, testMatch, Action{Entry: tr.Entries[0]})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	got, err := Decode(msg)
+	got, err := Decode(Version, msg)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestUnknownKindDecodesAndIsSkippable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	m, err := Decode(raw)
+	m, err := Decode(Version, raw)
 	if err != nil {
 		t.Fatalf("an unknown kind must still decode: %v", err)
 	}
@@ -89,14 +89,14 @@ func TestDecodeRejectsUnusableMessages(t *testing.T) {
 		"no kind":       `{"v":1,"kind":"","match":"t","body":{}}`,
 	}
 	for name, blob := range cases {
-		if _, err := Decode([]byte(blob)); err == nil {
+		if _, err := Decode(Version, []byte(blob)); err == nil {
 			t.Errorf("%s should be refused", name)
 		}
 	}
 }
 
 func TestEncodeRequiresAMatch(t *testing.T) {
-	if _, err := Encode(KindHead, "", Head{}); err == nil {
+	if _, err := Encode(Version, KindHead, "", Head{}); err == nil {
 		t.Fatal("a message must name the table it belongs to")
 	}
 }

@@ -212,7 +212,7 @@ func frameKind(text string) (schema.Kind, bool) {
 	if !ok || part.Total != 1 {
 		return "", false
 	}
-	msg, err := schema.Decode(part.Chunk)
+	msg, err := schema.Decode(schema.Version, part.Chunk)
 	if err != nil {
 		return "", false
 	}
@@ -513,11 +513,11 @@ func TestFramesFromAnotherGroupChatAreIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign join: %v", err)
 	}
-	blob, err := schema.Encode(schema.KindJoin, terms.SID, schema.JoinFrom(j))
+	blob, err := schema.Encode(schema.Version, schema.KindJoin, terms.SID, schema.JoinFrom(j))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -581,11 +581,11 @@ func deliverJoin(t *testing.T, p *plugin, terms membership.Terms, creds membersh
 	if err != nil {
 		t.Fatalf("sign join: %v", err)
 	}
-	blob, err := schema.Encode(schema.KindJoin, terms.SID, schema.JoinFrom(j))
+	blob, err := schema.Encode(schema.Version, schema.KindJoin, terms.SID, schema.JoinFrom(j))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -598,11 +598,11 @@ func deliverCommit(t *testing.T, p *plugin, terms membership.Terms, creds member
 	if err != nil {
 		t.Fatalf("sign commit: %v", err)
 	}
-	blob, err := schema.Encode(schema.KindCommit, terms.SID, schema.CommitFrom(c))
+	blob, err := schema.Encode(schema.Version, schema.KindCommit, terms.SID, schema.CommitFrom(c))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -611,11 +611,11 @@ func deliverCommit(t *testing.T, p *plugin, terms membership.Terms, creds member
 
 func deliverKind(t *testing.T, p *plugin, terms membership.Terms, kind schema.Kind, body any) []outgoing {
 	t.Helper()
-	blob, err := schema.Encode(kind, terms.SID, body)
+	blob, err := schema.Encode(schema.Version, kind, terms.SID, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -1155,12 +1155,12 @@ func TestARestartWillNotRejoinASessionThatEnded(t *testing.T) {
 		}
 		joins = append(joins, j)
 	}
-	blob, err := schema.Encode(schema.KindRoster, terms.SID,
+	blob, err := schema.Encode(schema.Version, schema.KindRoster, terms.SID,
 		schema.RosterFrom(terms, map[uint32][]byte{}, joins, nil))
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

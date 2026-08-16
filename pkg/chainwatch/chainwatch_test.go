@@ -56,7 +56,7 @@ func (w *watchTable) act(seat uint32, action gamelog.Action, amount int64) *sche
 
 func (w *watchTable) message(e *gamelog.Entry) *schema.Message {
 	w.t.Helper()
-	blob, err := schema.Encode(schema.KindAction, watchMatch, schema.Action{
+	blob, err := schema.Encode(schema.Version, schema.KindAction, watchMatch, schema.Action{
 		Entry: gamelog.TranscriptEntry{
 			Version:  e.Version,
 			PrevHash: hex.EncodeToString(e.PrevHash[:]),
@@ -73,7 +73,7 @@ func (w *watchTable) message(e *gamelog.Entry) *schema.Message {
 	if err != nil {
 		w.t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		w.t.Fatalf("decode: %v", err)
 	}
@@ -214,11 +214,11 @@ func TestChainWatchIgnoresOtherKinds(t *testing.T) {
 	table := newWatchTable(t, 2)
 	w, _ := New(watchMatch, table.roster)
 
-	blob, err := schema.Encode(schema.KindHead, watchMatch, schema.Head{Seq: 1})
+	blob, err := schema.Encode(schema.Version, schema.KindHead, watchMatch, schema.Head{Seq: 1})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

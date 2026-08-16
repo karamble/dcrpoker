@@ -37,11 +37,11 @@ func TestAShuffleComplaintSurvivesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	blob, err := schema.Encode(schema.KindShuffleComplaint, dealMatch, body)
+	blob, err := schema.Encode(schema.Version, schema.KindShuffleComplaint, dealMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

@@ -161,7 +161,7 @@ func TestChunkedMessageReassemblesOutOfOrder(t *testing.T) {
 	r := newRouter(t, send, allowAll, &got)
 
 	body := schema.Resync{After: 7}
-	payload, err := schema.Encode(schema.KindResync, testMatch, body)
+	payload, err := schema.Encode(schema.Version, schema.KindResync, testMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestChunksFromDifferentSendersDoNotMerge(t *testing.T) {
 	var got []Delivery
 	r := newRouter(t, send, allowAll, &got)
 
-	payload, _ := schema.Encode(schema.KindResync, testMatch, schema.Resync{After: 1})
+	payload, _ := schema.Encode(schema.Version, schema.KindResync, testMatch, schema.Resync{After: 1})
 	parts, _ := wire.Encode(schema.Game, schema.Version, testSID, payload, time.Time{}, 16)
 
 	// Interleave one sender's first part with another's whole message.
@@ -223,7 +223,7 @@ func TestMissingAuthorizeAllowsNobody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new router: %v", err)
 	}
-	payload, _ := schema.Encode(schema.KindResync, testMatch, schema.Resync{After: 1})
+	payload, _ := schema.Encode(schema.Version, schema.KindResync, testMatch, schema.Resync{After: 1})
 	parts, _ := wire.Encode(schema.Game, schema.Version, testSID, payload, time.Time{}, 0)
 
 	r.HandleGCMessage(testGCID, alice, parts[0], time.Now())
@@ -235,13 +235,32 @@ func TestMissingAuthorizeAllowsNobody(t *testing.T) {
 func TestNewRouterRefusesIncompleteConfig(t *testing.T) {
 	send := &fakeSender{}
 	for name, cfg := range map[string]Config{
-		"no game":   {Sender: send, Handle: func(Delivery) {}},
-		"no sender": {Game: "poker", Handle: func(Delivery) {}},
-		"no handle": {Game: "poker", Sender: send},
+		"no game":         {GameVer: 5, Sender: send, Handle: func(Delivery) {}},
+		"no game version": {Game: "poker", Sender: send, Handle: func(Delivery) {}},
+		"no sender":       {Game: "poker", GameVer: 5, Handle: func(Delivery) {}},
+		"no handle":       {Game: "poker", GameVer: 5, Sender: send},
 	} {
 		if _, err := NewRouter(cfg); err == nil {
 			t.Errorf("%s should be refused", name)
 		}
+	}
+}
+
+// The publisher's version guard lives in Send as well as the constructor,
+// because the fields are exported and a bare literal skips NewPublisher.
+func TestPublisherRefusesAMissingGameVersion(t *testing.T) {
+	send := &fakeSender{}
+	if _, err := NewPublisher("poker", 0, send); err == nil {
+		t.Fatal("a publisher with no game version should be refused")
+	}
+	p := &Publisher{Game: "poker", Sender: send}
+	err := p.Send(context.Background(), testGCID, testSID, testMatch,
+		schema.KindHead, schema.Head{Seq: 1}, wire.ClassTurn)
+	if err == nil {
+		t.Fatal("a bare publisher with no game version sent anyway")
+	}
+	if len(send.frames()) != 0 {
+		t.Fatal("frames went out despite the refusal")
 	}
 }
 
@@ -266,7 +285,7 @@ func TestReceiveFeedsTheRouterAndStops(t *testing.T) {
 		t.Fatalf("new router: %v", err)
 	}
 
-	payload, _ := schema.Encode(schema.KindResync, testMatch, schema.Resync{After: 3})
+	payload, _ := schema.Encode(schema.Version, schema.KindResync, testMatch, schema.Resync{After: 3})
 	parts, _ := wire.Encode(schema.Game, schema.Version, testSID, payload, time.Time{}, 0)
 
 	frames := make(chan InboundFrame, 1)

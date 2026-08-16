@@ -39,13 +39,13 @@ func TestAShuffleSurvivesTheWireAndStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	blob, err := schema.Encode(schema.KindShuffle, dealMatch, body)
+	blob, err := schema.Encode(schema.Version, schema.KindShuffle, dealMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 	t.Logf("a shuffle is %d bytes on the wire", len(blob))
 
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -98,13 +98,13 @@ func TestAShareSurvivesTheWireAndStillVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	blob, err := schema.Encode(schema.KindShare, dealMatch, body)
+	blob, err := schema.Encode(schema.Version, schema.KindShare, dealMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 	t.Logf("a share is %d bytes on the wire", len(blob))
 
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -142,11 +142,11 @@ func TestACardKeySurvivesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	blob, err := schema.Encode(schema.KindCardKey, dealMatch, body)
+	blob, err := schema.Encode(schema.Version, schema.KindCardKey, dealMatch, body)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	msg, err := schema.Decode(blob)
+	msg, err := schema.Decode(schema.Version, blob)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
